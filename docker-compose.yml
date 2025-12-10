@@ -11,12 +11,21 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: password
-      POSTGRES_DB: ai_platform
+      POSTGRES_DB: ai_platform # 默认创建业务库
+      # ⚠️ 注意：LangFuse 库需要通过 init 脚本创建，见下方说明
     ports:
       - "9500:5432"
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
-      - ./docker/postgres/init:/docker-entrypoint-initdb.d # Auto-create 'langfuse' db on first run
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      # ✅ 新增：确保数据库真的准备好了
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ai_platform_net
 
   # ==========================================
   # 2. Infrastructure (Redis)
@@ -29,10 +38,11 @@ services:
       - "9501:6379"
     volumes:
       - ./data/redis:/data
+    networks:
+      - ai_platform_net
 
   # ==========================================
   # 3. Object Storage (MinIO)
-  # Used by: App (Files), Milvus (Storage)
   # ==========================================
   minio:
     image: minio/minio:RELEASE.2024-01-31T20-20-33Z
@@ -41,16 +51,18 @@ services:
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: minioadmin
     ports:
-      - "9502:9000" # API
-      - "9503:9001" # Console
+      - "9502:9000"
+      - "9503:9001"
     volumes:
       - ./data/minio:/data
     command: minio server /data --console-address ":9001"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
       interval: 30s
       timeout: 20s
       retries: 3
+    networks:
+      - ai_platform_net
 
   # ==========================================
   # 4. Vector Database (Milvus Standalone)
@@ -66,11 +78,13 @@ services:
     volumes:
       - ./data/etcd:/etcd
     command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls=http://0.0.0.0:2379 --data-dir /etcd
+    networks:
+      - ai_platform_net
 
   milvus:
     image: milvusdb/milvus:v2.3.4
     container_name: ai_platform_milvus
-    command: ["milvus", "run", "standalone"]
+    command: [ "milvus", "run", "standalone" ]
     environment:
       ETCD_ENDPOINTS: etcd:2379
       MINIO_ADDRESS: minio:9000
@@ -83,8 +97,12 @@ services:
       - "9504:19530"
       - "9505:9091"
     depends_on:
-      - etcd
-      - minio
+      etcd:
+        condition: service_started
+      minio:
+        condition: service_healthy # ✅ 优化：等 MinIO 健康了再启动
+    networks:
+      - ai_platform_net
 
   # ==========================================
   # 5. Observability (LangFuse)
@@ -92,7 +110,7 @@ services:
   clickhouse:
     image: clickhouse/clickhouse-server:23
     container_name: ai_platform_clickhouse
-    user: "101:101"
+    # user: "101:101"  <-- ⚠️ 建议注释掉，除非你确定宿主机文件夹权限已设为 101
     ulimits:
       nofile:
         soft: 262144
@@ -102,38 +120,45 @@ services:
       - "9508:9009"
     volumes:
       - ./data/clickhouse:/var/lib/clickhouse
+    healthcheck:
+      # ✅ 新增：确保 CH 准备好了
+      test: [ "CMD", "wget", "--spider", "-q", "http://localhost:8123/ping" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ai_platform_net
 
   langfuse:
     image: langfuse/langfuse:2
     container_name: ai_platform_langfuse
     depends_on:
-      - db
-      - clickhouse
+      db:
+        condition: service_healthy # ✅ 关键：必须等 DB 建好表
+      clickhouse:
+        condition: service_healthy # ✅ 关键：必须等 CH 启动
     ports:
       - "9506:3000"
     environment:
       - NODE_ENV=production
-      # Database
       - DATABASE_URL=postgresql://postgres:password@db:5432/langfuse
       - DATABASE_TRACING_ENABLED=false
-      # ClickHouse
       - CLICKHOUSE_HOST=clickhouse
       - CLICKHOUSE_USER=default
       - CLICKHOUSE_PASSWORD=
       - CLICKHOUSE_DB=default
-      # Auth (Generate secrets via 'openssl rand -base64 32')
       - NEXTAUTH_SECRET=auto_generated_secret_for_dev_mode
       - SALT=auto_generated_salt_for_dev_mode
       - NEXTAUTH_URL=http://localhost:9506
-      # Initial Admin User (Will be created on startup)
       - LANGFUSE_INIT_ORG_ID=org_default
       - LANGFUSE_INIT_PROJECT_ID=p_default
       - LANGFUSE_INIT_USER_EMAIL=admin@admin.com
       - LANGFUSE_INIT_USER_NAME=Admin
       - LANGFUSE_INIT_USER_PASSWORD=password
-      # Telemetry
       - TELEMETRY_ENABLED=false
+    networks:
+      - ai_platform_net
 
 networks:
-  default:
-    name: ai_platform_net
+  ai_platform_net:
+    driver: bridge
