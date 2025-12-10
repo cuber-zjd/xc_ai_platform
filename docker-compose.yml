@@ -45,22 +45,40 @@ services:
   # 3. Object Storage (MinIO)
   # ==========================================
   minio:
-    image: minio/minio:RELEASE.2024-01-31T20-20-33Z
+    # 使用最新版本
+    image: minio/minio:RELEASE.2025-06-13T11-33-47Z-cpuv1
+    # 或者锁定一个具体的近期稳定版 (推荐生产环境使用具体版本号，防止自动升级导致意外)
+    # image: minio/minio:RELEASE.2024-11-07T00-52-20Z
+
     container_name: ai_platform_minio
+    restart: always
     environment:
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin
+      # ⚠️ 新版必须使用 ROOT_USER 和 ROOT_PASSWORD
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+
+      # 显式锁定端口，防止混淆
+      MINIO_ADDRESS: ":9000"
+      MINIO_CONSOLE_ADDRESS: ":9001"
+
+      # 优化：如果是单节点，建议关闭一些分布式检查以加快启动
+      MINIO_BROWSER_REDIRECT_URL: "http://localhost:9001"
+
     ports:
-      - "9502:9000"
-      - "9503:9001"
+      - "9502:9000" # API Port
+      - "9503:9001" # Console Port
     volumes:
       - ./data/minio:/data
-    command: minio server /data --console-address ":9001"
+    command: server /data --console-address ":9001"
+
+    # --- 健康检查 (适配新版镜像) ---
+    # 新版镜像可能没有 curl，使用 bash 的原生 TCP 连接来检查端口是否存活
     healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
-      interval: 30s
-      timeout: 20s
-      retries: 3
+      test: [ "CMD-SHELL", "bash -c '</dev/tcp/localhost/9000'" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
     networks:
       - ai_platform_net
 
