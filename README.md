@@ -22,7 +22,7 @@
 *   **UI 体系**: **Shadcn/ui** + **Tailwind CSS**
     *   *理由*：高度可定制，符合 Premium Vibe，开发效率高。
 *   **状态管理**: **Zustand** (客户端流式状态) + **TanStack Query** (服务端数据同步)。
-*   **包管理**: **npm**
+*   **包管理**: **pnpm**
 
 ### 2.2 后端 (Backend)
 *   **Runtime**: **Python 3.13** (使用 **uv** 管理环境与依赖)
