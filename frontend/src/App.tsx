@@ -1,10 +1,16 @@
 import './App.css'
-import LoginPage from './pages/LoginPage'
+import AppRouter from '@/router'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+
+// Create a client
+const queryClient = new QueryClient()
 
 function App() {
 
   return (
-    <LoginPage />
+    <QueryClientProvider client={queryClient}>
+      <AppRouter />
+    </QueryClientProvider>
   )
 }
 

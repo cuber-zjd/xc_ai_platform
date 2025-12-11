@@ -23,7 +23,7 @@
     *   *理由*：高度可定制，符合 Premium Vibe，开发效率高。
     *   *使用*：pnpm dlx shadcn@latest add card 类似这种方式来添加组件
 *   **状态管理**: **Zustand** (客户端流式状态) + **TanStack Query** (服务端数据同步)。
-*   **包管理**: **pnpm**
+*   **包管理**: **一定要使用pnpm**
 
 ### 2.2 后端 (Backend)
 *   **Runtime**: **Python 3.13** (使用 **uv** 管理环境与依赖)
@@ -40,7 +40,29 @@
 
 ---
 
-## 3. 后端架构与目录设计 (Backend Architecture)
+## 3. 前端架构与目录设计 (Frontend Architecture)
+
+采用 Modular Feature-based 结构。
+
+```plaintext
+frontend/src/
+├── api/                # [NEW] 后端 API 集成 (Axios + Interceptors)
+│   ├── client.ts
+│   └── auth.ts
+├── components/
+│   ├── ui/             # Shadcn Basic Components
+│   └── layout/         # [NEW] 布局组件 (MainLayout, Sidebar)
+├── pages/
+│   ├── auth/           # [moved] Login Page
+│   ├── dashboard/      # [NEW] Dashboard Home
+│   └── chat/           # Chat Interface
+├── router/             # [NEW] 路由配置
+│   └── index.tsx
+├── store/              # [NEW] Zustand State (Auth, UI)
+└── lib/                # Utils
+```
+
+## 4. 后端架构与目录设计 (Backend Architecture)
 
 采用 **模块化 (Modular)** 结构，并引入 **LLMFactory** 统一管理模型接入。
 
