@@ -21,6 +21,7 @@
     *   *理由*：Vite 构建速度快，产物纯净，便于 iframe/微前端嵌入。
 *   **UI 体系**: **Shadcn/ui** + **Tailwind CSS**
     *   *理由*：高度可定制，符合 Premium Vibe，开发效率高。
+    *   *使用*：pnpm dlx shadcn@latest add card 类似这种方式来添加组件
 *   **状态管理**: **Zustand** (客户端流式状态) + **TanStack Query** (服务端数据同步)。
 *   **包管理**: **pnpm**
 
