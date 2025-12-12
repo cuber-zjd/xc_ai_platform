@@ -21,7 +21,9 @@ dependencies = [
     "pydantic-settings",
     "python-jose[cryptography]",
     "passlib[bcrypt]",
-    "tenacity"
+    "tenacity",
+    "pymssql>=2.3.10",
+    "pyodbc>=5.3.0",
 ]
 
 [build-system]
