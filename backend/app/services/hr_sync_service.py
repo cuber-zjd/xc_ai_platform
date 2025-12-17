@@ -4,10 +4,10 @@ import logging
 from datetime import datetime
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
-from app.models.sys_user import SysUser
-from app.models.sys_company import SysCompany
-from app.models.sys_dept import SysDept
-from app.models.sys_post import SysPost
+from app.models.system.sys_user import SysUser
+from app.models.system.sys_company import SysCompany
+from app.models.system.sys_dept import SysDept
+from app.models.system.sys_post import SysPost
 from app.db.session import engine, async_session 
 
 # Configure logger
@@ -40,23 +40,58 @@ class HrSyncService:
         if not val:
             return None
         s = str(val).strip()
-        if s == "男" or s == "M" or s == "1":
+        if s == "男" or s == "M" or s == "0":
             return "Male"
-        if s == "女" or s == "F" or s == "0":
+        if s == "女" or s == "F" or s == "1":
             return "Female"
         return s
 
     @staticmethod
-    def map_status(deleted_val: Any) -> int:
-        # deleted: 1 typically means deleted (Status 0). 0 means active (Status 1).
-        # Need to verify if 'deleted' is boolean or int. Assuming int-like.
+    def map_employment_status(val: Any) -> tuple[int, str]:
+        """
+        Maps HR status string to (status_code, status_desc).
+        0: 试用, 1: 正式, 2: 临时, 3: 试用延期, 4: 解聘, 5: 离职, 6: 退休, 7: 其他
+        """
+        if not val:
+            return (7, "其他")
+        
+        s = str(val).strip()
+        desc = s
+        
+        if s == '试用': return (0, s)
+        if s == '正式': return (1, s)
+        if s == '临时': return (2, s)
+        if s == '试用延期': return (3, s)
+        if s == '解聘': return (4, s)
+        if s == '离职': return (5, s)
+        if s == '退休': return (6, s)
+        
+        return (7, s) # Default to Other
+
+    @staticmethod
+    def map_is_deleted(status_code: int) -> int:
+        """
+        Derive is_deleted from status_code.
+        4(解聘), 5(离职), 6(退休) -> Deleted (1)
+        Others -> Active (0)
+        """
+        if status_code in [4, 5, 6]:
+            return 1
+        return 0
+
+    @staticmethod
+    def map_common_status(val: Any) -> int:
+        """
+        For Company/Dept/Post which likely satisfy standard deleted=0/1 logic?
+        User didn't specify. Assuming standard: 1=Deleted? Or 0=Deleted?
+        Previous code: 1(Deleted) -> 0(Status=Disabled?), 0(Active) -> 1(Status=Normal).
+        BaseDBModel: is_deleted: 0=Active, 1=Deleted.
+        So if source is 1 (Deleted), is_deleted=1.
+        """
         try:
-            v = int(deleted_val)
-            if v == 1:
-                return 0  # Deleted -> Status 0
-            return 1      # Not deleted -> Status 1
+            return int(val)
         except:
-            return 1 # Default relative safety
+            return 0 # Default Not Deleted
 
     @staticmethod
     async def sync_companies():
@@ -104,7 +139,7 @@ class HrSyncService:
                     except:
                         obj.order = 0
                     
-                    obj.status = HrSyncService.map_status(row['deleted_flag'])
+                    obj.is_deleted = HrSyncService.map_common_status(row['deleted_flag'])
                     obj.update_time = datetime.now()
                     obj.update_by = "system_sync"
                     session.add(obj)
@@ -162,7 +197,7 @@ class HrSyncService:
                     except:
                         obj.order = 0
                     
-                    obj.status = HrSyncService.map_status(row['deleted_flag'])
+                    obj.is_deleted = HrSyncService.map_common_status(row['deleted_flag'])
                     obj.update_time = datetime.now()
                     obj.update_by = "system_sync"
                     session.add(obj)
@@ -212,7 +247,7 @@ class HrSyncService:
                     obj.code = str(row['code']) if row['code'] else None
                     obj.dept_id = str(row['dept_id']) if row['dept_id'] else None
                     
-                    obj.status = HrSyncService.map_status(row['deleted_flag'])
+                    obj.is_deleted = HrSyncService.map_common_status(row['deleted_flag'])
                     obj.update_time = datetime.now()
                     obj.update_by = "system_sync"
                     session.add(obj)
@@ -318,7 +353,17 @@ class HrSyncService:
                     existing_user.travel_level = str(row['travel_level']) if row['travel_level'] else None
                     existing_user.job_order = str(row['job_order']) if row['job_order'] else None
                     
-                    existing_user.status = HrSyncService.map_status(row['deleted_flag'])
+                    existing_user.job_order = str(row['job_order']) if row['job_order'] else None
+                    
+                    # Status Mapping
+                    # Source 'deleted_flag' contains text like '正式', '离职' per user info
+                    hr_status_text = row['deleted_flag']
+                    status_code, status_desc = HrSyncService.map_employment_status(hr_status_text)
+                    
+                    existing_user.status = status_code
+                    existing_user.status_desc = status_desc
+                    existing_user.is_deleted = HrSyncService.map_is_deleted(status_code)
+                    
                     existing_user.update_time = datetime.now()
                     existing_user.update_by = "system_sync"
                     

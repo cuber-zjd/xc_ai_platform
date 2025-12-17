@@ -4,7 +4,10 @@ from sqlmodel import SQLModel
 from app.db.session import engine
 from app.services.hr_sync_service import HrSyncService
 # Import models so SQLModel knows about them for create_all
-from app.models.sys_user import SysUser
+from app.models.system.sys_user import SysUser
+from app.models.system.sys_company import SysCompany
+from app.models.system.sys_dept import SysDept
+from app.models.system.sys_post import SysPost
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -13,6 +16,8 @@ async def main():
     logger.info("Initializing Database tables...")
     # For now, auto-create tables if not exist. In prod, use Alembic.
     async with engine.begin() as conn:
+        # Drop and recreate to apply schema changes (Dev mode)
+        # await conn.run_sync(SQLModel.metadata.drop_all)
         await conn.run_sync(SQLModel.metadata.create_all)
     
     logger.info("Triggering HR Sync...")

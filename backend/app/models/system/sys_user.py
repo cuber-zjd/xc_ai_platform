@@ -1,9 +1,9 @@
-from datetime import datetime, date
 from typing import Optional
 from sqlmodel import SQLModel, Field
+from app.models.base import BaseDBModel
 
 class SysUserBase(SQLModel):
-    sync_id: Optional[str] = Field(default=None, index=True, description="Original ID from HR system (a0188)")
+    sync_id: Optional[str] = Field(default=None, index=True, description="Original ID (a0188)")
     username: str = Field(index=True, unique=True, description="Login name (a0190)")
     full_name: str = Field(index=True, description="Real name (a0101)")
     gender: Optional[str] = Field(default=None, description="Gender (a0107)")
@@ -28,16 +28,12 @@ class SysUserBase(SQLModel):
     employee_id: Optional[str] = Field(default=None, description="Employee ID/Jinghao (a0190)")
     travel_level: Optional[str] = Field(default=None, description="Travel Level (a01004)")
     job_order: Optional[str] = Field(default=None, description="Order (a01004order)")
-    job_point: Optional[str] = Field(default=None, description="Job Point (gangweixindian)")
     
-    status: int = Field(default=1, description="Status: 1=Normal, 0=Deleted")
-    comment: Optional[str] = Field(default=None, description="Remarks")
+    # Status
+    status: int = Field(default=1, description="Employment Status Code (0-7)")
+    status_desc: Optional[str] = Field(default=None, description="Employment Status Desc (Formal, Trial, etc.)")
 
-class SysUser(SysUserBase, table=True):
+
+class SysUser(BaseDBModel, SysUserBase, table=True):
     __tablename__ = "sys_user"
-    
-    id: int | None = Field(default=None, primary_key=True)
-    create_time: datetime = Field(default_factory=datetime.now)
-    update_time: datetime = Field(default_factory=datetime.now)
-    create_by: Optional[str] = Field(default=None)
-    update_by: Optional[str] = Field(default=None)
+    # id, create_time, is_deleted etc inherited from BaseDBModel
