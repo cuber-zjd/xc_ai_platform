@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     LANGFUSE_SECRET_KEY: str = "sk-lf-..."
     LANGFUSE_HOST: str = "http://localhost:9506"
 
-    model_config = SettingsConfigDict(case_sensitive=True, env_file=".env")
+    model_config = SettingsConfigDict(case_sensitive=True, env_file=".env", extra="ignore")
 
     def compute_database_url(self):
         return PostgresDsn.build(

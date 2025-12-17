@@ -113,3 +113,46 @@ async def review_contract(file_id: str, user: User) -> ReviewResult:
 ---
 
 > **记住**: 我们构建的是企业的大脑。它需要像磐石一样稳固 (Robust)，像水一样流畅 (Scalable)。
+
+---
+
+## 5. 统一标准 (Unified Standards)
+
+### 📤 统一响应 (Unified Response)
+所有 API **必须** 返回统一的 JSON 格式：
+```python
+{
+  "code": 200,      # 业务状态码 (200=成功, 非200=失败)
+  "msg": "Success", # 提示信息
+  "data": { ... }   # 业务数据
+}
+```
+使用 `app.schemas.result.Result` 进行封装：
+```python
+return Result.success(data=user)
+```
+
+### 🚨 异常处理 (Exception Handling)
+*   **不要** 直接返回 500 错误，捕获已知异常并抛出 `BizException`。
+*   全局异常处理器会统一拦截并格式化为标准响应。
+
+### 🪵 日志规范 (Logging)
+*   使用 `loguru`。
+*   **禁止** 使用 `print()`。
+*   关键路径必须有 Log。
+### 📄 通用分页 (Standard Pagination)
+所有列表查询接口 **必须** 返回 `Page[T]` 结构：
+```python
+{
+  "total": 100,
+  "items": [ ... ],
+  "page": 1,
+  "size": 10
+}
+```
+使用 `app.schemas.page.Page` 进行封装。
+
+### 🔗 中间件与追踪 (Middleware & Tracing)
+*   **Request ID**: 每个请求 header 必须包含 `X-Request-ID`，并自动注入到 Logs 中。
+*   **Context**: 使用 `contextvars` 传递用户信息和 Trace ID。
+

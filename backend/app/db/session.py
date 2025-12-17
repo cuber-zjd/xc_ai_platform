@@ -15,3 +15,17 @@ engine = create_async_engine(DATABASE_URL, echo=True, future=True)
 async_session = sessionmaker(
     engine, class_=AsyncSession, expire_on_commit=False
 )
+
+async def get_db() -> AsyncSession:
+    """
+    Dependency for getting an async database session.
+    Yields the session and ensures it's closed after use.
+    """
+    async with async_session() as session:
+        try:
+            yield session
+        except Exception:
+            await session.rollback()
+            raise
+        finally:
+            await session.close()
