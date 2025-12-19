@@ -37,3 +37,6 @@ class SysUserBase(SQLModel):
 class SysUser(BaseDBModel, SysUserBase, table=True):
     __tablename__ = "sys_user"
     # id, create_time, is_deleted etc inherited from BaseDBModel
+    
+    hashed_password: str = Field(nullable=False, description="Encrypted Password")
+    is_superuser: bool = Field(default=False, description="Superuser Flag")

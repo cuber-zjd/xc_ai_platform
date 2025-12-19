@@ -17,7 +17,7 @@ async def main():
     # For now, auto-create tables if not exist. In prod, use Alembic.
     async with engine.begin() as conn:
         # Drop and recreate to apply schema changes (Dev mode)
-        # await conn.run_sync(SQLModel.metadata.drop_all)
+        await conn.run_sync(SQLModel.metadata.drop_all)
         await conn.run_sync(SQLModel.metadata.create_all)
     
     logger.info("Triggering HR Sync...")

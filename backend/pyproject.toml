@@ -20,7 +20,7 @@ dependencies = [
     "httpx",
     "pydantic-settings",
     "python-jose[cryptography]",
-    "passlib[bcrypt]",
+    "passlib[argon2]",
     "tenacity",
     "pymssql>=2.3.10",
     "pyodbc>=5.3.0",

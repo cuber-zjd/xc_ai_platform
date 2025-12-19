@@ -156,3 +156,17 @@ return Result.success(data=user)
 *   **Request ID**: 每个请求 header 必须包含 `X-Request-ID`，并自动注入到 Logs 中。
 *   **Context**: 使用 `contextvars` 传递用户信息和 Trace ID。
 
+---
+
+## 6. 安全认证 (Security & Auth)
+
+### 🔐 Authentication
+*   **Mechanism**: JWT (JSON Web Tokens) only.
+*   **Protocol**: OAuth2 standard flow (`/login/access-token`).
+*   **Protection**: Use `deps.get_current_user` dependency for all protected endpoints.
+
+### 🛡️ Best Practices
+*   **Passwords**: 严禁明文存储。必须使用 `bcrypt` 哈希。
+*   **Secrets**: `SECRET_KEY`, `ALGORITHM` 等必须配置在 `.env` 中，严禁硬编码。
+*   **User Context**: 在 Service 层通过 `get_current_user` 获取当前操作用户，确保数据权限隔离。
+

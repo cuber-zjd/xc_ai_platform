@@ -97,3 +97,16 @@ src/
 ---
 
 > **记住**: 我们在构建的是 **AI Platform**，它本身就代表着未来。代码和界面必须体现出这种**未来感 (Futuristic)**。
+
+---
+
+## 5. 安全认证 (Security & Auth)
+
+### 🔐 Integration
+*   **Store**: Use `useAuthStore` for token/user state management.
+*   **Interceptor**: Use `apiClient` (`src/api/client.ts`) for automatic token injection and error handling (401 logout).
+*   **Protection**: Wrap protected routes with `<ProtectedRoute>`.
+
+### 🛡️ Patterns
+*   **Optimistic UI**: Assume local tokens are valid until 401.
+*   **Validation**: Frontend validation is UX only; always rely on Backend validation.

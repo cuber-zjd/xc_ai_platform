@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
     
     # CORS
-    BACKEND_CORS_ORIGINS: List[AnyHttpUrl] = []
+    BACKEND_CORS_ORIGINS: List[AnyHttpUrl] = ["http://localhost:5173", "http://localhost:5174", "http://localhost:3000"]
 
     # Database
     POSTGRES_SERVER: str = "localhost"
@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     LANGFUSE_PUBLIC_KEY: str = "pk-lf-..."
     LANGFUSE_SECRET_KEY: str = "sk-lf-..."
     LANGFUSE_HOST: str = "http://localhost:9506"
+
+    # Security
+    SECRET_KEY: str = "change_this_to_a_secure_random_string_in_production"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 8 # 8 days
 
     model_config = SettingsConfigDict(case_sensitive=True, env_file=".env", extra="ignore")
 

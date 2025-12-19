@@ -4,9 +4,11 @@ export interface User {
     id: string;
     username: string;
     email?: string;
-    fullName?: string;
+    full_name?: string;
     role?: string;
     avatar?: string;
+    dept_id?: string;
+    status?: number;
 }
 
 export interface LoginResponse {

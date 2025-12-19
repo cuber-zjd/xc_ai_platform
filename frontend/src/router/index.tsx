@@ -7,6 +7,7 @@ import { useAuthStore } from '@/store/useAuthStore';
 
 // Lazy imports
 const DashboardPage = lazy(() => import('@/pages/dashboard'));
+const UserPage = lazy(() => import('@/pages/system/UserPage'));
 // const ChatPage = lazy(() => import('@/pages/chat'));
 
 // Guard Component
@@ -54,6 +55,14 @@ const router = createBrowserRouter([
             {
                 path: 'settings',
                 element: <div>Settings Page WIP</div>
+            },
+            {
+                path: 'users',
+                element: (
+                    <Suspense fallback={<div>Loading...</div>}>
+                        <UserPage />
+                    </Suspense>
+                )
             }
         ]
     },

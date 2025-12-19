@@ -155,3 +155,5 @@ backend/
 *   **Queue**: Redis (Port 9501)
 *   **Storage**: MinIO (Port 9502 API / 9503 Console)
 *   **Observability**: LangFuse Server (Port 9506)
+*   **Document**: OnlyOffice (Port 9509)
+

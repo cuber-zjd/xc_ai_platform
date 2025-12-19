@@ -27,7 +27,25 @@ apiClient.interceptors.request.use(
 // Response Interceptor: Error Handling
 apiClient.interceptors.response.use(
     (response) => {
-        return response.data;
+        // Backend returns standard Result { code: 200, msg: "...", data: ... }
+        const res = response.data;
+
+        // If the API returns the Result wrapper
+        if (res && typeof res.code === 'number') {
+            if (res.code === 200) {
+                return res.data;
+            } else {
+                // Business Logic Error (handled as promise rejection)
+                return Promise.reject({
+                    response: {
+                        data: { detail: res.msg || 'Error' }
+                    }
+                });
+            }
+        }
+
+        // Fallback for non-standard responses
+        return res;
     },
     (error) => {
         // 401: Unauthorized -> Logout

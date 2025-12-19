@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import {
@@ -8,22 +8,27 @@ import {
     LogOut,
     Menu,
     X,
-    CreditCard,
     User
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuthStore } from '@/store/useAuthStore';
+import { Toaster } from "@/components/ui/sonner";
 
 export default function MainLayout() {
     const [isSidebarOpen, setIsSidebarOpen] = useState(true);
     const navigate = useNavigate();
     const location = useLocation();
-    const logout = useAuthStore((state) => state.logout);
+    const { logout, checkAuth } = useAuthStore();
+
+    useEffect(() => {
+        checkAuth();
+    }, [checkAuth]);
 
     const navItems = [
-        { label: 'Dashboard', icon: LayoutDashboard, path: '/dashboard' },
-        { label: 'Chat', icon: MessageSquare, path: '/chat' },
-        { label: 'Settings', icon: Settings, path: '/settings' },
+        { label: '仪表盘', icon: LayoutDashboard, path: '/dashboard' },
+        { label: '对话', icon: MessageSquare, path: '/chat' },
+        { label: '用户管理', icon: User, path: '/users' },
+        { label: '系统设置', icon: Settings, path: '/settings' },
     ];
 
     const handleLogout = () => {
@@ -42,7 +47,7 @@ export default function MainLayout() {
             >
                 <div className="h-16 flex items-center justify-between px-4 border-b border-border">
                     {isSidebarOpen && (
-                        <span className="font-semibold text-lg truncate">AI Platform</span>
+                        <span className="font-semibold text-lg truncate">AI 智能平台</span>
                     )}
                     <Button
                         variant="ghost"
@@ -104,6 +109,7 @@ export default function MainLayout() {
                     <Outlet />
                 </div>
             </main>
+            <Toaster />
         </div>
     );
 }
