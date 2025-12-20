@@ -191,6 +191,8 @@ services:
       # 文档编辑限制 (可选)
       - ALLOW_META_IP_ADDRESS=true
       - ALLOW_PRIVATE_IP_ADDRESS=true
+      # 禁用插件下载 (解决国内网络无法访问 GitHub 的问题)
+      - PLUGIN_MARKETPLACE_URL=false
     ports:
       - "9509:80" # Web 访问端口
     volumes:
