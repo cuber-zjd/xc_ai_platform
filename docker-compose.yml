@@ -183,8 +183,8 @@ services:
     container_name: ai_platform_onlyoffice
     restart: always
     environment:
-      # JWT 安全配置 (生产环境请修改此密钥)
-      - JWT_ENABLED=true
+      # JWT 安全配置 (临时禁用用于调试)
+      - JWT_ENABLED=false
       - JWT_SECRET=ai_platform_onlyoffice_secret
       - JWT_HEADER=Authorization
       - JWT_IN_BODY=true

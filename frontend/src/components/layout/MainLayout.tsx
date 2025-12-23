@@ -8,7 +8,8 @@ import {
     LogOut,
     Menu,
     X,
-    User
+    User,
+    FileCheck
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuthStore } from '@/store/useAuthStore';
@@ -27,6 +28,7 @@ export default function MainLayout() {
     const navItems = [
         { label: '仪表盘', icon: LayoutDashboard, path: '/dashboard' },
         { label: '对话', icon: MessageSquare, path: '/chat' },
+        { label: '合同智审', icon: FileCheck, path: '/contracts' },
         { label: '用户管理', icon: User, path: '/users' },
         { label: '系统设置', icon: Settings, path: '/settings' },
     ];

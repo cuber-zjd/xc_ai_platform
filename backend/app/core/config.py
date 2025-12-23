@@ -7,7 +7,13 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
     
     # CORS
-    BACKEND_CORS_ORIGINS: List[AnyHttpUrl] = ["http://localhost:5173", "http://localhost:5174", "http://localhost:3000"]
+    BACKEND_CORS_ORIGINS: List[Union[str, AnyHttpUrl]] = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+        "http://localhost:3000",
+    ]
 
     # Database
     POSTGRES_SERVER: str = "localhost"
@@ -35,6 +41,10 @@ class Settings(BaseSettings):
     LANGFUSE_PUBLIC_KEY: str = "pk-lf-..."
     LANGFUSE_SECRET_KEY: str = "sk-lf-..."
     LANGFUSE_HOST: str = "http://localhost:9506"
+
+    # OnlyOffice Document Server
+    ONLYOFFICE_SERVER_URL: str = "http://192.168.14.44:9509"
+    ONLYOFFICE_JWT_SECRET: str = "ai_platform_onlyoffice_secret"
 
     # Security
     SECRET_KEY: str = "change_this_to_a_secure_random_string_in_production"

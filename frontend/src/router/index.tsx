@@ -8,6 +8,9 @@ import { useAuthStore } from '@/store/useAuthStore';
 // Lazy imports
 const DashboardPage = lazy(() => import('@/pages/dashboard'));
 const UserPage = lazy(() => import('@/pages/system/UserPage'));
+const ContractListPage = lazy(() => import('@/features/contract/pages/ContractListPage').then(module => ({ default: module.ContractListPage })));
+const ContractDetailPage = lazy(() => import('@/features/contract/pages/ContractDetailPage').then(module => ({ default: module.ContractDetailPage })));
+const ContractSidecarPage = lazy(() => import('@/features/contract/pages/ContractSidecarPage').then(module => ({ default: module.ContractSidecarPage })));
 // const ChatPage = lazy(() => import('@/pages/chat'));
 
 // Guard Component
@@ -49,7 +52,6 @@ const router = createBrowserRouter([
             },
             {
                 path: 'chat',
-                // element: <ChatPage />
                 element: <div>Chat Page WIP</div>
             },
             {
@@ -63,8 +65,32 @@ const router = createBrowserRouter([
                         <UserPage />
                     </Suspense>
                 )
+            },
+            {
+                path: 'contracts',
+                element: (
+                    <Suspense fallback={<div>Loading...</div>}>
+                        <ContractListPage />
+                    </Suspense>
+                )
+            },
+            {
+                path: 'contract/:id',
+                element: (
+                    <Suspense fallback={<div>Loading...</div>}>
+                        <ContractDetailPage />
+                    </Suspense>
+                )
             }
         ]
+    },
+    {
+        path: '/contract/sidecar/:id',
+        element: (
+            <Suspense fallback={<div>Loading...</div>}>
+                <ContractSidecarPage />
+            </Suspense>
+        )
     },
     {
         path: '*',

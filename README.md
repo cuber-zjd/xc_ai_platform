@@ -149,6 +149,7 @@ backend/
 ---
 
 ## 5. 基础设施概览（Docker Compose）：
+服务器ip：192.168.14.44
 
 *   **App**: FastAPI Backend, React Frontend
 *   **Data**: PostgreSQL (Port 9500), Milvus (Port 9504)

@@ -11,6 +11,12 @@ from app.core.middleware import RequestIdMiddleware
 async def lifespan(app: FastAPI):
     # Startup: specific init logic
     setup_logging()
+    
+    # Initialize Database Tables
+    from app.db.init_db import init_db
+    await init_db()
+
+    
     logger.info("Startup: AI Platform Backend")
     yield
     # Shutdown: cleanup logic
@@ -22,22 +28,27 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Set all CORS enabled origins
+if settings.BACKEND_CORS_ORIGINS:
+    # Ensure all origins are strings and stripped of trailing slashes
+    origins = []
+    for origin in settings.BACKEND_CORS_ORIGINS:
+        origins.append(str(origin).rstrip("/"))
+    
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
 # Middleware
 app.add_middleware(RequestIdMiddleware)
 
 # Exception Handlers
 app.add_exception_handler(BizException, biz_exception_handler)
 app.add_exception_handler(Exception, global_exception_handler)
-
-# Set all CORS enabled origins
-if settings.BACKEND_CORS_ORIGINS:
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=[str(origin).rstrip("/") for origin in settings.BACKEND_CORS_ORIGINS],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
 
 app.include_router(api_router, prefix=settings.API_V1_STR)
 
