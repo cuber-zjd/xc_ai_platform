@@ -1,0 +1,32 @@
+# 建议使用 Debian 版的基础镜像，提升 C 扩展的编译成功率
+FROM postgres:16
+
+# 1. 安装编译所需的依赖工具和 PG 16 开发包
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    wget \
+    bzip2 \
+    make \
+    gcc \
+    libc6-dev \
+    postgresql-server-dev-16 \
+    && rm -rf /var/lib/apt/lists/*
+
+# 2. 编译并安装 SCWS
+RUN wget -q -O - http://www.xunsearch.com/scws/down/scws-1.2.3.tar.bz2 | tar xjf - \
+    && cd scws-1.2.3 \
+    && ./configure \
+    && make install \
+    && cd .. \
+    && rm -rf scws-1.2.3
+
+# 3. 安装官方中文词典
+RUN wget -q -O - http://www.xunsearch.com/scws/down/scws-dict-chs-utf8.tar.bz2 | tar xjf - -C /usr/local/etc/ \
+    && chown root:root /usr/local/etc/dict.utf8.xdb
+
+# 4. 编译并安装 zhparser
+RUN wget -q -O - https://github.com/amutu/zhparser/archive/master.tar.gz | tar xzf - \
+    && cd zhparser-master \
+    && SCWS_HOME=/usr/local make \
+    && make install \
+    && cd .. \
+    && rm -rf zhparser-master

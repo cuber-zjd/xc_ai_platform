@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ContractAuditLog } from "../types";
 import type { EditorConfig } from "../hooks/useContract";
 import { Loader2, AlertCircle } from "lucide-react";
@@ -123,20 +123,82 @@ export function OnlyOfficeViewer({
         };
     }, [isScriptLoaded, editorConfig, onDocumentReady]);
 
-    // 高亮文本功能
+    // 高亮文本功能 - 尝试多种方案触发 OnlyOffice 搜索
     useEffect(() => {
-        if (highlightLog && editorRef.current) {
-            try {
-                const connector = editorRef.current.createConnector();
-                if (connector && highlightLog.quote_text) {
-                    connector.executeMethod("SearchText", [highlightLog.quote_text], (result: any) => {
-                        console.log("Search result:", result);
-                    });
-                }
-            } catch (e) {
-                console.warn("Highlight error:", e);
-            }
+        if (!highlightLog || !editorRef.current) return;
+
+        const searchText = highlightLog.quote_text;
+        if (!searchText) {
+            console.warn("No quote_text to search for");
+            return;
         }
+
+        console.log("Attempting to search for:", searchText.substring(0, 50));
+
+        // 方案1: 尝试使用 executeMethod 调用搜索
+        try {
+            if (typeof editorRef.current.executeMethod === 'function') {
+                // 打开搜索替换面板并填入搜索文本
+                editorRef.current.executeMethod('StartFindAndReplace', [searchText, ''], (result: any) => {
+                    console.log("executeMethod StartFindAndReplace result:", result);
+                });
+                return;
+            }
+        } catch (e) {
+            console.log("executeMethod not available:", e);
+        }
+
+
+        // 方案2: 通过 PostMessage 发送搜索命令到 iframe
+        try {
+            const iframe = document.querySelector('iframe[name*="frameEditor"]') as HTMLIFrameElement;
+            if (iframe && iframe.contentWindow) {
+                // 聚焦 iframe
+                iframe.contentWindow.focus();
+
+                // 尝试发送搜索消息
+                iframe.contentWindow.postMessage({
+                    type: 'search',
+                    data: { text: searchText }
+                }, '*');
+
+                console.log("Posted search message to iframe");
+            }
+        } catch (e) {
+            console.log("PostMessage failed:", e);
+        }
+
+        // 方案3: 模拟 Ctrl+F 键盘事件
+        try {
+            const iframe = document.querySelector('iframe[name*="frameEditor"]') as HTMLIFrameElement;
+            if (iframe && iframe.contentWindow) {
+                iframe.contentWindow.focus();
+
+                // 创建并分发 Ctrl+F 事件
+                const event = new KeyboardEvent('keydown', {
+                    key: 'f',
+                    code: 'KeyF',
+                    ctrlKey: true,
+                    bubbles: true,
+                    cancelable: true
+                });
+                iframe.contentDocument?.dispatchEvent(event);
+
+                // 短暂延迟后尝试填入搜索文本
+                setTimeout(() => {
+                    // 尝试找到搜索输入框并填入文本
+                    const searchInput = iframe.contentDocument?.querySelector('input[type="text"]') as HTMLInputElement;
+                    if (searchInput) {
+                        searchInput.value = searchText;
+                        searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+                        console.log("Search text filled in input");
+                    }
+                }, 300);
+            }
+        } catch (e) {
+            console.log("Keyboard simulation failed:", e);
+        }
+
     }, [highlightLog]);
 
     if (!editorConfig) {

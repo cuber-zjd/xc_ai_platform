@@ -17,6 +17,7 @@ class SysUserBase(SQLModel):
     job_title: Optional[str] = Field(default=None, description="Job Title/Post (j01_e0101)")
     supervisor_id: Optional[str] = Field(default=None, description="Direct Supervisor Sync ID (user_pre)")
     
+    
     # Dates
     hire_date: Optional[str] = Field(default=None, description="Hire Date (a0144)")
     contract_start_date: Optional[str] = Field(default=None, description="Contract Start (a01107)")
@@ -32,6 +33,7 @@ class SysUserBase(SQLModel):
     # Status
     status: int = Field(default=1, description="Employment Status Code (0-7)")
     status_desc: Optional[str] = Field(default=None, description="Employment Status Desc (Formal, Trial, etc.)")
+    
 
 
 class SysUser(BaseDBModel, SysUserBase, table=True):

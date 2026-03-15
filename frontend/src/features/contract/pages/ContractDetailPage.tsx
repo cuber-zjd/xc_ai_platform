@@ -32,18 +32,23 @@ export function ContractDetailPage() {
     return (
         <div className="flex h-[calc(100vh-64px)] overflow-hidden">
             {/* Left: Document Editor */}
-            <div className="flex-1 relative flex flex-col">
+            <div className="flex-1 relative flex flex-col bg-muted/30">
                 <div className="h-12 border-b flex items-center px-4 justify-between bg-background">
                     <div className="flex items-center gap-2">
                         <span className="font-semibold">{contract.title}</span>
                         <Badge variant="outline">{contract.status}</Badge>
                     </div>
                 </div>
-                <OnlyOfficeViewer
-                    className="flex-1"
-                    editorConfig={editorConfig}
-                    highlightLog={activeLog}
-                />
+                {/* 文档预览容器 - 限制最大宽度并居中 */}
+                <div className="flex-1 overflow-auto flex justify-center py-4">
+                    <div className="w-full max-w-4xl h-full">
+                        <OnlyOfficeViewer
+                            className="h-full shadow-lg rounded-lg overflow-hidden"
+                            editorConfig={editorConfig}
+                            highlightLog={activeLog}
+                        />
+                    </div>
+                </div>
             </div>
 
             {/* Right: AI Sidecar */}
