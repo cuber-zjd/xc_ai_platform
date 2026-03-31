@@ -1,8 +1,8 @@
 import axios from 'axios';
 import { useAuthStore } from '@/store/useAuthStore';
 
-// Default to localhost:8000 if not specified (Standard FastAPI port)
-const baseURL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1';
+// Default to /api/v1 (Works with Vite Proxy in dev, and Nginx in prod)
+const baseURL = import.meta.env.VITE_API_URL || '/api/v1';
 
 export const apiClient = axios.create({
     baseURL,

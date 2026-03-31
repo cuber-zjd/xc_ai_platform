@@ -9,10 +9,10 @@ dependencies = [
     "uvicorn[standard]",
     "sqlmodel",
     "asyncpg",
-    "langchain",
-    "langchain-community",
-    "langchain-openai",
-    "langgraph",
+    "langchain>=1.1.3",
+    "langchain-community>=0.4.1",
+    "langchain-openai>=1.1.12",
+    "langgraph>=1.0.4",
     "redis",
     "minio",
     "langfuse",
@@ -29,6 +29,7 @@ dependencies = [
     "pyjwt>=2.10.1",
     "mammoth>=1.11.0",
     "debugpy>=1.8.20",
+    "langchain-core>=1.2.23",
 ]
 
 [build-system]
