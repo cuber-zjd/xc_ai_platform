@@ -68,3 +68,156 @@
 - **环境变量**：确保 `backend/.env` 中的 `POSTGRES_SERVER` 等地址在当前网络环境下可达。
 
 ---
+
+## 🚀 生产环境部署指南 (Ubuntu 源码方式)
+
+本指南适用于在 Ubuntu 22.04+ 服务器上通过源码直接部署项目。
+
+### 1. 基础环境准备
+
+在服务器上安装必要的系统组件：
+
+```bash
+# 更新系统
+sudo apt update && sudo apt upgrade -y
+
+# 安装基础工具
+sudo apt install -y git curl wget build-essential libssl-dev zlib1g-dev \
+    libbz2-dev libreadline-dev libsqlite3-dev curl \
+    libncursesw5-dev xz-utils tk-dev libxml2-dev libxmlsec1-dev libffi-dev liblzma-dev
+
+# 1.1 安装 Docker & Docker Compose
+# 参考官方文档：https://docs.docker.com/engine/install/ubuntu/
+sudo apt install -y docker.io docker-compose-v2
+sudo usermod -aG docker $USER
+# 注销并重新登录以使 docker 权限生效
+
+# 1.2 安装 uv (Python 包管理器)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source $HOME/.cargo/env
+
+# 1.3 安装 Node.js (20+) & pnpm
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt install -y nodejs
+sudo npm install -g pnpm
+```
+
+### 2. 获取源码与基础架构启动
+
+```bash
+git clone <your-repo-url> ai_platform
+cd ai_platform
+
+# 2.1 启动数据库与中间件 (Docker)
+# 这将启动 Postgres, Redis, MinIO, Milvus, LangFuse, OnlyOffice
+docker compose up -d
+
+# 检查容器状态
+docker compose ps
+```
+
+### 3. 后端部署 (FastAPI)
+
+```bash
+cd backend
+
+# 3.1 安装依赖
+uv sync
+
+# 3.2 配置环境变量
+cp .env.example .env
+# 编辑 .env 文件，修改数据库地址 (由于是源码部署，localhost 即可，端口参见 docker-compose.yml 映射)
+# 例如：POSTGRES_SERVER=localhost:9500
+nano .env
+
+# 3.3 使用 Systemd 进行进程管理
+sudo nano /etc/systemd/system/ai-backend.service
+```
+
+在 `ai-backend.service` 中写入：
+```ini
+[Unit]
+Description=AI Platform Backend
+After=network.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/ai_platform/backend
+ExecStart=/home/ubuntu/.cargo/bin/uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable ai-backend
+sudo systemctl start ai-backend
+```
+
+### 4. 前端部署 (React/Vite)
+
+生产环境建议将前端编译为静态文件，并由 Nginx 托管。
+
+```bash
+cd ../frontend
+
+# 4.1 安装依赖
+pnpm install
+
+# 4.2 编译静态资源
+# 确保文件中的 .env.production 或配置指向了正确的后端 API 地址
+pnpm build
+```
+
+### 5. Nginx 配置 (反向代理)
+
+```bash
+sudo apt install -y nginx
+sudo nano /etc/nginx/sites-available/ai-platform
+```
+
+写入配置：
+```nginx
+server {
+    listen 80;
+    server_name your_domain_or_ip;
+
+    # 前端静态文件
+    location / {
+        root /home/ubuntu/ai_platform/frontend/dist;
+        index index.html;
+        try_files $uri $uri/ /index.html;
+    }
+
+    # 后端 API 转发
+    location /api {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+```bash
+sudo ln -s /etc/nginx/sites-available/ai-platform /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl restart nginx
+```
+
+### 6. 完成部署
+
+访问 `http://your_server_ip` 即可使用平台。
+- **Swagger 文档**: `http://your_server_ip/api/v1/docs` (根据具体路由配置)
+- **LangFuse**: `http://your_server_ip:9506`
+- **OnlyOffice**: `http://your_server_ip:9509`
+
+---
+
+## ❓ 常见问题
+
+- **数据库初始密码**: 默认位于 `docker-compose.yml` 中的 `password`。
+- **端口映射**: 生产环境如果不需要暴露 95xx 系列端口，可以在 `docker-compose.yml` 中删除 ports 映射，仅让容器在内部网络通信，并通过 Nginx 进行外部暴露。
