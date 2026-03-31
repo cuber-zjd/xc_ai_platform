@@ -1,4 +1,4 @@
-import './App.css'
+import './APP.css'
 import AppRouter from '@/router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
