@@ -1,5 +1,5 @@
 from typing import Optional, List
-from sqlmodel import select, func
+from sqlmodel import select, func, cast, String
 from sqlmodel.ext.asyncio.session import AsyncSession
 from app.models.system.sys_user import SysUser
 from app.schemas.user import UserCreate, UserUpdate
@@ -9,7 +9,7 @@ from app.schemas.page import Page
 class UserService:
     @staticmethod
     async def get_by_username(db: AsyncSession, username: str) -> Optional[SysUser]:
-        query = select(SysUser).where(SysUser.username == username)
+        query = select(SysUser).where(SysUser.username == username, SysUser.status == 1)
         result = await db.exec(query)
         return result.first()
 
@@ -19,18 +19,22 @@ class UserService:
 
     @staticmethod
     async def get_list(
-        db: AsyncSession, page: int = 1, size: int = 20, **filters
+        db: AsyncSession, page: int = 1, size: int = 20, dept_id: int | None = None, **filters
     ) -> Page[SysUser]:
-        # Count
-        count_query = select(func.count()).select_from(SysUser)
-        # Apply filters if needed...
+        # Base query with status=1 filter
+        base_query = select(SysUser).where(SysUser.status == 1, SysUser.is_deleted == 0)
         
+        if dept_id:
+            base_query = base_query.where(SysUser.dept_id == cast(str(dept_id), String))
+        
+        # Count
+        count_query = select(func.count()).select_from(base_query.subquery())
         total = (await db.exec(count_query)).one()
         
-        # Select
-        query = select(SysUser).offset((page - 1) * size).limit(size)
+        # Select with pagination
+        query = base_query.offset((page - 1) * size).limit(size)
         result = await db.exec(query)
-        items = result.all()
+        items = list(result.all())
         
         return Page(total=total, items=items, page=page, size=size)
 

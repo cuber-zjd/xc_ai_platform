@@ -20,6 +20,7 @@ interface Agent {
     name: string;
     description?: string;
     icon?: string;
+    logo_url?: string;
     route_path: string;
 }
 
@@ -82,7 +83,6 @@ export default function WorkbenchPage() {
 
     return (
         <div className="max-w-7xl mx-auto space-y-12 pb-20 p-4 lg:p-8">
-            {/* Header & Search */}
             <div className="flex flex-col md:flex-row md:items-end justify-between gap-6 pb-2 border-b border-zinc-200/50">
                 <div className="space-y-2">
                     <div className="flex items-center gap-2 text-zinc-500 text-sm font-medium tracking-wider uppercase">
@@ -111,7 +111,6 @@ export default function WorkbenchPage() {
                 </div>
             </div>
 
-            {/* Groups Grid */}
             <div className="space-y-16">
                 {filteredGroups.length === 0 ? (
                     <div className="flex flex-col items-center justify-center py-20 text-zinc-400 space-y-4">
@@ -134,6 +133,7 @@ export default function WorkbenchPage() {
                             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                                 {group.agents.map((agent) => {
                                     const IconComponent = ICON_MAP[agent.icon || "Bot"] || Bot;
+                                    const isLogoUrl = agent.icon?.startsWith('http');
                                     return (
                                         <div
                                             key={agent.id}
@@ -148,9 +148,18 @@ export default function WorkbenchPage() {
                                             <div className="flex items-start justify-between">
                                                 <div className={cn(
                                                     "p-4 rounded-2xl bg-zinc-50 dark:bg-zinc-800 transition-transform group-hover:scale-110 duration-500",
-                                                    "border border-zinc-200/50 dark:border-zinc-700/50"
+                                                    "border border-zinc-200/50 dark:border-zinc-700/50",
+                                                    isLogoUrl ? "p-0 overflow-hidden" : ""
                                                 )}>
-                                                    <IconComponent className="text-zinc-700 dark:text-zinc-300" size={28} />
+                                                    {isLogoUrl ? (
+                                                        <img 
+                                                            src={agent.icon} 
+                                                            alt={agent.name}
+                                                            className="w-7 h-7 object-contain"
+                                                        />
+                                                    ) : (
+                                                        <IconComponent className="text-zinc-700 dark:text-zinc-300" size={28} />
+                                                    )}
                                                 </div>
                                                 <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-300 pr-2">
                                                     <span className="text-xs font-medium text-zinc-400">立即进入</span>
@@ -166,9 +175,6 @@ export default function WorkbenchPage() {
                                                     {agent.description || "暂无描述，点击开始探索。"}
                                                 </p>
                                             </div>
-                                            
-                                            {/* Subtle Decorative Gradient */}
-                                            <div className="absolute bottom-0 right-0 w-32 h-32 bg-gradient-to-br from-zinc-100/50 to-transparent dark:from-zinc-800/20 rounded-br-[2rem] -z-10 group-hover:from-zinc-200/50 dark:group-hover:from-zinc-700/20 transition-all" />
                                         </div>
                                     );
                                 })}

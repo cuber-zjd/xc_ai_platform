@@ -103,7 +103,7 @@ class RoleService:
         query = (
             select(SysUser)
             .join(SysUserRole, SysUser.id == SysUserRole.user_id)
-            .where(SysUserRole.role_id == role_id, SysUser.is_deleted == 0)
+            .where(SysUserRole.role_id == role_id, SysUser.is_deleted == 0, SysUser.status == 1)
         )
         result = await db.exec(query)
         return result.all()

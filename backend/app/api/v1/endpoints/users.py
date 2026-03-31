@@ -18,19 +18,26 @@ async def read_user_me(
     """
     Get current user.
     """
-    return Result.success(data=current_user)
+    return Result.success(data={
+        "id": current_user.id,
+        "username": current_user.username,
+        "full_name": current_user.full_name,
+        "role": "admin" if current_user.is_superuser else "user",
+        "status": current_user.status,
+    })
 
 @router.get("", response_model=Result[Page[UserRead]])
 async def read_users(
     db: AsyncSession = Depends(get_db),
     page: int = 1,
     size: int = 20,
+    dept_id: int | None = None,
     current_user: SysUser = Depends(deps.get_current_active_superuser),
 ) -> Any:
     """
     Retrieve users.
     """
-    result = await UserService.get_list(db, page=page, size=size)
+    result = await UserService.get_list(db, page=page, size=size, dept_id=dept_id)
     return Result.success(data=result)
 
 @router.post("", response_model=Result[UserRead])

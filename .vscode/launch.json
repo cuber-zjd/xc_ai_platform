@@ -3,14 +3,14 @@
     "configurations": [
         {
             "name": "Backend: Uvicorn",
-            "type": "python",
+            "type": "debugpy",
             "request": "launch",
             "module": "uvicorn",
             "args": [
                 "app.main:app",
                 "--reload",
                 "--host",
-                "127.0.0.1",
+                "0.0.0.0",
                 "--port",
                 "8000"
             ],
@@ -26,9 +26,8 @@
             "name": "Frontend: Dev",
             "type": "node",
             "request": "launch",
-            "runtimeExecutable": "npm",
+            "runtimeExecutable": "pnpm",
             "runtimeArgs": [
-                "run",
                 "dev"
             ],
             "cwd": "${workspaceFolder}/frontend",

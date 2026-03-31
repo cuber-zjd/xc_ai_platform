@@ -22,7 +22,7 @@ async def login_access_token(
     OAuth2 compatible token login, get an access token for future requests
     """
     # 1. Simple auth by username
-    query = select(SysUser).where(SysUser.username == form_data.username)
+    query = select(SysUser).where(SysUser.username == form_data.username, SysUser.status == 1)
     result = await db.exec(query)
     user = result.first()
 

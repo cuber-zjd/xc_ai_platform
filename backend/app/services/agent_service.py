@@ -13,6 +13,7 @@ from app.schemas.agent import (
     WorkbenchGroup, WorkbenchAgent
 )
 from app.schemas.page import Page
+from app.services.file_service import file_service
 
 class AgentService:
     # --- Agent Group ---
@@ -156,16 +157,22 @@ class AgentService:
         # 5. 组装返回数据
         result = []
         for group in groups:
-            group_agents = [
-                WorkbenchAgent(
-                    id=app.id,
-                    name=app.name,
-                    description=app.description,
-                    icon=app.icon,
-                    route_path=app.route_path
-                )
-                for app in apps if app.group_id == group.id
-            ]
+            group_agents = []
+            for app in apps:
+                if app.group_id == group.id:
+                    icon_url = app.icon
+                    if icon_url and not icon_url.startswith('http'):
+                        try:
+                            icon_url = await file_service.get_presigned_url(icon_url)
+                        except Exception:
+                            icon_url = None
+                    group_agents.append(WorkbenchAgent(
+                        id=app.id,
+                        name=app.name,
+                        description=app.description,
+                        icon=icon_url,
+                        route_path=app.route_path
+                    ))
             if group_agents:
                 result.append(WorkbenchGroup(
                     id=group.id,

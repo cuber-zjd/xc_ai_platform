@@ -49,7 +49,7 @@ async def get_current_user(
         )
 
     try:
-        query = select(SysUser).where(SysUser.id == user_id)
+        query = select(SysUser).where(SysUser.id == user_id, SysUser.status == 1)
         result = await db.exec(query)
         user = result.first()
     except Exception as e:
@@ -61,7 +61,7 @@ async def get_current_user(
     if not user:
         print(f"DEBUG AUTH: User {user_id} not found in DB")
         raise HTTPException(status_code=404, detail="User not found")
-    if not user.status == 1: # Assuming 1 is active
+    if user.status != 1:
          raise HTTPException(status_code=400, detail="Inactive user")
          
     return user
