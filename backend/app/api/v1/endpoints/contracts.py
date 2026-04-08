@@ -58,7 +58,7 @@ async def get_contract_detail(
         audit_logs=contract.audit_logs
     )
 
-@router.get("/", response_model=List[ContractRead])
+@router.get("", response_model=List[ContractRead])
 async def list_contracts(
     db: AsyncSession = Depends(get_db),
     skip: int = 0,

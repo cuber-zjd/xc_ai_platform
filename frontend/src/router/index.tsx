@@ -21,6 +21,7 @@ const ChatHomePage = lazy(() => import('@/pages/user-home/ChatHomePage'));
 const WorkbenchPage = lazy(() => import('@/pages/dashboard/WorkbenchPage'));
 const ToolboxPage = lazy(() => import('@/pages/user-home/ToolboxPage'));
 const WarehousePage = lazy(() => import('@/pages/agent_pages/warehouse/WarehousePage'));
+const AgentTestPage = lazy(() => import('@/pages/agent-test/AgentTestPage'));
 
 // 加载占位符
 const PageLoader = () => (
@@ -190,6 +191,14 @@ const router = createBrowserRouter([
         ]
     },
     // ==================== 公共路由 ====================
+    {
+        path: '/agent-test',
+        element: (
+            <Suspense fallback={<PageLoader />}>
+                <AgentTestPage />
+            </Suspense>
+        )
+    },
     {
         path: '/contract/sidecar/:id',
         element: (

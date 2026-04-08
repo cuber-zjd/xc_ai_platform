@@ -85,4 +85,4 @@ class FileService:
             raise e
 
 # Singleton instance
-file_service = FileService()
+file_service: FileService = FileService()

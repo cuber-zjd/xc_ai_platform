@@ -1,0 +1,12 @@
+[tool.pyright]
+venvPath = "backend"
+venv = ".venv"
+extraPaths = ["backend"]
+
+[tool.pyre]
+source_directories = ["backend"]
+search_path = ["backend/.venv/Lib/site-packages"]
+
+[project]
+name = "workspace-root"
+version = "0.0.0"
