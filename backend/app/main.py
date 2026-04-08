@@ -16,6 +16,11 @@ async def lifespan(app: FastAPI):
     from app.db.init_db import init_db
     await init_db()
 
+    # MCP Management
+    from app.mcp.manager import mcp_manager
+    mcp_manager.load_servers()
+    mcp_manager.mount_to_app(app)
+
     
     logger.info("Startup: AI Platform Backend")
     yield
