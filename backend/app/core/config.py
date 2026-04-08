@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     # Security
     SECRET_KEY: str = "change_this_to_a_secure_random_string_in_production"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 8 # 8 days
+    MCP_API_KEY: str = ""  # MCP 服务认证密钥，留空则开发环境放行
 
     model_config = SettingsConfigDict(case_sensitive=True, env_file=".env", extra="ignore")
 
