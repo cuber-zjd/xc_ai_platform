@@ -19,7 +19,7 @@ async def lifespan(app: FastAPI):
     # MCP Management
     from app.mcp.manager import mcp_manager
     mcp_manager.load_servers()
-    mcp_manager.mount_to_app(app)
+    mcp_manager.mount_to_app(app, prefix=f"{settings.API_V1_STR}/mcp")
 
     
     logger.info("Startup: AI Platform Backend")
