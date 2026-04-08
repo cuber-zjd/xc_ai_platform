@@ -51,23 +51,31 @@ class MCPManager:
             # 注意：endpoint 是处理 POST 消息的路径
             sse = SseServerTransport(f"{prefix}/{name}/messages")
             
+            # 使用工厂函数避免闭包陷阱：循环中的闭包变量必须通过参数绑定当前值
+            def _make_handlers(sse_transport: SseServerTransport, srv: BaseMCPServer):
+                async def handle_sse(request: Request, _ = Depends(verify_mcp_auth)):
+                    async with sse_transport.connect_sse(
+                        request.scope, request.receive, request._send
+                    ) as streams:
+                        await srv.server.run(
+                            streams[0], 
+                            streams[1], 
+                            srv.server.create_initialization_options()
+                        )
+                    return Response()
+
+                async def handle_messages(request: Request, _ = Depends(verify_mcp_auth)):
+                    await sse_transport.handle_post_message(request.scope, request.receive, request._send)
+                
+                return handle_sse, handle_messages
+
+            sse_handler, msg_handler = _make_handlers(sse, mcp_server)
+
             # 挂载 SSE 连接端点
-            @app.get(f"{prefix}/{name}/sse")
-            async def handle_sse(request: Request, _ = Depends(verify_mcp_auth)):
-                async with sse.connect_sse(
-                    request.scope, request.receive, request._send
-                ) as streams:
-                    await mcp_server.server.run(
-                        streams[0], 
-                        streams[1], 
-                        mcp_server.server.create_initialization_options()
-                    )
-                return Response()
+            app.get(f"{prefix}/{name}/sse")(sse_handler)
 
             # 挂载消息处理端点
-            @app.post(f"{prefix}/{name}/messages")
-            async def handle_messages(request: Request, _ = Depends(verify_mcp_auth)):
-                await sse.handle_post_message(request.scope, request.receive, request._send)
+            app.post(f"{prefix}/{name}/messages")(msg_handler)
             
             logger.info(f"Mounted MCP Server {name} (SSE) at {prefix}/{name}/sse")
 
