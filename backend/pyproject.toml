@@ -30,6 +30,7 @@ dependencies = [
     "mammoth>=1.11.0",
     "debugpy>=1.8.20",
     "langchain-core>=1.2.23",
+    "mcp>=1.0.0",
 ]
 
 [build-system]
