@@ -158,6 +158,9 @@ services:
         condition: service_healthy # ✅ 关键：必须等 CH 启动
       minio:
         condition: service_healthy # ✅ 新增：确保 MinIO 就绪后再启动 Langfuse
+      redis:
+        # ✅ 新增：确保 Redis 启动
+        condition: service_started
     ports:
       - "9506:3000"
     environment:
@@ -170,7 +173,11 @@ services:
       CLICKHOUSE_PASSWORD: "Xc2870508"
       CLICKHOUSE_CLUSTER_ENABLED: "false" # ← ⭐ 新增这一行，关闭集群模式
 
-      LANGFUSE_INGESTION_QUEUE_TYPE: "database"
+      # ✅ 新增：告诉 Langfuse 如何连接 Redis
+      REDIS_HOST: "redis" # 指向你 docker-compose 里的 redis 服务名
+      REDIS_PORT: "6379"
+
+      LANGFUSE_INGESTION_QUEUE_TYPE: "redis"
 
       # 启用 S3 事件上传
       LANGFUSE_S3_EVENT_UPLOAD_ENABLED: "true"
