@@ -161,10 +161,7 @@ services:
       - NODE_ENV=production
       - DATABASE_URL=postgresql://postgres:password@db:5432/langfuse
       - DATABASE_TRACING_ENABLED=false
-      - CLICKHOUSE_HOST=clickhouse
-      - CLICKHOUSE_USER=default
-      - CLICKHOUSE_PASSWORD=
-      - CLICKHOUSE_DB=default
+      - CLICKHOUSE_URL=http://clickhouse:8123
       - NEXTAUTH_SECRET=auto_generated_secret_for_dev_mode
       - SALT=auto_generated_salt_for_dev_mode
       - NEXTAUTH_URL=http://localhost:9506
