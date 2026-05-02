@@ -167,7 +167,17 @@ services:
       CLICKHOUSE_USER: default
       CLICKHOUSE_PASSWORD: "Xc2870508"
       CLICKHOUSE_CLUSTER_ENABLED: "false" # ← ⭐ 新增这一行，关闭集群模式
-      LANGFUSE_S3_EVENT_UPLOAD_ENABLED: "false"
+
+      # 启用 S3 事件上传
+      LANGFUSE_S3_EVENT_UPLOAD_ENABLED: "true"
+
+      # MinIO 配置（与您 docker-compose 中的 minio 服务对应）
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: "langfuse-events"
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: "us-east-1" # MinIO 任意值即可
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: "minioadmin"
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: "minioadmin"
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: "http://minio:9000"
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true" # MinIO 必需
       NEXTAUTH_SECRET: auto_generated_secret_for_dev_mode
       SALT: auto_generated_salt_for_dev_mode
       NEXTAUTH_URL: http://localhost:9506
