@@ -158,22 +158,22 @@ services:
     ports:
       - "9506:3000"
     environment:
-      - NODE_ENV=production
-      - DATABASE_URL=postgresql://postgres:password@db:5432/langfuse
-      - DATABASE_TRACING_ENABLED=false
-      - CLICKHOUSE_URL=http://clickhouse:8123
-      - CLICKHOUSE_MIGRATION_URL=clickhouse://clickhouse:9000
-      - CLICKHOUSE_USER=default
-      - CLICKHOUSE_PASSWORD=""
-      - NEXTAUTH_SECRET=auto_generated_secret_for_dev_mode
-      - SALT=auto_generated_salt_for_dev_mode
-      - NEXTAUTH_URL=http://localhost:9506
-      - LANGFUSE_INIT_ORG_ID=org_default
-      - LANGFUSE_INIT_PROJECT_ID=p_default
-      - LANGFUSE_INIT_USER_EMAIL=admin@admin.com
-      - LANGFUSE_INIT_USER_NAME=Admin
-      - LANGFUSE_INIT_USER_PASSWORD=password
-      - TELEMETRY_ENABLED=false
+      NODE_ENV: production
+      DATABASE_URL: postgresql://postgres:password@db:5432/langfuse
+      DATABASE_TRACING_ENABLED: "false"
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+      NEXTAUTH_SECRET: auto_generated_secret_for_dev_mode
+      SALT: auto_generated_salt_for_dev_mode
+      NEXTAUTH_URL: http://localhost:9506
+      LANGFUSE_INIT_ORG_ID: org_default
+      LANGFUSE_INIT_PROJECT_ID: p_default
+      LANGFUSE_INIT_USER_EMAIL: admin@admin.com
+      LANGFUSE_INIT_USER_NAME: Admin
+      LANGFUSE_INIT_USER_PASSWORD: password
+      TELEMETRY_ENABLED: "false"
     networks:
       - ai_platform_net
 
