@@ -5,8 +5,8 @@ from app.api import deps
 from app.db.session import get_db
 from app.models.system.sys_user import SysUser
 from app.schemas.result import Result
-from app.schemas.dept import DeptTreeNode
-from app.services.dept_service import DeptService
+from app.schemas.system.dept import DeptTreeNode
+from app.services.system.dept_service import DeptService
 
 router = APIRouter()
 

@@ -7,7 +7,7 @@ from app.api import deps
 from app.db.session import async_session, get_db
 from app.models.system.sys_user import SysUser
 from app.schemas.result import Result
-from app.schemas.inventory import MaterialQueryRequest, MaterialItem, WarehouseData
+from app.schemas.agent.inventory.inventory import MaterialQueryRequest, MaterialItem, WarehouseData
 from app.core.llm_factory import LLMFactory
 from app.core.logger import logger
 

@@ -2,7 +2,7 @@ from typing import Optional, List
 from sqlmodel import select, func, delete
 from sqlmodel.ext.asyncio.session import AsyncSession
 from app.models.system.sys_role import SysRole, SysUserRole
-from app.schemas.role import RoleCreate, RoleUpdate
+from app.schemas.system.role import RoleCreate, RoleUpdate
 from app.schemas.page import Page
 from app.models.system.sys_user import SysUser
 

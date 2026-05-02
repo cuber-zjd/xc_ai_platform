@@ -6,8 +6,8 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlmodel import select, desc
 
 from app.models.contract.contract_model import Contract, ContractStatusEnum, ContractAuditLog
-from app.schemas.contract import ContractCreate, ContractUpdate
-from app.services.file_service import file_service
+from app.schemas.agent.contract.contract import ContractCreate, ContractUpdate
+from app.services.system.file_service import file_service
 from app.core.logger import logger
 
 from fastapi import BackgroundTasks

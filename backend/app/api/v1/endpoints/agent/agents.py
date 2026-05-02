@@ -6,13 +6,13 @@ from app.api import deps
 from app.db.session import get_db
 from app.models.system.sys_user import SysUser
 from app.schemas.result import Result
-from app.schemas.agent import (
+from app.schemas.agent.agent import (
     AgentGroupRead, AgentGroupCreate, AgentGroupUpdate,
     AgentAppRead, AgentAppCreate, AgentAppUpdate,
     RoleAgentAssign, DeptAgentAssign, WorkbenchGroup
 )
-from app.services.agent_service import AgentService
-from app.services.file_service import file_service
+from app.services.agent.agent_service import AgentService
+from app.services.system.file_service import file_service
 
 router = APIRouter()
 

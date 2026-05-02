@@ -7,13 +7,13 @@ from app.models.agent.role_agent import SysRoleAgent
 from app.models.agent.dept_agent import SysDeptAgent
 from app.models.system.sys_user import SysUser
 from app.models.system.sys_role import SysUserRole
-from app.schemas.agent import (
+from app.schemas.agent.agent import (
     AgentGroupCreate, AgentGroupUpdate, 
     AgentAppCreate, AgentAppUpdate,
     WorkbenchGroup, WorkbenchAgent
 )
 from app.schemas.page import Page
-from app.services.file_service import file_service
+from app.services.system.file_service import file_service
 
 class AgentService:
     # --- Agent Group ---

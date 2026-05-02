@@ -3,7 +3,7 @@ from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 from app.models.system.sys_dept import SysDept
 from app.models.system.sys_company import SysCompany
-from app.schemas.dept import DeptTreeNode
+from app.schemas.system.dept import DeptTreeNode
 
 class DeptService:
     @staticmethod

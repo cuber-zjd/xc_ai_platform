@@ -3,8 +3,8 @@ from typing import Dict, List
 from langchain_core.messages import SystemMessage, HumanMessage
 from app.core.llm_factory import LLMFactory
 from app.agents.definitions.contract_review.state import ReviewState, AuditFinding
-from app.services.file_service import file_service
-from app.services.rule_service import rule_service
+from app.services.system.file_service import file_service
+from app.services.agent.contract.rule_service import rule_service
 from app.core.logger import logger
 import io
 

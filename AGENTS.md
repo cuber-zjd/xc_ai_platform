@@ -289,13 +289,22 @@ export function UserProfile({ className, userId }: Props) {
 ### 后端分层
 ```
 app/
-├── api/           # 路由处理（只处理请求/响应）
-├── services/      # 业务逻辑（数据库、外部 API、agents）
-├── models/        # SQLModel 定义
-├── schemas/       # Pydantic schemas（请求/响应）
+├── api/v1/endpoints/
+│   ├── system/    # 系统管理（用户、角色、部门、登录等）
+│   └── agent/     # 智能体相关（通用管理及各具体智能体接口）
+├── services/
+│   ├── system/    # 系统业务逻辑
+│   └── agent/     # 智能体业务逻辑
+├── models/
+│   ├── system/    # 系统模型
+│   └── agent/     # 智能体模型
+├── schemas/
+│   ├── system/    # 系统 Schema
+│   └── agent/     # 智能体 Schema
 ├── core/          # 配置、安全、日志、中间件
 ├── db/            # 数据库会话
 └── agents/        # LangGraph 定义
+
 ```
 
 ### 前端结构（基于功能模块）

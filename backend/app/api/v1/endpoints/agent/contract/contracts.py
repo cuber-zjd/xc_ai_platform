@@ -2,9 +2,9 @@ from typing import List
 from fastapi import APIRouter, Depends, File, UploadFile, Form, HTTPException, status, BackgroundTasks
 from sqlmodel.ext.asyncio.session import AsyncSession
 from app.api.deps import get_db
-from app.schemas.contract import ContractRead, ContractCreate, ContractDetailRead
-from app.services.contract_service import contract_service
-from app.services.file_service import file_service
+from app.schemas.agent.contract.contract import ContractRead, ContractCreate, ContractDetailRead
+from app.services.agent.contract.contract_service import contract_service
+from app.services.system.file_service import file_service
 from app.models.contract.contract_model import Contract
 
 router = APIRouter()
@@ -78,7 +78,7 @@ async def get_editor_config(
     获取 OnlyOffice 编辑器配置（含 JWT 签名）
     前端使用此配置初始化 OnlyOffice 编辑器
     """
-    from app.services.onlyoffice_service import onlyoffice_service
+    from app.services.agent.contract.onlyoffice_service import onlyoffice_service
     from app.core.logger import logger
     
     contract = await contract_service.get_contract(db, contract_id)

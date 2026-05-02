@@ -2,7 +2,7 @@ import asyncio
 import logging
 from sqlmodel import SQLModel 
 from app.db.session import engine
-from app.services.hr_sync_service import HrSyncService
+from app.services.system.hr_sync_service import HrSyncService
 # Import models so SQLModel knows about them for create_all
 from app.models.system.sys_user import SysUser
 from app.models.system.sys_company import SysCompany

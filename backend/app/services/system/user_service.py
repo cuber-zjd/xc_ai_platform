@@ -2,7 +2,7 @@ from typing import Optional, List
 from sqlmodel import select, func, cast, String
 from sqlmodel.ext.asyncio.session import AsyncSession
 from app.models.system.sys_user import SysUser
-from app.schemas.user import UserCreate, UserUpdate
+from app.schemas.system.user import UserCreate, UserUpdate
 from app.core.security import get_password_hash
 from app.schemas.page import Page
 

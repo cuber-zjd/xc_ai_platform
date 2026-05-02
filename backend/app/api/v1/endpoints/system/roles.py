@@ -5,10 +5,10 @@ from app.api import deps
 from app.db.session import get_db
 from app.models.system.sys_user import SysUser
 from app.schemas.result import Result
-from app.schemas.role import RoleRead, RoleCreate, RoleUpdate, UserRoleAssign
-from app.schemas.user import UserRead
+from app.schemas.system.role import RoleRead, RoleCreate, RoleUpdate, UserRoleAssign
+from app.schemas.system.user import UserRead
 from app.schemas.page import Page
-from app.services.role_service import RoleService
+from app.services.system.role_service import RoleService
 
 router = APIRouter()
 
