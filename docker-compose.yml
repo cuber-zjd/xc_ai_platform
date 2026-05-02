@@ -210,6 +210,49 @@ services:
     networks:
       - ai_platform_net
 
+  langfuse-worker:
+    image: langfuse/langfuse-worker:3
+    container_name: ai_platform_langfuse_worker
+    depends_on:
+      db:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      langfuse:
+        condition: service_started
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://postgres:password@db:5432/langfuse
+      DATABASE_TRACING_ENABLED: "false"
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: "Xc2870508"
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      REDIS_CONNECTION_STRING: "redis://redis:6379"
+      LANGFUSE_INGESTION_QUEUE_TYPE: "redis"
+      LANGFUSE_S3_EVENT_UPLOAD_ENABLED: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: "langfuse-events"
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: "us-east-1"
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: "minioadmin"
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: "minioadmin"
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: "http://minio:9000"
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: "langfuse-events"
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: "us-east-1"
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: "minioadmin"
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: "minioadmin"
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: "http://minio:9000"
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+      SALT: auto_generated_salt_for_dev_mode
+      TELEMETRY_ENABLED: "false"
+    networks:
+      - ai_platform_net
+
   # ==========================================
   # 6. Document Server (OnlyOffice)
   # ==========================================
