@@ -65,5 +65,14 @@ class Settings(BaseSettings):
             path=self.POSTGRES_DB,
         )
 
+import os
 settings = Settings()
 settings.sqlalchemy_database_uri = str(settings.compute_database_url()) # Pydantic v2 fix
+
+if settings.LANGFUSE_PUBLIC_KEY:
+    os.environ["LANGFUSE_PUBLIC_KEY"] = settings.LANGFUSE_PUBLIC_KEY
+if settings.LANGFUSE_SECRET_KEY:
+    os.environ["LANGFUSE_SECRET_KEY"] = settings.LANGFUSE_SECRET_KEY
+if settings.LANGFUSE_HOST:
+    os.environ["LANGFUSE_HOST"] = settings.LANGFUSE_HOST
+os.environ["LANGFUSE_ENVIRONMENT"] = "default"

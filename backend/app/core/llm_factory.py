@@ -215,6 +215,7 @@ class LLMFactory:
                 os.environ["LANGFUSE_PUBLIC_KEY"] = settings.LANGFUSE_PUBLIC_KEY
                 os.environ["LANGFUSE_SECRET_KEY"] = settings.LANGFUSE_SECRET_KEY
                 os.environ["LANGFUSE_HOST"] = settings.LANGFUSE_HOST
+                os.environ["LANGFUSE_DEBUG"] = "True"
                 
                 handler = LangfuseCallbackHandler()
                 callbacks.append(handler)

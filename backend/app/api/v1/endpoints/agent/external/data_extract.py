@@ -5,6 +5,7 @@ from langchain_core.messages import SystemMessage, HumanMessage
 
 from app.api import deps
 from app.core.llm_factory import LLMFactory
+from langfuse import Langfuse, observe
 from app.schemas.agent.data_extract import DataExtractRequest, DataExtractResponse
 from app.schemas.result import Result
 
@@ -16,6 +17,7 @@ router = APIRouter()
     response_model=Result[DataExtractResponse],
     dependencies=[Depends(deps.verify_external_ai_sign)],
 )
+@observe(name="extract_data_with_text")
 async def extract_data_with_text(request: DataExtractRequest):
     """
     外部接口：通过自然语言提取结构化数据
@@ -88,6 +90,7 @@ async def extract_data_with_text(request: DataExtractRequest):
                 [None] * (len(request.requirements) - len(extracted_data))
             )
 
+        Langfuse().flush()
         return Result.success(data=DataExtractResponse(extracted_data=extracted_data))
 
     except Exception as e:
@@ -95,4 +98,5 @@ async def extract_data_with_text(request: DataExtractRequest):
         import traceback
 
         logger.error(traceback.format_exc())
+        Langfuse().flush()
         return Result.fail(msg=f"数据提取失败: {str(e)}")

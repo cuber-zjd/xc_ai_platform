@@ -174,8 +174,8 @@ services:
       CLICKHOUSE_CLUSTER_ENABLED: "false" # ← ⭐ 新增这一行，关闭集群模式
 
       # ✅ 新增：告诉 Langfuse 如何连接 Redis
-      REDIS_HOST: "redis" # 指向你 docker-compose 里的 redis 服务名
-      REDIS_PORT: "6379"
+      REDIS_CONNECTION_STRING: "redis://redis:6379"
+      LANGFUSE_ENABLE_WORKER: "true"
 
       LANGFUSE_INGESTION_QUEUE_TYPE: "redis"
 
