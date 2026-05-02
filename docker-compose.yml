@@ -138,6 +138,7 @@ services:
       - "9508:9009"
     volumes:
       - ./data/clickhouse:/var/lib/clickhouse
+      - ./docker/clickhouse/users.d:/etc/clickhouse-server/users.d:ro
     healthcheck:
       # ✅ 新增：确保 CH 准备好了
       test: [ "CMD", "wget", "--spider", "-q", "http://localhost:8123/ping" ]
@@ -164,7 +165,7 @@ services:
       CLICKHOUSE_URL: http://clickhouse:8123
       CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
       CLICKHOUSE_USER: default
-      CLICKHOUSE_PASSWORD: ""
+      CLICKHOUSE_PASSWORD: "xc2870508"
       NEXTAUTH_SECRET: auto_generated_secret_for_dev_mode
       SALT: auto_generated_salt_for_dev_mode
       NEXTAUTH_URL: http://localhost:9506
