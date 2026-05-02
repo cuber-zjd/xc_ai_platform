@@ -170,14 +170,28 @@ class UserRead(UserBase):
 - 使用 `contextvars` 传递用户信息和追踪 ID
 
 #### LLM 工厂模式
-禁止硬编码模型名称：
+禁止硬编码模型名称和 API Key。所有模型配置存储在 `sys_model` 数据库表中。
+LLMFactory 支持三种调用方式 + 熔断降级：
+
 ```python
-# ✅ 正确
-llm = LLMFactory.get_model(type="chat", capability="complex-reasoning")
+# ✅ 按能力标签（推荐）
+llm = await LLMFactory.get_model(capability="complex-reasoning")
+
+# ✅ 按模型名称
+llm = await LLMFactory.get_model_by_name("DeepSeek-V3")
+
+# ✅ 按模型级别（1=顶级, 2=高级, 3=标准, 4=轻量）
+llm = await LLMFactory.get_model_by_level(level=2)
+
+# ✅ 带熔断降级的安全调用（失败自动切换到备选模型）
+result = await LLMFactory.safe_invoke(messages, capability="general")
 
 # ❌ 错误
 llm = ChatOpenAI(model="gpt-4")
 ```
+
+熔断规则：连续失败 3 次触发熔断，60 秒后尝试恢复。
+降级策略：同级别其他模型 → 下级模型 → 全部失败则抛异常。
 
 ---
 

@@ -1,5 +1,5 @@
 from typing import Generator
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Header
 from fastapi.security import OAuth2PasswordBearer
 from jose import jwt, JWTError
 from pydantic import ValidationError
@@ -74,3 +74,13 @@ def get_current_active_superuser(
             status_code=status.HTTP_403_FORBIDDEN, detail="The user doesn't have enough privileges"
         )
     return current_user
+
+async def verify_external_ai_sign(
+    ai_sign: str = Header(..., alias="ai-sign", description="外部调用的认证密钥")
+) -> str:
+    if ai_sign not in settings.EXTERNAL_API_KEYS:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing ai-sign header",
+        )
+    return ai_sign

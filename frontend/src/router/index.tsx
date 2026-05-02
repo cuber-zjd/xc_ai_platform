@@ -15,6 +15,7 @@ const ContractDetailPage = lazy(() => import('@/features/contract/pages/Contract
 const ContractSidecarPage = lazy(() => import('@/features/contract/pages/ContractSidecarPage').then(module => ({ default: module.ContractSidecarPage })));
 const RolePage = lazy(() => import('@/pages/system/RolePage'));
 const AgentManagerPage = lazy(() => import('@/pages/system/agent/AgentManagerPage'));
+const ModelPage = lazy(() => import('@/pages/system/ModelPage'));
 
 // 普通用户页面 - 懒加载
 const ChatHomePage = lazy(() => import('@/pages/user-home/ChatHomePage'));
@@ -130,6 +131,14 @@ const router = createBrowserRouter([
                 element: (
                     <Suspense fallback={<PageLoader />}>
                         <RolePage />
+                    </Suspense>
+                )
+            },
+            {
+                path: 'models',
+                element: (
+                    <Suspense fallback={<PageLoader />}>
+                        <ModelPage />
                     </Suspense>
                 )
             },

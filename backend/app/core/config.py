@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "change_this_to_a_secure_random_string_in_production"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 8 # 8 days
     MCP_API_KEY: str = ""  # MCP 服务认证密钥，留空则开发环境放行
+    EXTERNAL_API_KEYS: List[str] = ["default_ai_sign_key_1", "default_ai_sign_key_2"] # 外部调用统一认证密钥
+
 
     model_config = SettingsConfigDict(case_sensitive=True, env_file=".env", extra="ignore")
 

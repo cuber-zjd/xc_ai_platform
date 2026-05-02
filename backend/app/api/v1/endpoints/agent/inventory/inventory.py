@@ -117,7 +117,7 @@ async def parse_natural_language(query: str) -> dict:
 只返回JSON，不要其他内容。"""
 
     try:
-        llm = LLMFactory.get_model(temperature=0.1, json_mode=True, streaming=False)
+        llm = await LLMFactory.get_model(temperature=0.1, json_mode=True, streaming=False)
         response = await llm.ainvoke(prompt)
         content = response.content.strip()
         

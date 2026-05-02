@@ -149,7 +149,7 @@ async def llm_audit_node(state: ReviewState) -> Dict:
     Uses LLM to find subtle risks with structured output.
     """
     logger.info("LLM Audit Node")
-    llm = LLMFactory.get_model(temperature=0.1, json_mode=True)
+    llm = await LLMFactory.get_model(temperature=0.1, json_mode=True)
     
     prompt = f"""你是一名资深法务，请审查以下合同文本并找出风险点。
 

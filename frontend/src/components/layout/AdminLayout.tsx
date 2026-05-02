@@ -10,6 +10,7 @@ import {
     X,
     Bot,
     Shield,
+    BrainCircuit,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuthStore } from '@/store/useAuthStore';
@@ -30,6 +31,7 @@ export default function AdminLayout() {
         { label: '仪表盘', icon: LayoutDashboard, path: '/admin/dashboard' },
         { label: '用户管理', icon: Users, path: '/admin/users' },
         { label: '智能体配置', icon: Bot, path: '/admin/agents' },
+        { label: '模型管理', icon: BrainCircuit, path: '/admin/models' },
         { label: '权限管理', icon: Shield, path: '/admin/permissions' },
         { label: '系统设置', icon: Settings, path: '/admin/settings' },
     ];

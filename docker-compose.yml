@@ -148,7 +148,7 @@ services:
       - ai_platform_net
 
   langfuse:
-    image: langfuse/langfuse:2
+    image: langfuse/langfuse:3
     container_name: ai_platform_langfuse
     depends_on:
       db:
