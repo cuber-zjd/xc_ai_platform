@@ -163,6 +163,8 @@ services:
       - DATABASE_TRACING_ENABLED=false
       - CLICKHOUSE_URL=http://clickhouse:8123
       - CLICKHOUSE_MIGRATION_URL=clickhouse://clickhouse:9000
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=
       - NEXTAUTH_SECRET=auto_generated_secret_for_dev_mode
       - SALT=auto_generated_salt_for_dev_mode
       - NEXTAUTH_URL=http://localhost:9506
