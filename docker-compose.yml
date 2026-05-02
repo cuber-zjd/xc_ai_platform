@@ -168,6 +168,8 @@ services:
       CLICKHOUSE_PASSWORD: "Xc2870508"
       CLICKHOUSE_CLUSTER_ENABLED: "false" # ← ⭐ 新增这一行，关闭集群模式
 
+      LANGFUSE_INGESTION_QUEUE_TYPE: "database"
+
       # 启用 S3 事件上传
       LANGFUSE_S3_EVENT_UPLOAD_ENABLED: "true"
 
