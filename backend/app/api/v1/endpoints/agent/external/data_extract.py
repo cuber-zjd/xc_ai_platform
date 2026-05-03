@@ -6,7 +6,10 @@ from langchain_core.messages import SystemMessage, HumanMessage
 from app.api import deps
 from app.core.llm_factory import LLMFactory
 from langfuse import Langfuse, observe
-from app.schemas.agent.data_extract import DataExtractRequest, DataExtractResponse
+from app.schemas.agent.external.data_extract import (
+    DataExtractRequest,
+    DataExtractResponse,
+)
 from app.schemas.result import Result
 
 router = APIRouter()
@@ -46,7 +49,10 @@ async def extract_data_with_text(request: DataExtractRequest):
 
         # 获取指定模型
         llm = await LLMFactory.get_model_by_name(
-            "doubao-seed-2-0-lite", temperature=0.0, max_tokens=4096
+            "doubao-seed-2-0-lite",
+            temperature=0.0,
+            max_tokens=4096,
+            enable_reasoning=request.enable_reasoning,
         )
         response = await llm.ainvoke(messages)
 

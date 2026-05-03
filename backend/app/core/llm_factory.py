@@ -209,21 +209,24 @@ class LLMFactory:
         callbacks = []
         if LangfuseCallbackHandler is not None:
             import os
+
             try:
                 # 新版 LangFuse CallbackHandler 不再直接接受 secret_key 和 host 参数
                 # 而是通过环境变量读取，因此我们在这里将其注入到环境变量中
                 os.environ["LANGFUSE_PUBLIC_KEY"] = settings.LANGFUSE_PUBLIC_KEY
                 os.environ["LANGFUSE_SECRET_KEY"] = settings.LANGFUSE_SECRET_KEY
                 os.environ["LANGFUSE_HOST"] = settings.LANGFUSE_HOST
-                os.environ["LANGFUSE_DEBUG"] = "True"
-                
+                os.environ["LANGFUSE_DEBUG"] = "False"
+
                 handler = LangfuseCallbackHandler()
                 callbacks.append(handler)
                 logger.info(f"LangFuse 追踪器已就绪 (Host: {settings.LANGFUSE_HOST})")
             except Exception as e:
                 logger.warning(f"LangFuse 初始化失败: {e}")
         else:
-            logger.warning("LangFuse CallbackHandler 未加载，请检查是否安装了 langfuse 库")
+            logger.warning(
+                "LangFuse CallbackHandler 未加载，请检查是否安装了 langfuse 库"
+            )
         return callbacks
 
     @classmethod
@@ -236,6 +239,7 @@ class LLMFactory:
         max_tokens: int | None = None,
         streaming: bool = True,
         json_mode: bool = False,
+        enable_reasoning: bool = False,
     ) -> BaseChatModel:
         """
         根据配置构建 LLM 实例
@@ -248,6 +252,17 @@ class LLMFactory:
         if json_mode:
             model_kwargs["response_format"] = {"type": "json_object"}
 
+        # 思考模式处理 (兼容 DeepSeek 和 火山引擎)
+        if "extra_body" not in model_kwargs:
+            model_kwargs["extra_body"] = {}
+
+        if enable_reasoning:
+            model_kwargs["extra_body"]["include_reasoning"] = True
+            model_kwargs["extra_body"]["thinking"] = {"type": "enabled"}
+        else:
+            # 显式关闭思考，提高响应速度 (火山引擎特有)
+            model_kwargs["extra_body"]["thinking"] = {"type": "disabled"}
+
         llm = ChatOpenAI(
             model=model_code,
             temperature=temperature,
@@ -255,6 +270,7 @@ class LLMFactory:
             base_url=base_url,
             max_tokens=max_tokens,
             streaming=streaming,
+            stream_usage=True, # 确保流式输出时返回 token 统计
             callbacks=callbacks if callbacks else None,
             model_kwargs=model_kwargs,
         )
@@ -292,6 +308,7 @@ class LLMFactory:
         max_tokens: int | None = None,
         streaming: bool = True,
         json_mode: bool = False,
+        enable_reasoning: bool = False,
     ) -> BaseChatModel:
         """
         按模型名称获取 LLM 实例
@@ -325,16 +342,21 @@ class LLMFactory:
                 raise ValueError(f"模型 '{model_name}' 不存在或已禁用")
             cls._config_cache.set(cache_key, model_config)
 
-        temp = temperature if temperature is not None else model_config.default_temperature
+        temp = (
+            temperature if temperature is not None else model_config.default_temperature
+        )
 
         return cls._build_llm(
             model_code=model_config.model_code,
             api_key=model_config.api_key,
             base_url=model_config.base_url,
             temperature=temp,
-            max_tokens=max_tokens if max_tokens is not None else model_config.max_tokens,
+            max_tokens=(
+                max_tokens if max_tokens is not None else model_config.max_tokens
+            ),
             streaming=streaming,
             json_mode=json_mode,
+            enable_reasoning=enable_reasoning,
         )
 
     @classmethod
@@ -345,6 +367,7 @@ class LLMFactory:
         temperature: float | None = None,
         streaming: bool = True,
         json_mode: bool = False,
+        enable_reasoning: bool = False,
     ) -> BaseChatModel:
         """
         按模型级别获取 LLM 实例（自动选择该级别优先级最高的可用模型）
@@ -380,6 +403,7 @@ class LLMFactory:
                     max_tokens=model_config.max_tokens,
                     streaming=streaming,
                     json_mode=json_mode,
+                    enable_reasoning=enable_reasoning,
                 )
 
         raise ValueError(f"级别 {level} 无可用模型（可能全部熔断）")
@@ -392,6 +416,7 @@ class LLMFactory:
         temperature: float | None = None,
         streaming: bool = True,
         json_mode: bool = False,
+        enable_reasoning: bool = False,
     ) -> BaseChatModel:
         """
         按能力标签获取 LLM 实例（推荐入口）
@@ -429,6 +454,7 @@ class LLMFactory:
                     max_tokens=model_config.max_tokens,
                     streaming=streaming,
                     json_mode=json_mode,
+                    enable_reasoning=enable_reasoning,
                 )
 
         # 没找到匹配能力的，降级到 general
@@ -440,6 +466,7 @@ class LLMFactory:
                 temperature=temperature,
                 streaming=streaming,
                 json_mode=json_mode,
+                enable_reasoning=enable_reasoning,
             )
 
         raise ValueError(f"无可用的 {model_type} 模型（capability={capability}）")
@@ -456,6 +483,7 @@ class LLMFactory:
         model_type: str = "chat",
         temperature: float | None = None,
         json_mode: bool = False,
+        enable_reasoning: bool = False,
         max_retries: int = 3,
     ) -> Any:
         """
@@ -523,6 +551,7 @@ class LLMFactory:
                     max_tokens=model_config.max_tokens,
                     streaming=False,  # safe_invoke 不使用流式
                     json_mode=json_mode,
+                    enable_reasoning=enable_reasoning,
                 )
 
                 logger.info(
@@ -549,8 +578,7 @@ class LLMFactory:
 
         # 全部失败
         error_msg = (
-            f"所有候选模型均调用失败，已尝试: {tried_names}。"
-            f"最后错误: {last_error}"
+            f"所有候选模型均调用失败，已尝试: {tried_names}。" f"最后错误: {last_error}"
         )
         logger.error(error_msg)
         raise RuntimeError(error_msg)
