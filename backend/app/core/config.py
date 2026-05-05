@@ -46,6 +46,17 @@ class Settings(BaseSettings):
     ONLYOFFICE_SERVER_URL: str = "http://192.168.14.44:9509"
     ONLYOFFICE_JWT_SECRET: str = "ai_platform_onlyoffice_secret"
 
+    # FineReport
+    FINEREPORT_PREVIEW_BASE_URL: str = ""
+    FR_AI_SQLSERVER_ENABLED: bool = False
+    FR_AI_SQLSERVER_HOST: str = ""
+    FR_AI_SQLSERVER_PORT: int = 1433
+    FR_AI_SQLSERVER_DATABASE: str = ""
+    FR_AI_SQLSERVER_USER: str = ""
+    FR_AI_SQLSERVER_PASSWORD: str = ""
+    FR_AI_SQLSERVER_QUERY_TIMEOUT_SECONDS: int = 10
+    FR_AI_SQLSERVER_MAX_ROWS: int = 20
+
     # Security
     SECRET_KEY: str = "change_this_to_a_secure_random_string_in_production"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 8 # 8 days

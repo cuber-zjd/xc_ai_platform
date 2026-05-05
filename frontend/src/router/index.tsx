@@ -21,8 +21,8 @@ const ModelPage = lazy(() => import('@/pages/system/ModelPage'));
 const ChatHomePage = lazy(() => import('@/pages/user-home/ChatHomePage'));
 const WorkbenchPage = lazy(() => import('@/pages/dashboard/WorkbenchPage'));
 const ToolboxPage = lazy(() => import('@/pages/user-home/ToolboxPage'));
-const WarehousePage = lazy(() => import('@/pages/agent_pages/warehouse/WarehousePage'));
 const AgentTestPage = lazy(() => import('@/pages/agent-test/AgentTestPage'));
+const FrAiReportChatPage = lazy(() => import('@/features/fr-ai-report/pages/FrAiReportChatPage').then(module => ({ default: module.FrAiReportChatPage })));
 
 // 加载占位符
 const PageLoader = () => (
@@ -111,6 +111,14 @@ const router = createBrowserRouter([
                 )
             },
             {
+                path: 'fr-ai-reports',
+                element: (
+                    <Suspense fallback={<PageLoader />}>
+                        <FrAiReportChatPage />
+                    </Suspense>
+                )
+            },
+            {
                 path: 'contract/:id',
                 element: (
                     <Suspense fallback={<PageLoader />}>
@@ -186,6 +194,14 @@ const router = createBrowserRouter([
                 element: (
                     <Suspense fallback={<PageLoader />}>
                         <ContractListPage />
+                    </Suspense>
+                )
+            },
+            {
+                path: 'fr-ai-reports',
+                element: (
+                    <Suspense fallback={<PageLoader />}>
+                        <FrAiReportChatPage />
                     </Suspense>
                 )
             },

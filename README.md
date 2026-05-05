@@ -23,7 +23,7 @@
 
 ## 🛠️ MCP 服务开发
 
-如需开发新的 MCP 服务，请参考 `backend_vibe_coding.md` 中的 **Section 7**。
+如需开发新的 MCP 服务，请参考 `docs/agent-rules/backend.md` 中的 MCP 规则章节。
 
 ### 快速开始
 1. 在 `app/mcp/servers/` 下创建 new 目录。

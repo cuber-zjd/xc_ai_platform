@@ -6,6 +6,7 @@ import {
     Briefcase,
     Wrench,
     FileCheck,
+    BarChart3,
     LogOut,
     Menu,
     Sparkles,
@@ -33,6 +34,7 @@ export default function UserLayout() {
         { label: '工作台', icon: Briefcase, path: '/workspace', preview: '查看今日统计与最近任务...' },
         { label: 'AI 工具箱', icon: Wrench, path: '/toolbox', preview: '各种效率工具集锦...' },
         { label: '合同智审', icon: FileCheck, path: '/contracts', preview: '智能合同审查与风险提示...' },
+        { label: '报表生成', icon: BarChart3, path: '/fr-ai-reports', preview: '对话生成 FineReport 报表并预览...' },
     ];
 
     const handleLogout = () => {

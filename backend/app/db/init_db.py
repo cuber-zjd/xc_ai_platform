@@ -5,6 +5,7 @@ from app.core.logger import logger
 # 导入所有模型确保注册到 SQLModel.metadata
 from app.models.system import sys_user, sys_dept, sys_company, sys_post, sys_model
 from app.models.contract import contract_model
+from app.models.fr_ai_report import report_task
 
 async def init_db():
     """

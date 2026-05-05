@@ -1,409 +1,99 @@
-12
+# AGENTS.md - AI 平台协作入口
 
+本文件是 AI 编程代理进入本仓库后的第一阅读入口。先读本文件，再按任务类型阅读 `docs/agent-rules/` 下的分册。
 
-# AGENTS.md - AI 平台开发者指南
+## 0. 必读规则
 
-本文件为在此代码库工作的 AI 编程代理提供开发规范。
+- 所有回复、思考摘要、任务清单、代码注释和文档均使用中文。
+- 前端页面可见文本必须使用中文。
+- 后端包管理器固定使用 `uv`，前端包管理器固定使用 `pnpm`。
+- 先读代码再行动，优先沿用项目已有目录、命名、接口和组件模式。
+- 非用户明确要求，不做无关重构，不回滚他人改动，不提交真实密钥。
+- 涉及架构、目录职责、启动方式、核心流程变化时，必须同步更新本文件和相关分册。
+- 设计或业务流程发生明显变化时，需要补充文档说明变更点、影响范围和验证方式。
 
----
+## 1. 按需阅读索引
 
-## 0. 通用规则
+| 任务类型 | 必读文件 |
+| --- | --- |
+| 理解项目结构、核心链路、关键入口 | `docs/agent-rules/project-overview.md` |
+| 修改后端 API、服务、模型、Agent、MCP | `docs/agent-rules/backend.md` |
+| 修改前端页面、组件、路由、状态、样式 | `docs/agent-rules/frontend.md` |
+| 修改数据库表、模型字段、数据初始化 | `docs/agent-rules/database.md` |
+| 修改启动、环境变量、Docker、部署、测试 | `docs/agent-rules/operations.md` |
+| 修改认证、权限、密钥、外部接口、文件上传 | `docs/agent-rules/security.md` |
+| 梳理或新增业务流程、Agent 流程 | `docs/agent-rules/business-flows.md` |
 
-- **语言要求**: 所有回复、思考过程及任务清单，均须使用中文
-- **前端文本**: 前端页面上显示的文字，必须全部使用中文
-- **包管理器**: 前端使用 `pnpm`，后端使用 `uv`
-- **架构更新**: 每次如果涉及项目架构的修改，要修改 agents.md 文件，使项目架构文件始终保持最新
-- **文档更新**: 设计重大改动，最好进行文档总结，修改了哪些内容
-- **代码注释**: 生成注释的时候，使用中文
+## 2. 项目速览
 
----
+- 项目类型：企业级 AI Agent 编排与管理平台。
+- 后端：FastAPI + SQLModel + LangGraph + MCP + LangFuse。
+- 前端：React 19 + Vite + TypeScript + Tailwind CSS v4 + Shadcn/ui。
+- 基础设施：PostgreSQL、Redis、MinIO、Milvus、ClickHouse、LangFuse、OnlyOffice。
+- 后端入口：`backend/app/main.py`。
+- 后端总路由：`backend/app/api/v1/router.py`。
+- 前端入口：`frontend/src/main.tsx`。
+- 前端路由：`frontend/src/router/index.tsx`。
+- 基础设施编排：`docker-compose.yml`。
 
-## 1. 项目概览
+## 3. 常用命令
 
-- **类型**: 全栈 AI 平台，FastAPI 后端 + React/TypeScript 前端
-- **后端**: FastAPI + LangGraph + SQLModel (Python 3.11+)
-- **前端**: React 19 + Vite + Tailwind CSS v4 + TypeScript
-- **数据库**: PostgreSQL + Redis + MinIO + Milvus
-- **可观测性**: LangFuse 链路追踪
+### 基础设施
 
----
-
-## 2. 构建命令
+```bash
+docker compose up -d
+docker compose ps
+```
 
 ### 后端
 
 ```bash
-# 安装依赖（必须使用 uv，不要用 pip）
 cd backend
 uv sync
-
-# 运行开发服务器
 uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-
-# 使用自定义导入运行（用于 IDE 调试）
-uv run python -c "import uvicorn; uvicorn.run('app.main:app', reload=True)"
-
-# 运行测试（如果配置了 pytest）
 uv run pytest
-
-# 运行单个测试
-uv run pytest path/to/test_file.py::test_function_name -v
-
-# 运行代码检查（如果安装了 ruff）
 uv run ruff check .
-uv run ruff check path/to/file.py --fix
 ```
 
 ### 前端
 
 ```bash
-# 安装依赖（必须使用 pnpm，不要用 npm）
 cd frontend
 pnpm install
-
-# 运行开发服务器
 pnpm dev
-
-# 构建生产版本
-pnpm build
-
-# 运行代码检查
 pnpm lint
-
-# 运行代码检查并自动修复
-pnpm lint --fix
+pnpm build
 ```
 
----
-
-## 3. 代码风格指南
-
-### 后端 (Python)
-
-#### 命名规范
-- **文件**: `snake_case` (如 `user_service.py`, `role_service.py`)
-- **类**: `PascalCase` (如 `LLMFactory`, `UserService`)
-- **变量/函数**: `snake_case` (如 `get_current_user`, `async def process_file`)
-- **常量**: `UPPER_CASE` (如 `DEFAULT_TIMEOUT`, `MAX_RETRIES`)
-
-#### 类型注解 (必须)
-所有函数必须包含类型注解：
-```python
-async def get_user_by_id(user_id: int) -> User | None:
-    ...
-
-def process_data(items: list[str], config: dict[str, Any]) -> dict[str, Any]:
-    ...
-```
-
-#### 导入顺序
-1. 标准库
-2. 第三方包
-3. 本地应用导入
-```python
-import asyncio
-from datetime import datetime
-from typing import Optional
-
-import loguru
-from fastapi import Depends
-from sqlmodel import Session, select
-
-from app.core.config import settings
-from app.models.system.sys_user import SysUser
-```
-
-#### 异步要求
-- 所有 I/O 操作必须使用 async/await
-- 禁止使用阻塞 I/O (`time.sleep`, `requests.get`) - 使用 `asyncio.sleep`, `httpx`
-- 通过 SQLModel 的数据库查询必须 await
-
-#### 错误处理
-- 使用 `BizException` 处理业务逻辑错误（而非原始 500 错误）
-- 全局异常处理器将所有错误格式化为统一响应：
-  ```python
-  {
-    "code": 200,      # 200=success, non-200=failure
-    "msg": "Success",
-    "data": {...}
-  }
-  ```
-- 使用 `Result.success()` 和 `Result.fail()` 辅助方法
-- 禁止向客户端暴露原始异常
-
-#### 日志
-- 使用 `loguru` - 禁止使用 `print()`
-- 所有关键路径必须记录日志
-- 日志中包含上下文信息 (user_id, request_id)
-
-#### API 响应模式
-```python
-from app.schemas.result import Result
-from app.schemas.page import Page
-
-# 单条数据
-return Result.success(data=user)
-
-# 分页列表
-return Result.success(data=Page(total=100, items=[...], page=1, size=10))
-```
-
-#### Schema 模式 (SQLModel)
-使用继承以保持 DRY：
-```python
-class UserBase(SQLModel):
-    email: str
-    is_active: bool = True
-
-class User(UserBase, table=True):
-    id: int | None = Field(default=None, primary_key=True)
-    hashed_password: str
-
-class UserRead(UserBase):
-    id: int
-```
-
-#### 可观测性
-- **无追踪，不合并**: 任何 Agent 流程或复杂 Chain 必须集成 LangFuse
-- 使用装饰器或中间件进行结构化日志记录
-- 请求 ID: 每个请求必须将 `X-Request-ID` 头注入日志
-- 使用 `contextvars` 传递用户信息和追踪 ID
-
-#### LLM 工厂模式
-禁止硬编码模型名称和 API Key。所有模型配置存储在 `sys_model` 数据库表中。
-LLMFactory 支持三种调用方式 + 熔断降级：
-
-```python
-# ✅ 按能力标签（推荐）
-llm = await LLMFactory.get_model(capability="complex-reasoning")
-
-# ✅ 按模型名称
-llm = await LLMFactory.get_model_by_name("DeepSeek-V3")
-
-# ✅ 按模型级别（1=顶级, 2=高级, 3=标准, 4=轻量）
-llm = await LLMFactory.get_model_by_level(level=2)
-
-# ✅ 带熔断降级的安全调用（失败自动切换到备选模型）
-result = await LLMFactory.safe_invoke(messages, capability="general")
-
-# ❌ 错误
-llm = ChatOpenAI(model="gpt-4")
-```
-
-熔断规则：连续失败 3 次触发熔断，60 秒后尝试恢复。
-降级策略：同级别其他模型 → 下级模型 → 全部失败则抛异常。
-
----
-
-### 前端 (TypeScript/React)
-
-#### 命名规范
-- **组件**: `PascalCase` (如 `UserProfile.tsx`, `RolePage.tsx`)
-- **Hooks**: `camelCase` (如 `useAuth.ts`, `useUserData.ts`)
-- **文件**: 工具类用 `kebab-case`，组件用 PascalCase
-
-#### 导入顺序 (必须)
-```typescript
-// 1. React / 标准库
-import { useState, useEffect } from "react";
-
-// 2. 第三方
-import { useQuery } from "@tanstack/react-query";
-import { cn } from "@/lib/utils";
-
-// 3. 组件
-import { Button } from "@/components/ui/button";
-import { UserAvatar } from "@/components/common/UserAvatar";
-
-// 4. 类型 / 工具函数
-import type { User } from "@/features/user/types";
-import { formatDate } from "@/lib/date";
-```
-
-#### 组件结构
-```tsx
-// 1. 导入
-import { useState } from "react";
-import { cn } from "@/lib/utils";
-
-// 2. 类型
-interface Props {
-  className?: string;
-  userId: number;
-}
-
-// 3. 组件
-export function UserProfile({ className, userId }: Props) {
-  // 4. Hooks
-  const { data, isLoading } = useQuery(...);
-  
-  // 5. 派生状态
-  const displayName = data?.name ?? "Unknown";
-  
-  // 6. Effects
-  useEffect(() => { ... }, [userId]);
-  
-  // 7. 渲染
-  if (isLoading) return <Skeleton />;
-  
-  return (
-    <div className={cn("base-style", className)}>
-      {displayName}
-    </div>
-  );
-}
-```
-
-#### 样式规范
-- 使用 Tailwind CSS v4 - 除全局动画外不要自定义 CSS 文件
-- 使用 `cn()` 工具函数处理条件类
-- 使用语义化 token: `bg-background`, `text-foreground`，不要用硬编码的十六进制颜色
-- 优先考虑暗色模式 - 所有组件必须在暗色模式下正常工作
-
-#### 视觉美学
-- **极致单色**: 使用 `Zinc` (50-950) 调色板。避免高饱和度颜色（红/蓝/绿），状态指示器除外
-- **玻璃拟态**: 侧边栏和主布局应使用圆角 (`rounded-3xl`)、多层阴影、半透明背景 (`bg-white/60 backdrop-blur-2xl`)
-- **App-in-App**: 内容区域应为带有阴影边界的嵌套容器，而非全视口白色块
-
-#### 动效与交互
-- **微交互**: 按钮、卡片、列表项必须有悬停反馈 (`hover:bg-accent transition-colors duration-200`)
-- **平滑过渡**: 路由切换、对话框打开、折叠动画必须平滑 - 禁止生硬切换
-
-#### UI 组件
-- 使用 Shadcn/ui 作为所有基础组件: `pnpm dlx shadcn@latest add avatar`
-- 在 `components/ui/` 中自定义 - 不要全局覆盖样式
-- 图标: 只使用 `lucide-react`（不要使用 material icons 或 font awesome）
-
-#### 状态管理
-- 全局状态（用户、主题）: 通过 `useAuthStore` 使用 `Zustand`
-- 服务端状态（API 数据）: `TanStack Query`
-- API 调用: 使用 `src/api/client.ts` (Axios 封装)
-
----
-
-## 4. 安全指南
-
-### 后端
-- 所有受保护端点使用 JWT 认证
-- 使用 `deps.get_current_user` 依赖注入
-- 密码必须使用 bcrypt 哈希
-- 密钥（API keys, SECRET_KEY）放在 `.env` 中 - 禁止硬编码
-- MCP 端点需要 `X-MCP-API-Key` 头
-
-### 前端
-- 使用 `useAuthStore` 管理 token
-- 使用 API 拦截器自动注入 token
-- 处理 401 错误（登出用户）
-- 受保护路由使用 `<ProtectedRoute>`
-
----
-
-## 5. 架构模式
-
-### 后端分层
-```
-app/
-├── api/v1/endpoints/
-│   ├── system/    # 系统管理（用户、角色、部门、登录等）
-│   └── agent/     # 智能体相关（通用管理及各具体智能体接口）
-├── services/
-│   ├── system/    # 系统业务逻辑
-│   └── agent/     # 智能体业务逻辑
-├── models/
-│   ├── system/    # 系统模型
-│   └── agent/     # 智能体模型
-├── schemas/
-│   ├── system/    # 系统 Schema
-│   └── agent/     # 智能体 Schema
-├── core/          # 配置、安全、日志、中间件
-├── db/            # 数据库会话
-└── agents/        # LangGraph 定义
-
-```
-
-### 前端结构（基于功能模块）
-```
-src/
-├── features/      # 复杂业务模块
-│   └── contract/
-│       ├── components/
-│       ├── hooks/
-│       └── types.ts
-├── components/ui/    # Shadcn UI 组件
-├── components/common/ # 全局业务组件
-└── pages/            # 路由入口
-```
-
----
-
-## 6. MCP 服务开发 (后端)
-
-MCP 服务位于 `app/mcp/servers/`：
-
-```
-app/mcp/servers/my_tool/
-├── server.py    # 工具 + BaseMCPServer 继承
-└── schema.py    # Pydantic 输入/输出 schema
-```
-
-规则：
-1. 继承自 `BaseMCPServer`
-2. 使用 `@register_tool` 装饰器
-3. 所有工具必须是异步的
-4. 捕获所有异常，返回友好错误
-5. 添加安全验证（API Key 验证）
-
----
-
-## 7. 数据库约定
-
-- Table names: `snake_case`, singular (如 `sys_user`, 不要用 `sys_users`)
-- 主键: `id`
-- 外键: `target_entity_id` (如 `user_id`)
-- 布尔值: `is_动词` (如 `is_active`, `is_deleted`)
-- 时间戳: `create_time`, `update_time`
-- 所有表必须有标准字段: `id`, `create_time`, `update_time`, `create_by`, `update_by`, `status`
-- 使用 SQLModel 继承模式
-- 通过 Alembic 进行迁移 - 禁止手动修改生产表
-
-#### 性能提示
-- **索引**: 在 WHERE 和 ORDER BY 使用的字段上添加索引
-- **JSONB**: 使用 PostgreSQL JSONB 存储半结构化数据（如 Agent 配置、扩展属性）- 不要把数据库当 MongoDB 用
-- **外键**: 显式定义外键约束以保证数据完整性
-
----
-
-## 8. 重要提示
-
-- **禁止使用 print()** - 使用 loguru
-- **禁止硬编码密钥** - 使用 `.env`
-- **I/O 操作必须使用 async/await**
-- **必须使用类型注解**
-- **生产代码禁止使用 console.log**
-- **统一响应格式** - 必须返回 `Result` 包装
-- **分页** - 所有列表端点返回 `Page[T]`
-- **追踪 agents** - 使用 LangFuse 进行 AI agent 调试
-
----
-
-## 9. 测试
-
-- 后端: pytest (当配置后)
-- 前端: ESLint 检查代码质量
-- 运行单个测试: `uv run pytest path/to/test.py::test_name`
-- 前端代码检查: `pnpm lint`
-
----
-
-## 10. 关键文件参考
-
-| 用途 | 文件 |
-|------|------|
-| 后端入口 | `backend/app/main.py` |
-| 配置 | `backend/app/core/config.py` |
-| 认证依赖 | `backend/app/api/deps.py` |
-| API 路由 | `backend/app/api/v1/router.py` |
-| 前端入口 | `frontend/src/main.tsx` |
-| API 客户端 | `frontend/src/api/client.ts` |
-| 认证状态 | `frontend/src/store/useAuthStore.ts` |
-| 路由 | `frontend/src/router/index.tsx` | |
+## 4. 工作流程
+
+1. 判断任务类型，并阅读本文件索引中对应分册。
+2. 使用 `rg` / `rg --files` 或等价方式定位相关文件。
+3. 先确认入口、调用链、数据结构，再实施修改。
+4. 修改后运行与影响范围匹配的检查命令。
+5. 最终回复说明改了什么、如何验证、是否存在风险或后续建议。
+
+## 5. 关键约束
+
+- 后端所有 I/O 操作优先使用 async/await。
+- API 返回优先使用统一 `Result` 包装，列表接口优先使用分页结构。
+- 生产代码禁止 `print()` 和 `console.log()`。
+- Agent 或复杂 Chain 必须考虑 LangFuse 可观测性。
+- LLM 模型名称、API Key、外部服务地址不得硬编码在业务代码中。
+- MCP 服务必须接入鉴权，并保持工具输入输出 Schema 清晰。
+- 前端 API 统一通过 `frontend/src/api/client.ts` 的 Axios 封装。
+- 服务端状态使用 TanStack Query，全局认证状态使用 Zustand。
+- UI 风格遵循项目现有的 Zinc 单色、玻璃拟态、App-in-App 容器和暗色模式兼容约定。
+
+## 6. 文档维护规则
+
+- 如果新增或移动顶层目录，更新 `docs/agent-rules/project-overview.md`。
+- 如果新增后端分层、Agent、MCP 或接口规范，更新 `docs/agent-rules/backend.md` 和 `docs/agent-rules/business-flows.md`。
+- 如果新增前端功能模块、路由或设计规范，更新 `docs/agent-rules/frontend.md`。
+- 如果新增基础设施、端口、环境变量或部署步骤，更新 `docs/agent-rules/operations.md`。
+- 如果新增敏感配置、鉴权方式、外部调用或上传下载行为，更新 `docs/agent-rules/security.md`。
+
+## 7. FineReport AI 报表生成约束
+
+- FineReport AI 报表生成必须遵循“AI 只生成 ReportDSL，CPT/XML 只能由确定性程序生成”的边界。
+- 生成文件只能写入 MinIO `webroot/APP/reportlets_ai_staging/`，不得直接写正式 reportlets。

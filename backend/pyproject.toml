@@ -28,6 +28,7 @@ dependencies = [
     "loguru>=0.7.2",
     "pyjwt>=2.10.1",
     "mammoth>=1.11.0",
+    "openpyxl>=3.1.5",
     "debugpy>=1.8.20",
     "langchain-core>=1.2.23",
     "mcp>=1.0.0",
