@@ -1,67 +1,85 @@
-import { useState, useRef } from 'react';
+import { useState } from 'react';
+import { MessageSquarePlus, SendHorizonal, Sparkles } from 'lucide-react';
+
 import { cn } from '@/lib/utils';
-import { Send } from 'lucide-react';
+
+const quickPrompts = [
+    '帮我总结今天的任务重点',
+    '起草一份项目周报',
+    '分析上传表格里的异常数据',
+    '帮我生成一份 FineReport 报表需求',
+];
 
 export default function ChatHomePage() {
     const [inputValue, setInputValue] = useState('');
-    const inputRef = useRef<HTMLInputElement>(null);
-
-    const handleSubmit = () => {
-        if (!inputValue.trim()) return;
-        console.log('发送消息:', inputValue);
-        setInputValue('');
-    };
-
-    const handleKeyDown = (e: React.KeyboardEvent) => {
-        if (e.key === 'Enter') {
-            e.preventDefault();
-            handleSubmit();
-        }
-    };
 
     return (
-        <div className="flex-1 flex flex-col items-center justify-center h-full w-full relative">
-            {/* The Glass Container from the user's reference image */}
-            <div className="w-full max-w-4xl aspect-[1.8/1] bg-white/50 backdrop-blur-[32px] border border-white/80 rounded-[2.5rem] shadow-[0_8px_40px_rgba(0,0,0,0.03),inset_0_1px_1px_rgba(255,255,255,1)] flex flex-col relative overflow-hidden ring-1 ring-black/[0.02]">
-                
-                {/* Inner highlight overlay for extra glassy light-refracting effect */}
-                <div className="absolute inset-0 bg-gradient-to-br from-white/60 via-transparent to-white/20 pointer-events-none" />
+        <div className="app-page flex min-h-full items-center">
+            <section className="mx-auto w-full max-w-5xl">
+                <div className="app-page-header overflow-hidden">
+                    <div className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
+                        <div className="flex flex-col justify-between">
+                            <div>
+                                <div className="app-kicker">智能对话中心</div>
+                                <h2 className="mt-4 text-[40px] font-black tracking-[-0.05em] text-[#24233b]">
+                                    在一个统一的输入框里开始今天的工作
+                                </h2>
+                                <p className="mt-3 max-w-2xl app-subtle-text">
+                                    这套首页也已经切换到新的工作台风格。你可以从这里发起问答、写作、数据分析或报表任务，后续再进入具体应用继续处理。
+                                </p>
+                            </div>
 
-                <div className="flex-1 flex items-center justify-center pb-12 relative z-10">
-                    <h1 className="text-4xl md:text-[3.5rem] font-medium tracking-tight text-neutral-800 drop-shadow-sm">
-                        The Nexus Chat.
-                    </h1>
-                </div>
+                            <div className="mt-8 rounded-[30px] border border-white/80 bg-white/78 p-3 shadow-[0_18px_36px_rgba(102,99,166,0.06)]">
+                                <div className="flex items-center gap-3 rounded-[24px] bg-[#11131d] px-4 py-4 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]">
+                                    <Sparkles className="h-5 w-5 text-[#b7a5ff]" />
+                                    <input
+                                        value={inputValue}
+                                        onChange={(event) => setInputValue(event.target.value)}
+                                        placeholder="输入你的问题、任务或创作请求"
+                                        className="h-8 flex-1 bg-transparent text-[15px] outline-none placeholder:text-white/45"
+                                    />
+                                    <button
+                                        type="button"
+                                        className={cn(
+                                            'flex h-11 w-11 items-center justify-center rounded-full transition-all duration-300',
+                                            inputValue.trim()
+                                                ? 'bg-linear-to-r from-[#6e5df7] to-[#b48fff] text-white shadow-[0_14px_32px_rgba(110,93,247,0.34)]'
+                                                : 'bg-white/8 text-white/45',
+                                        )}
+                                    >
+                                        <SendHorizonal className="h-4.5 w-4.5" />
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
 
-                {/* Input Area */}
-                <div className="absolute bottom-8 left-1/2 -translate-x-1/2 w-[85%] max-w-2xl z-20">
-                    <div className="bg-white/80 backdrop-blur-2xl border border-white/90 rounded-full p-1.5 flex items-center shadow-[0_4px_20px_rgba(0,0,0,0.05),inset_0_2px_4px_rgba(255,255,255,1)] transition-all focus-within:shadow-[0_8px_30px_rgba(0,0,0,0.08),inset_0_2px_4px_rgba(255,255,255,1)] ring-1 ring-black/[0.03]">
-                        <input
-                            ref={inputRef}
-                            type="text"
-                            value={inputValue}
-                            onChange={(e) => setInputValue(e.target.value)}
-                            onKeyDown={handleKeyDown}
-                            placeholder="Type your message..."
-                            className="flex-1 bg-transparent border-none outline-none px-6 text-[15px] placeholder:text-neutral-400 text-neutral-800 h-11 font-medium"
-                        />
-                        <button 
-                            onClick={handleSubmit}
-                            className={cn(
-                                "p-3 rounded-full transition-all duration-300 shrink-0 flex items-center justify-center",
-                                inputValue.trim() 
-                                    ? "bg-neutral-800 text-white shadow-lg hover:bg-black hover:scale-105" 
-                                    : "bg-transparent text-neutral-400 hover:text-neutral-600 hover:bg-black/5"
-                            )}
-                        >
-                            <Send className="h-5 w-5 ml-0.5" />
-                        </button>
+                        <div className="app-panel flex flex-col justify-between rounded-[32px] p-5">
+                            <div>
+                                <div className="flex items-center gap-2 text-sm font-black text-[#2c2a43]">
+                                    <MessageSquarePlus className="h-4 w-4 text-[#6d5df6]" />
+                                    快捷开始
+                                </div>
+                                <p className="mt-2 text-sm leading-6 text-[#7e8196]">
+                                    选择一个常见场景，快速进入新的对话上下文。
+                                </p>
+                            </div>
+
+                            <div className="mt-5 space-y-3">
+                                {quickPrompts.map((prompt) => (
+                                    <button
+                                        key={prompt}
+                                        type="button"
+                                        className="w-full rounded-[22px] border border-white/80 bg-white/82 px-4 py-4 text-left text-sm font-semibold text-[#43445a] shadow-[0_10px_24px_rgba(102,99,166,0.05)] transition-all duration-300 hover:-translate-y-0.5 hover:text-[#24233b]"
+                                        onClick={() => setInputValue(prompt)}
+                                    >
+                                        {prompt}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
                     </div>
                 </div>
-            </div>
-            
-            {/* Bottom decorative subtle glow to anchor the chat card */}
-            <div className="absolute top-[80%] left-1/2 -translate-x-1/2 w-3/4 h-32 bg-white/40 blur-[60px] pointer-events-none z-0" />
+            </section>
         </div>
     );
 }

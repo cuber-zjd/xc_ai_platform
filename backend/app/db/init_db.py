@@ -1,11 +1,12 @@
 from sqlmodel import SQLModel
+from sqlalchemy import text
 from app.db.session import engine
 from app.core.logger import logger
 
 # 导入所有模型确保注册到 SQLModel.metadata
 from app.models.system import sys_user, sys_dept, sys_company, sys_post, sys_model
 from app.models.contract import contract_model
-from app.models.fr_ai_report import report_task
+from app.models.agent.fr_report import report_task
 
 async def init_db():
     """
@@ -16,12 +17,23 @@ async def init_db():
     async with engine.begin() as conn:
         # await conn.run_sync(SQLModel.metadata.drop_all) # 危险：仅开发环境使用
         await conn.run_sync(SQLModel.metadata.create_all)
+        await _ensure_fr_ai_report_task_columns(conn)
     
     # 初始化种子数据
     await _seed_contract_rules()
     await _seed_model_configs()
 
     logger.info("数据库表创建完成。")
+
+
+async def _ensure_fr_ai_report_task_columns(conn):
+    """补齐 create_all 不会自动追加的历史表字段。"""
+    await conn.execute(
+        text(
+            "ALTER TABLE fr_ai_report_task "
+            "ADD COLUMN IF NOT EXISTS sql_validation JSONB"
+        )
+    )
 
 
 async def _seed_contract_rules():

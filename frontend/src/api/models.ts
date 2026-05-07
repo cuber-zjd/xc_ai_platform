@@ -38,6 +38,7 @@ export interface ModelCreatePayload {
     default_temperature?: number;
     priority?: number;
     is_enabled?: boolean;
+    status?: number;
     comment?: string;
 }
 
@@ -55,6 +56,7 @@ export interface ModelUpdatePayload {
     default_temperature?: number;
     priority?: number;
     is_enabled?: boolean;
+    status?: number;
     comment?: string;
 }
 

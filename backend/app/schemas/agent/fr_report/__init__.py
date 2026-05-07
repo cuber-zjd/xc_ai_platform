@@ -1,4 +1,4 @@
-from app.schemas.fr_ai_report.ai_report import (
+from app.schemas.agent.fr_report.ai_report import (
     CptPublishResponse,
     ExcelAnalysisResult,
     GenerateReportResponse,
@@ -6,7 +6,7 @@ from app.schemas.fr_ai_report.ai_report import (
     ReportTaskRead,
     SqlValidationResult,
 )
-from app.schemas.fr_ai_report.report_dsl import ReportDSL
+from app.schemas.agent.fr_report.report_dsl import ReportDSL
 
 __all__ = [
     "CptPublishResponse",

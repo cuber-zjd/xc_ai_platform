@@ -99,11 +99,22 @@ uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 ## 9. FineReport AI 报表生成
 
-- 接口入口：`backend/app/api/v1/endpoints/fr/ai_reports.py`，统一挂载到 `/api/v1/fr/ai-reports`。
-- 任务模型：`backend/app/models/fr_ai_report/report_task.py`，保存 Excel 分析、需求摘要、ReportDSL、SQL、建表 SQL、生成日志、MinIO staging 路径和预览校验结果。
-- Schema：`backend/app/schemas/fr_ai_report/report_dsl.py` 定义第一版 ReportDSL 和 JSON Schema，当前阶段只落地 `detail_table`、`group_table`、`pivot_table` 三类表格报表。
-- 服务分层：`backend/app/services/fr_ai_report/` 内按 `ExcelAnalyzer -> RequirementAgent -> DataModelAgent -> SqlAgent -> ReportDesignerAgent -> DslValidator -> CptGenerator -> MinIOStagingService -> PreviewValidator` 串联。
+- 历史任务第一版：`fr_ai_report_task` 增加 `conversation_id`、`parent_task_id`、`revision_no`，新增 `fr_ai_report_conversation` 和 `fr_ai_report_feedback`，用于任务恢复、多轮修订追踪和人工反馈沉淀。
+- 列表入口：`GET /api/v1/fr/ai-reports/tasks` 返回分页历史任务；反馈入口：`POST /api/v1/fr/ai-reports/tasks/{task_id}/feedback` 记录正向样本或待优化样本。
+- 自驱进化第一版只做经验数据沉淀，不允许自动改写全局 Prompt、业务规则或确定性 CPT 生成逻辑。
+- 接口入口：`backend/app/api/v1/endpoints/agent/fr_report.py`，统一挂载到 `/api/v1/fr/ai-reports`。
+- 当前需要同时维护“第一步 SQL 生成”“第二步 DSL 生成”与“全流程生成”三类接口，其中第一步接口为 `POST /api/v1/fr/ai-reports/steps/sql/generate`，用于只生成 SQL、执行只读校验并返回样例数据；第二步接口为 `POST /api/v1/fr/ai-reports/steps/dsl/generate`，基于同一任务的 SQL、需求摘要、Excel 分析和表结构生成 ReportDSL，不生成 CPT/XML，不调用 FineReport 预览。
+- 任务模型：`backend/app/models/agent/fr_report/report_task.py`，保存 Excel 分析、需求摘要、ReportDSL、SQL、建表 SQL、生成日志、MinIO staging 路径和预览校验结果。
+- Schema：`backend/app/schemas/agent/fr_report/report_dsl.py` 定义第一版 ReportDSL 和 JSON Schema，当前阶段只落地 `detail_table`、`group_table`、`pivot_table` 三类表格报表。
+- ReportDSL 需要通过 `reportMeta` 承载模板级语义，包括标题、单位、更新时间、均价、备注和筛选条件；这些信息不能只停留在 Excel `templateAnalysis` 或 `layout.designHints`。
+- 服务分层：`backend/app/services/agent/fr_report/` 内按 `ExcelAnalyzer -> RequirementAgent -> DataModelAgent -> SqlAgent -> ReportDesignerAgent -> DslValidator -> CptGenerator -> MinIOStagingService -> PreviewValidator` 串联。
+- 分步骤改造时，优先把阶段产物持久化到同一个任务表中，至少保留 `requirement_text`、`source_table_name`、Excel 分析、需求摘要、SQL、SQL 校验结果与日志，方便人工回看和后续步骤接力。
+- 第二步生成的 ReportDSL 继续写回同一条 `fr_ai_report_task.report_dsl`，前端预览直接基于 DSL 布局和 SQL 样例数据渲染，用于人工确认版式，不代表 FineReport 运行时预览结果。
+- 第二步接口可接收 `dsl_feedback` 做 DSL 版式重生成，只更新需求摘要中的 DSL 修订提示、ReportDSL 和日志，不重复生成 SQL；非标准表格结构优先落入 `layout.designHints.specialRows`，例如最新一天涨跌单行使用 `latest_change_row`。
 - Agent 实现：`RequirementAgent`、`DataModelAgent`、`SqlAgent`、`ReportDesignerAgent` 必须优先通过 `app.core.llm_factory.LLMFactory` 调用已配置大模型生成结构化 JSON；模型不可用或 JSON 校验失败时才使用规则兜底。
 - 表结构与 SQL 校验：用户只提供单表或多表表名时，`SqlServerQueryService` 可查询 SQL Server `INFORMATION_SCHEMA.COLUMNS` 获取字段结构并推断字段类型/角色；多表会生成 `tables`、字段来源和 `joinHints` 供 `SqlAgent` 生成 JOIN SQL。`SqlAgent` 生成 SQL 后由同一服务做只读预执行校验，只允许 `SELECT/WITH` 查询，禁止 DDL/DML/存储过程/多语句，参数使用安全默认值绑定，失败时允许 `SqlAgent` 基于错误修复一次。
+- SQL ReAct：`SqlReActAgent` 会读取 Excel 模板摘要、真实表结构和 SQL Server TOP 样例数据，生成 SQL 后立即执行只读校验；如果 SQL 不可执行会把错误和样例数据反馈给大模型继续修复，最多迭代 3 轮。对于 Excel 中城市、市场、区域等横向表头，优先通过 ReportDSL/FineReport 横向扩展表达，SQL 保持 `record_date/market/price/change_amt` 等长表结果，不因模板横向表头强制生成大量 `CASE WHEN`、`PIVOT` 或聚合宽表列。
+- Excel 模板分析：`ExcelAnalyzer` 需要保留标题、单位、筛选区、更新时间、备注说明、年份/月日格式、涨跌规则和横向扩展候选信息，供 SQL Agent 与 ReportDesignerAgent 共同判断“数据集长表 + 设计器横向扩展”的方案。
+- Excel 标题识别不能简单默认第一行，应结合表格区域上方文本、合并单元格、标题关键词和全报表语义打分判断；筛选条件、单位、更新时间、备注等辅助文本不能误判为标题。
 - 关键边界：AI/Agent 只能输出结构化 ReportDSL、需求摘要、逻辑表结构和 SQL；FineReport `.cpt`/XML 必须由 `CptGenerator` 确定性生成。
 - 存储边界：生成产物只能写入 MinIO `webroot/APP/reportlets_ai_staging/{task_id}/`，不得直接写正式 reportlets。

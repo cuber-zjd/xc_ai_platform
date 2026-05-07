@@ -19,6 +19,7 @@ export interface ExcelSheetAnalysis {
     rowCount: number;
     fields: ExcelFieldAnalysis[];
     sampleRows: Record<string, unknown>[];
+    templateAnalysis?: Record<string, unknown> | null;
 }
 
 export interface ExcelAnalysisResult {
@@ -58,6 +59,7 @@ export interface ReportDslColumn {
     aggregation: string;
     format?: string | null;
     group: boolean;
+    expandDirection?: 'down' | 'right' | 'none';
 }
 
 export interface ReportDslDataset {
@@ -66,10 +68,21 @@ export interface ReportDslDataset {
     fields: ReportDslField[];
 }
 
+export interface ReportDslMeta {
+    title?: string | null;
+    subtitle?: string | null;
+    unit?: string | null;
+    updateText?: string | null;
+    averageLabel?: string | null;
+    remarks: string[];
+    filters: Array<Record<string, unknown>>;
+}
+
 export interface ReportDsl {
     schemaVersion: string;
     reportName: string;
     reportType: ReportType;
+    reportMeta?: ReportDslMeta;
     parameters: ReportDslParameter[];
     dataModel: {
         tableName: string;
@@ -86,6 +99,14 @@ export interface ReportDsl {
         rowGroupFields: string[];
         columnGroupFields: string[];
         valueFields: string[];
+        horizontalExpansion?: {
+            enabled: boolean;
+            dimensionField?: string | null;
+            valueFields: string[];
+            direction: 'right';
+            sourceLabels: string[];
+        } | null;
+        designHints?: Record<string, unknown>;
         chartType?: string | null;
     };
     rules: {
@@ -98,12 +119,51 @@ export interface ReportDsl {
 
 export interface GenerateReportResponse {
     taskId: string;
+    conversationId?: string | null;
     status: string;
     reportName: string;
     reportType: ReportType | string;
     previewUrl?: string | null;
     warnings: string[];
     errors: string[];
+}
+
+export interface GenerateSqlStepResponse {
+    taskId: string;
+    conversationId?: string | null;
+    parentTaskId?: string | null;
+    revisionNo: number;
+    status: string;
+    reportName: string;
+    reportType: ReportType | string;
+    dataSourceStatus?: string | null;
+    sourceTableName?: string | null;
+    sourceFileName?: string | null;
+    requirementText?: string | null;
+    requirementSummary?: Record<string, unknown> | null;
+    excelAnalysis?: ExcelAnalysisResult | null;
+    querySql?: string | null;
+    sqlValidation?: SqlValidationResult | null;
+    warnings: string[];
+    errors: string[];
+    createTime: string;
+    updateTime: string;
+}
+
+export interface GenerateDslStepResponse {
+    taskId: string;
+    conversationId?: string | null;
+    parentTaskId?: string | null;
+    revisionNo: number;
+    status: string;
+    reportName: string;
+    reportType: ReportType | string;
+    reportDsl?: ReportDsl | null;
+    sqlValidation?: SqlValidationResult | null;
+    warnings: string[];
+    errors: string[];
+    createTime: string;
+    updateTime: string;
 }
 
 export interface PreviewValidationResult {
@@ -134,16 +194,23 @@ export interface CptPublishResponse {
 
 export interface ReportTaskRead {
     taskId: string;
+    conversationId?: string | null;
+    parentTaskId?: string | null;
+    revisionNo: number;
     status: string;
     reportName: string;
     reportType?: string | null;
     dataSourceStatus?: string | null;
+    sourceTableName?: string | null;
+    sourceFileName?: string | null;
+    requirementText?: string | null;
     cptObjectPath?: string | null;
     dslObjectPath?: string | null;
     previewUrl?: string | null;
     errors: string[];
     warnings: string[];
     excelAnalysis?: ExcelAnalysisResult | null;
+    querySql?: string | null;
     reportDsl?: ReportDsl | null;
     sqlValidation?: SqlValidationResult | null;
     requirementSummary?: Record<string, unknown> | null;
@@ -157,4 +224,50 @@ export interface GenerateReportPayload {
     sourceTableName?: string;
     file?: File | null;
     tableSchemaJson?: string;
+    conversationId?: string | null;
+}
+
+export interface PageResult<T> {
+    total: number;
+    items: T[];
+    page: number;
+    size: number;
+}
+
+export interface ReportTaskListItem {
+    taskId: string;
+    conversationId?: string | null;
+    parentTaskId?: string | null;
+    revisionNo: number;
+    status: string;
+    reportName: string;
+    reportType?: string | null;
+    dataSourceStatus?: string | null;
+    sourceTableName?: string | null;
+    sourceFileName?: string | null;
+    requirementText?: string | null;
+    previewUrl?: string | null;
+    errorCount: number;
+    warningCount: number;
+    createTime: string;
+    updateTime: string;
+}
+
+export interface FrAiReportFeedbackPayload {
+    feedbackType?: string;
+    content: string;
+    payload?: Record<string, unknown> | null;
+    isPositive?: boolean | null;
+}
+
+export interface FrAiReportFeedbackRead {
+    feedbackId: string;
+    conversationId?: string | null;
+    taskId: string;
+    feedbackType: string;
+    content: string;
+    payload?: Record<string, unknown> | null;
+    isPositive?: boolean | null;
+    createTime: string;
+    updateTime: string;
 }

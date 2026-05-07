@@ -6,8 +6,8 @@ from typing import Any
 
 from app.core.config import settings
 from app.core.logger import logger
-from app.schemas.fr_ai_report.ai_report import SqlValidationResult
-from app.schemas.fr_ai_report.report_dsl import FieldType, ParameterDSL
+from app.schemas.agent.fr_report.ai_report import SqlValidationResult
+from app.schemas.agent.fr_report.report_dsl import FieldType, ParameterDSL
 
 
 READONLY_SQL_PATTERN = re.compile(r"^\s*(select|with)\b", re.IGNORECASE | re.DOTALL)
@@ -67,6 +67,19 @@ class SqlServerQueryService:
         result.columns = columns
         result.sampleRows = rows
         result.rowCount = len(rows)
+        if not rows:
+            result.success = False
+            result.errors.append(
+                "SQL 执行成功但返回 0 行，请检查日期、市场、产品、等级、包装等筛选条件是否过窄或与样例数据不一致"
+            )
+            fallback_rows, fallback_columns, fallback_warning = await self._fallback_preview_rows(sql)
+            if fallback_rows:
+                result.columns = fallback_columns
+                result.sampleRows = fallback_rows
+                result.rowCount = len(fallback_rows)
+                result.warnings.append(fallback_warning)
+            else:
+                result.warnings.append("未能构造可用的兜底样例预览 SQL")
         if len(rows) >= settings.FR_AI_SQLSERVER_MAX_ROWS:
             result.warnings.append(f"仅返回前 {settings.FR_AI_SQLSERVER_MAX_ROWS} 行样例用于校验")
         return result
@@ -166,6 +179,26 @@ class SqlServerQueryService:
             warnings.append("未识别到明确 JOIN 字段，请在需求中说明表关联关系，例如：订单.customer_id = 客户.id")
         return relation, warnings, errors
 
+    async def sample_data_model(self, data_model: Any, row_count: int = 5) -> dict[str, list[dict[str, Any]]]:
+        if not settings.FR_AI_SQLSERVER_ENABLED or not self.is_configured:
+            return {}
+        tables = data_model.tables or [{"tableName": data_model.tableName}]
+        samples: dict[str, list[dict[str, Any]]] = {}
+        for table in tables[:8]:
+            table_name = str(table.get("tableName"))
+            if table_name == "__join__":
+                continue
+            try:
+                self._parse_table_name(table_name)
+                rows, _columns = await asyncio.to_thread(
+                    self._execute_sample_query,
+                    f"SELECT TOP {max(1, min(row_count, 20))} * FROM {table_name}",
+                )
+                samples[table_name] = rows
+            except Exception as exc:
+                logger.warning(f"SQL Server 样例数据查询失败 {table_name}：{exc}")
+        return samples
+
     def _build_aliases(self, schemas: list[dict[str, Any]]) -> dict[str, str]:
         aliases: dict[str, str] = {}
         used: set[str] = set()
@@ -219,6 +252,45 @@ class SqlServerQueryService:
             errors.append("SQL 校验不允许多语句执行")
         return errors
 
+    async def _fallback_preview_rows(self, sql: str) -> tuple[list[dict[str, Any]], list[str], str]:
+        preview_sql = self._build_unfiltered_preview_sql(sql)
+        if not preview_sql:
+            return [], [], ""
+        safety_errors = self._validate_readonly_sql(preview_sql)
+        if safety_errors:
+            return [], [], ""
+        try:
+            rows, columns = await asyncio.to_thread(self._execute_sample_query, preview_sql)
+        except Exception as exc:
+            logger.warning(f"FineReport AI SQL 空结果兜底预览失败：{exc}")
+            return [], [], ""
+        if not rows:
+            return [], [], ""
+        return (
+            rows,
+            columns,
+            "原 SQL 执行成功但返回 0 行，已临时使用去除筛选条件后的安全样例 SQL 展示数据预览；请检查日期、市场、产品等筛选条件是否过窄。",
+        )
+
+    def _build_unfiltered_preview_sql(self, sql: str) -> str | None:
+        normalized = sql.strip().rstrip(";")
+        if re.search(r"\b(group\s+by|having|union|intersect|except|distinct)\b", normalized, re.IGNORECASE):
+            return None
+        match = re.match(
+            r"^\s*select\s+(?P<select>.*?)\s+from\s+(?P<from>.+?)(?:\s+where\s+.+?)?(?:\s+order\s+by\s+.+?)?$",
+            normalized,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if not match:
+            return None
+        select_clause = match.group("select").strip()
+        from_clause = match.group("from").strip()
+        from_clause = re.split(r"\s+where\s+|\s+order\s+by\s+", from_clause, flags=re.IGNORECASE)[0].strip()
+        if not select_clause or not from_clause:
+            return None
+        select_clause = re.sub(r"^\s*top\s+\d+\s+", "", select_clause, flags=re.IGNORECASE)
+        return f"SELECT TOP {settings.FR_AI_SQLSERVER_MAX_ROWS}\n    {select_clause}\nFROM {from_clause}"
+
     def _parse_table_name(self, table_name: str) -> tuple[str | None, str]:
         cleaned = table_name.strip().replace("[", "").replace("]", "")
         if not cleaned:
@@ -241,25 +313,23 @@ class SqlServerQueryService:
             cursor = connection.cursor()
             if schema_name:
                 cursor.execute(
-                    """
+                    f"""
                     SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, DATA_TYPE, IS_NULLABLE, ORDINAL_POSITION
                     FROM INFORMATION_SCHEMA.COLUMNS
-                    WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s
+                    WHERE TABLE_SCHEMA = '{schema_name}' AND TABLE_NAME = '{table_name}'
                     ORDER BY ORDINAL_POSITION
-                    """,
-                    (schema_name, table_name),
+                    """
                 )
             else:
                 cursor.execute(
-                    """
+                    f"""
                     SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, DATA_TYPE, IS_NULLABLE, ORDINAL_POSITION
                     FROM INFORMATION_SCHEMA.COLUMNS
-                    WHERE TABLE_NAME = %s
+                    WHERE TABLE_NAME = '{table_name}'
                     ORDER BY TABLE_SCHEMA, ORDINAL_POSITION
-                    """,
-                    (table_name,),
+                    """
                 )
-            return list(cursor.fetchall())
+            return self._rows_to_dicts(cursor)
         finally:
             connection.close()
 
@@ -296,6 +366,14 @@ class SqlServerQueryService:
     ) -> str:
         parameter_map = {parameter.name: parameter for parameter in parameters}
 
+        def replace_quoted(match: re.Match[str]) -> str:
+            name = match.group(1)
+            parameter = parameter_map.get(name)
+            if parameter is None:
+                result.errors.append(f"SQL 引用了未定义参数：{name}")
+                return "NULL"
+            return self._default_literal(parameter)
+
         def replace(match: re.Match[str]) -> str:
             name = match.group(1)
             parameter = parameter_map.get(name)
@@ -304,7 +382,8 @@ class SqlServerQueryService:
                 return "NULL"
             return self._default_literal(parameter)
 
-        executable_sql = PARAMETER_PATTERN.sub(replace, sql)
+        executable_sql = re.sub(r"'\$\{([A-Za-z_][A-Za-z0-9_]*)\}'", replace_quoted, sql)
+        executable_sql = PARAMETER_PATTERN.sub(replace, executable_sql)
         unresolved = PARAMETER_PATTERN.findall(executable_sql)
         if unresolved:
             result.errors.append(f"SQL 参数未完全绑定：{', '.join(sorted(set(unresolved)))}")
@@ -340,13 +419,37 @@ class SqlServerQueryService:
         try:
             cursor = connection.cursor()
             cursor.execute(sql)
-            rows = cursor.fetchmany(settings.FR_AI_SQLSERVER_MAX_ROWS)
             columns = [item[0] for item in (cursor.description or [])]
-            return [self._normalize_row(row) for row in rows], columns
+            rows = cursor.fetchmany(settings.FR_AI_SQLSERVER_MAX_ROWS)
+            return [self._normalize_row(row) for row in self._rows_to_dicts(cursor, rows)], columns
         finally:
             connection.close()
 
     def _connect(self):
+        try:
+            return self._connect_pyodbc()
+        except Exception as pyodbc_exc:
+            logger.warning(f"pyodbc 连接 SQL Server 失败，尝试 pymssql：{pyodbc_exc}")
+            return self._connect_pymssql()
+
+    def _connect_pyodbc(self):
+        try:
+            import pyodbc
+        except ImportError as exc:
+            raise RuntimeError("未安装 pyodbc，无法使用 ODBC 连接 SQL Server") from exc
+
+        conn_str = (
+            f"DRIVER={{{settings.FR_AI_SQLSERVER_ODBC_DRIVER}}};"
+            f"SERVER={settings.FR_AI_SQLSERVER_HOST},{settings.FR_AI_SQLSERVER_PORT};"
+            f"DATABASE={settings.FR_AI_SQLSERVER_DATABASE};"
+            f"UID={settings.FR_AI_SQLSERVER_USER};"
+            f"PWD={settings.FR_AI_SQLSERVER_PASSWORD};"
+            "TrustServerCertificate=yes;"
+            "Encrypt=no;"
+        )
+        return pyodbc.connect(conn_str, timeout=settings.FR_AI_SQLSERVER_QUERY_TIMEOUT_SECONDS)
+
+    def _connect_pymssql(self):
         try:
             import pymssql
         except ImportError as exc:
@@ -362,6 +465,17 @@ class SqlServerQueryService:
             timeout=settings.FR_AI_SQLSERVER_QUERY_TIMEOUT_SECONDS,
             as_dict=True,
         )
+
+    def _rows_to_dicts(self, cursor, rows=None) -> list[dict[str, Any]]:
+        rows = cursor.fetchall() if rows is None else rows
+        columns = [item[0] for item in (cursor.description or [])]
+        normalized_rows: list[dict[str, Any]] = []
+        for row in rows:
+            if isinstance(row, dict):
+                normalized_rows.append(row)
+            else:
+                normalized_rows.append(dict(zip(columns, row, strict=False)))
+        return normalized_rows
 
     def _normalize_row(self, row: dict[str, Any]) -> dict[str, Any]:
         normalized: dict[str, Any] = {}

@@ -1,19 +1,19 @@
-import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
-import { 
-    Search, 
-    LayoutGrid, 
-    ChevronRight, 
-    Zap,
+import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import {
+    ArrowRight,
     Bot,
-    Sparkles,
     BrainCircuit,
     Cpu,
+    LayoutGrid,
     MessagesSquare,
-    BookOpen
-} from "lucide-react";
-import { cn } from "@/lib/utils";
-import { apiClient } from "@/api/client";
+    Search,
+    Sparkles,
+} from 'lucide-react';
+
+import { Input } from '@/components/ui/input';
+import { cn } from '@/lib/utils';
+import { apiClient } from '@/api/client';
 
 interface Agent {
     id: number;
@@ -30,159 +30,141 @@ interface Group {
     agents: Agent[];
 }
 
-const ICON_MAP: Record<string, any> = {
+const ICON_MAP: Record<string, typeof Bot> = {
     Bot,
     Sparkles,
     BrainCircuit,
     Cpu,
     MessagesSquare,
-    BookOpen,
-    Zap
 };
 
 export default function WorkbenchPage() {
     const [groups, setGroups] = useState<Group[]>([]);
     const [loading, setLoading] = useState(true);
-    const [searchQuery, setSearchQuery] = useState("");
+    const [searchQuery, setSearchQuery] = useState('');
     const navigate = useNavigate();
 
     useEffect(() => {
-        fetchWorkbench();
+        void fetchWorkbench();
     }, []);
 
     const fetchWorkbench = async () => {
         try {
             setLoading(true);
-            const data: any = await apiClient.get("/agents/workbench");
+            const data: Group[] = await apiClient.get('/agents/workbench');
             setGroups(data || []);
-        } catch (error) {
-            console.error("Failed to fetch workbench", error);
         } finally {
             setLoading(false);
         }
     };
 
-    const filteredGroups = groups.map((group: Group) => ({
-        ...group,
-        agents: group.agents.filter((agent: Agent) => 
-            agent.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-            (agent.description && agent.description.toLowerCase().includes(searchQuery.toLowerCase()))
-        )
-    })).filter((group: Group) => group.agents.length > 0);
-
-    if (loading) {
-        return (
-            <div className="flex h-[60vh] items-center justify-center">
-                <div className="flex flex-col items-center gap-4">
-                    <div className="h-12 w-12 animate-spin rounded-full border-4 border-zinc-200 border-t-zinc-800" />
-                    <p className="text-zinc-500 animate-pulse font-medium">加载智能体工作台...</p>
-                </div>
-            </div>
-        );
-    }
+    const filteredGroups = groups
+        .map((group) => ({
+            ...group,
+            agents: group.agents.filter((agent) => {
+                const keyword = searchQuery.toLowerCase();
+                return (
+                    agent.name.toLowerCase().includes(keyword) ||
+                    (agent.description ?? '').toLowerCase().includes(keyword)
+                );
+            }),
+        }))
+        .filter((group) => group.agents.length > 0);
 
     return (
-        <div className="max-w-7xl mx-auto space-y-12 pb-20 p-4 lg:p-8">
-            <div className="flex flex-col md:flex-row md:items-end justify-between gap-6 pb-2 border-b border-zinc-200/50">
-                <div className="space-y-2">
-                    <div className="flex items-center gap-2 text-zinc-500 text-sm font-medium tracking-wider uppercase">
-                        <LayoutGrid size={16} />
-                        <span>工作台</span>
+        <div className="app-page">
+            <section className="app-page-header">
+                <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+                    <div>
+                        <div className="app-kicker">智能体工作台</div>
+                        <h2 className="mt-4 text-[34px] font-black tracking-[-0.04em] text-[#24233b]">
+                            我的智能体入口
+                        </h2>
+                        <p className="mt-2 max-w-2xl app-subtle-text">
+                            所有已授权的智能体与业务应用会在这里集中呈现。你可以按分组快速进入，也可以通过搜索直接定位目标能力。
+                        </p>
                     </div>
-                    <h1 className="text-4xl font-extrabold tracking-tight text-zinc-900 dark:text-zinc-100 italic">
-                        我的<span className="text-zinc-500">智能体</span>
-                    </h1>
-                    <p className="text-zinc-500 dark:text-zinc-400 max-w-md">
-                        在这里访问您所有的 AI 助手和自动化流程。
+                    <div className="w-full max-w-sm">
+                        <div className="relative">
+                            <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[#9699af]" />
+                            <Input
+                                value={searchQuery}
+                                onChange={(event) => setSearchQuery(event.target.value)}
+                                placeholder="搜索智能体、场景或描述"
+                                className="pl-11"
+                            />
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            {loading ? (
+                <div className="app-panel flex h-[320px] items-center justify-center">
+                    <div className="flex flex-col items-center gap-4 text-[#7c7f96]">
+                        <div className="h-12 w-12 animate-spin rounded-full border-4 border-[#d7d9ef] border-t-[#6d5df6]" />
+                        <p className="text-sm font-semibold">正在加载你的智能体工作台...</p>
+                    </div>
+                </div>
+            ) : filteredGroups.length === 0 ? (
+                <div className="app-panel flex h-[320px] flex-col items-center justify-center text-center">
+                    <Sparkles className="h-12 w-12 text-[#c2c5dc]" />
+                    <h3 className="mt-4 text-xl font-black text-[#2a2942]">没有找到匹配结果</h3>
+                    <p className="mt-2 max-w-md text-sm text-[#8a8da4]">
+                        可以试试更短的关键词，或者检查当前账号是否已经被授予对应智能体访问权限。
                     </p>
                 </div>
-
-                <div className="relative group w-full md:w-80">
-                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-zinc-400 group-focus-within:text-zinc-800 transition-colors">
-                        <Search size={18} />
-                    </div>
-                    <input
-                        type="search"
-                        placeholder="搜索智能体..."
-                        className="w-full bg-white/50 backdrop-blur-xl border border-zinc-200 rounded-2xl py-3 pl-10 pr-4 focus:outline-none focus:ring-2 focus:ring-zinc-800/20 focus:border-zinc-300 transition-all shadow-sm"
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                    />
-                </div>
-            </div>
-
-            <div className="space-y-16">
-                {filteredGroups.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center py-20 text-zinc-400 space-y-4">
-                        <Sparkles size={48} className="opacity-20" />
-                        <p className="text-lg">未找到匹配的智能体</p>
-                    </div>
-                ) : (
-                    filteredGroups.map((group) => (
-                        <section key={group.id} className="space-y-6">
+            ) : (
+                <div className="space-y-6">
+                    {filteredGroups.map((group) => (
+                        <section key={group.id} className="app-panel px-6 py-6">
                             <div className="flex items-center gap-3">
-                                <h2 className="text-xl font-bold text-zinc-800 dark:text-zinc-200">
-                                    {group.name}
-                                </h2>
-                                <div className="h-px flex-1 bg-zinc-200/50" />
-                                <span className="text-xs font-mono bg-zinc-100 dark:bg-zinc-800 px-2 py-1 rounded-md text-zinc-500">
-                                    {group.agents.length}
-                                </span>
+                                <div className="flex h-10 w-10 items-center justify-center rounded-[18px] bg-linear-to-br from-[#eef0ff] to-[#f8f4ff] text-[#6d5df6]">
+                                    <LayoutGrid className="h-5 w-5" />
+                                </div>
+                                <div className="min-w-0">
+                                    <h3 className="truncate text-[20px] font-black tracking-tight text-[#282741]">{group.name}</h3>
+                                    <p className="text-sm text-[#8a8da4]">共 {group.agents.length} 个可用入口</p>
+                                </div>
                             </div>
 
-                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                            <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                                 {group.agents.map((agent) => {
-                                    const IconComponent = ICON_MAP[agent.icon || "Bot"] || Bot;
+                                    const IconComponent = ICON_MAP[agent.icon || 'Bot'] || Bot;
                                     const isLogoUrl = agent.icon?.startsWith('http');
                                     return (
-                                        <div
+                                        <button
                                             key={agent.id}
+                                            type="button"
                                             onClick={() => navigate(agent.route_path)}
                                             className={cn(
-                                                "group relative cursor-pointer",
-                                                "bg-white/40 dark:bg-zinc-900/40 backdrop-blur-2xl px-6 py-8 rounded-[2rem]",
-                                                "border border-white/60 dark:border-zinc-800/60 shadow-xl shadow-zinc-200/20 dark:shadow-none",
-                                                "transition-all duration-300 transform hover:-translate-y-1 hover:shadow-2xl hover:bg-white/60 dark:hover:bg-zinc-900/60"
+                                                'group rounded-[26px] border border-white/80 bg-white/72 p-5 text-left shadow-[0_12px_30px_rgba(102,99,166,0.05)] transition-all duration-300 hover:-translate-y-1 hover:shadow-[0_22px_40px_rgba(102,99,166,0.10)]',
                                             )}
                                         >
-                                            <div className="flex items-start justify-between">
-                                                <div className={cn(
-                                                    "p-4 rounded-2xl bg-zinc-50 dark:bg-zinc-800 transition-transform group-hover:scale-110 duration-500",
-                                                    "border border-zinc-200/50 dark:border-zinc-700/50",
-                                                    isLogoUrl ? "p-0 overflow-hidden" : ""
-                                                )}>
+                                            <div className="flex items-start justify-between gap-3">
+                                                <div className="flex h-12 w-12 items-center justify-center rounded-[18px] bg-linear-to-br from-[#f3f4ff] to-[#f7fbff] text-[#6d5df6] shadow-[inset_0_1px_0_rgba(255,255,255,0.95)]">
                                                     {isLogoUrl ? (
-                                                        <img 
-                                                            src={agent.icon} 
-                                                            alt={agent.name}
-                                                            className="w-7 h-7 object-contain"
-                                                        />
+                                                        <img src={agent.icon} alt={agent.name} className="h-7 w-7 object-contain" />
                                                     ) : (
-                                                        <IconComponent className="text-zinc-700 dark:text-zinc-300" size={28} />
+                                                        <IconComponent className="h-6 w-6" />
                                                     )}
                                                 </div>
-                                                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-300 pr-2">
-                                                    <span className="text-xs font-medium text-zinc-400">立即进入</span>
-                                                    <ChevronRight size={14} className="text-zinc-400" />
+                                                <div className="flex items-center gap-1 text-xs font-bold text-[#a2a5b9] transition-colors group-hover:text-[#6d5df6]">
+                                                    立即进入
+                                                    <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
                                                 </div>
                                             </div>
-
-                                            <div className="mt-8 space-y-2">
-                                                <h3 className="text-xl font-bold text-zinc-900 dark:text-zinc-100 group-hover:text-zinc-800 transition-colors">
-                                                    {agent.name}
-                                                </h3>
-                                                <p className="text-sm text-zinc-500 dark:text-zinc-400 line-clamp-2 leading-relaxed">
-                                                    {agent.description || "暂无描述，点击开始探索。"}
-                                                </p>
-                                            </div>
-                                        </div>
+                                            <h4 className="mt-5 text-[18px] font-black tracking-tight text-[#24233b]">{agent.name}</h4>
+                                            <p className="mt-2 line-clamp-2 text-sm leading-6 text-[#7e8196]">
+                                                {agent.description || '已接入工作台，可直接进入开始使用。'}
+                                            </p>
+                                        </button>
                                     );
                                 })}
                             </div>
                         </section>
-                    ))
-                )}
-            </div>
+                    ))}
+                </div>
+            )}
         </div>
     );
 }

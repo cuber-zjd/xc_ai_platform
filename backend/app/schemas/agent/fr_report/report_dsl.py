@@ -80,6 +80,16 @@ class DatasetDSL(BaseModel):
     fields: list[DatasetFieldDSL]
 
 
+class ReportMetaDSL(BaseModel):
+    title: str | None = None
+    subtitle: str | None = None
+    unit: str | None = None
+    updateText: str | None = None
+    averageLabel: str | None = None
+    remarks: list[str] = Field(default_factory=list)
+    filters: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class LayoutColumnDSL(BaseModel):
     field: str
     title: str
@@ -89,6 +99,15 @@ class LayoutColumnDSL(BaseModel):
     aggregation: Aggregation = Aggregation.NONE
     format: str | None = None
     group: bool = False
+    expandDirection: Literal["down", "right", "none"] = "down"
+
+
+class HorizontalExpansionDSL(BaseModel):
+    enabled: bool = False
+    dimensionField: str | None = None
+    valueFields: list[str] = Field(default_factory=list)
+    direction: Literal["right"] = "right"
+    sourceLabels: list[str] = Field(default_factory=list)
 
 
 class LayoutDSL(BaseModel):
@@ -97,6 +116,8 @@ class LayoutDSL(BaseModel):
     rowGroupFields: list[str] = Field(default_factory=list)
     columnGroupFields: list[str] = Field(default_factory=list)
     valueFields: list[str] = Field(default_factory=list)
+    horizontalExpansion: HorizontalExpansionDSL | None = None
+    designHints: dict[str, Any] = Field(default_factory=dict)
     chartType: str | None = None
 
 
@@ -118,6 +139,7 @@ class ReportDSL(BaseModel):
     schemaVersion: str = "1.0"
     reportName: str
     reportType: ReportType
+    reportMeta: ReportMetaDSL = Field(default_factory=ReportMetaDSL)
     parameters: list[ParameterDSL] = Field(default_factory=list)
     dataModel: DataModelDSL
     datasets: list[DatasetDSL]

@@ -1,6 +1,6 @@
 import re
 
-from app.schemas.fr_ai_report.report_dsl import (
+from app.schemas.agent.fr_report.report_dsl import (
     Aggregation,
     FieldRole,
     FieldType,

@@ -1,6 +1,10 @@
+from pathlib import Path
 from typing import List, Union
 from pydantic import AnyHttpUrl, PostgresDsn
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+BACKEND_DIR = Path(__file__).resolve().parents[2]
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "AI Platform"
@@ -54,6 +58,7 @@ class Settings(BaseSettings):
     FR_AI_SQLSERVER_DATABASE: str = ""
     FR_AI_SQLSERVER_USER: str = ""
     FR_AI_SQLSERVER_PASSWORD: str = ""
+    FR_AI_SQLSERVER_ODBC_DRIVER: str = "SQL Server"
     FR_AI_SQLSERVER_QUERY_TIMEOUT_SECONDS: int = 10
     FR_AI_SQLSERVER_MAX_ROWS: int = 20
 
@@ -64,7 +69,12 @@ class Settings(BaseSettings):
     EXTERNAL_API_KEYS: List[str] = ["default_ai_sign_key_1", "default_ai_sign_key_2"] # 外部调用统一认证密钥
 
 
-    model_config = SettingsConfigDict(case_sensitive=True, env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        case_sensitive=True,
+        env_file=BACKEND_DIR / ".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
     def compute_database_url(self):
         return PostgresDsn.build(

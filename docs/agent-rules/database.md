@@ -49,6 +49,7 @@
 
 ## 6. 初始化与迁移
 
+- FineReport AI 历史任务第一版新增 `fr_ai_report_conversation`、`fr_ai_report_feedback`，并为 `fr_ai_report_task` 补充 `conversation_id`、`parent_task_id`、`revision_no`；当前通过 `init_db.py` 和服务启动时的 `ADD COLUMN IF NOT EXISTS` 兼容旧库。
 - 当前项目启动时会通过 `SQLModel.metadata.create_all` 创建表。
 - 生产环境禁止依赖手动改表。
 - 如果后续引入 Alembic，表结构变化必须生成迁移脚本。

@@ -1,144 +1,134 @@
 import {
-    Wrench,
-    FileText,
-    BarChart3,
-    Code2,
-    Languages,
-    ImageIcon,
-    PenTool,
-    Calculator,
-    SearchCheck,
     ArrowRight,
+    BarChart3,
+    Calculator,
+    Code2,
+    FileText,
+    ImageIcon,
+    Languages,
+    PenTool,
+    SearchCheck,
+    Wrench,
 } from 'lucide-react';
+
 import { cn } from '@/lib/utils';
 
-// AI 工具列表
 const AI_TOOLS = [
     {
         icon: FileText,
         title: '文档摘要',
-        desc: '上传文档，自动提取关键信息并生成摘要',
+        desc: '上传文档后自动提取关键信息，快速形成摘要与阅读提示。',
         category: '效率',
-        gradient: 'from-blue-500/10 to-cyan-500/10',
-        iconColor: 'text-blue-500',
+        tone: 'from-[#edf2ff] to-[#f7fbff]',
+        iconColor: 'text-[#5d72ff]',
     },
     {
         icon: Languages,
         title: '智能翻译',
-        desc: '支持多语言互译，保留专业术语',
+        desc: '支持多语言互译，并尽量保留行业术语与上下文语义。',
         category: '效率',
-        gradient: 'from-indigo-500/10 to-blue-500/10',
-        iconColor: 'text-indigo-500',
+        tone: 'from-[#f1efff] to-[#faf7ff]',
+        iconColor: 'text-[#7c67ff]',
     },
     {
         icon: BarChart3,
         title: '数据分析',
-        desc: '上传数据表格，自动生成可视化分析报告',
+        desc: '上传数据后生成表格分析、趋势洞察和可复用结论。',
         category: '分析',
-        gradient: 'from-emerald-500/10 to-teal-500/10',
-        iconColor: 'text-emerald-500',
+        tone: 'from-[#ecfbf5] to-[#f7fffb]',
+        iconColor: 'text-[#22a06b]',
     },
     {
         icon: Code2,
         title: '代码生成',
-        desc: '描述需求，自动生成高质量代码片段',
+        desc: '按需求生成代码片段、接口示例和实现骨架。',
         category: '开发',
-        gradient: 'from-violet-500/10 to-purple-500/10',
-        iconColor: 'text-violet-500',
+        tone: 'from-[#f3efff] to-[#fbf8ff]',
+        iconColor: 'text-[#8d5cf6]',
     },
     {
         icon: ImageIcon,
         title: 'AI 绘图',
-        desc: '输入文字描述，生成精美图片',
+        desc: '根据文本描述生成视觉草图、插画和概念图像。',
         category: '创意',
-        gradient: 'from-pink-500/10 to-rose-500/10',
-        iconColor: 'text-pink-500',
+        tone: 'from-[#fff0f6] to-[#fff8fb]',
+        iconColor: 'text-[#e34a7a]',
     },
     {
         icon: PenTool,
         title: '公文写作',
-        desc: '智能辅助撰写各类公文和报告',
+        desc: '辅助撰写请示、总结、通知等各类正式文稿。',
         category: '效率',
-        gradient: 'from-amber-500/10 to-orange-500/10',
-        iconColor: 'text-amber-500',
+        tone: 'from-[#fff6eb] to-[#fffaf4]',
+        iconColor: 'text-[#d38a2c]',
     },
     {
         icon: Calculator,
         title: '智能计算',
-        desc: '复杂公式计算与数学问题求解',
+        desc: '帮助处理复杂公式、指标试算与口径换算。',
         category: '工具',
-        gradient: 'from-cyan-500/10 to-sky-500/10',
-        iconColor: 'text-cyan-500',
+        tone: 'from-[#edf9ff] to-[#f8fcff]',
+        iconColor: 'text-[#2994d1]',
     },
     {
         icon: SearchCheck,
         title: '智能审核',
-        desc: '合同、文档智能审核与风险识别',
+        desc: '对合同、文档或流程进行规则核验与风险识别。',
         category: '分析',
-        gradient: 'from-red-500/10 to-orange-500/10',
-        iconColor: 'text-red-500',
+        tone: 'from-[#fff1ee] to-[#fff9f8]',
+        iconColor: 'text-[#ea5a47]',
     },
 ];
 
 export default function ToolboxPage() {
     return (
-        <div className="space-y-8 max-w-6xl mx-auto">
-            {/* 页面标题 */}
-            <div className="space-y-2">
-                <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10">
-                        <Wrench className="h-5 w-5 text-primary" />
+        <div className="app-page">
+            <section className="app-page-header">
+                <div className="flex items-start gap-4">
+                    <div className="flex h-14 w-14 items-center justify-center rounded-[22px] bg-linear-to-br from-[#6e5df7] to-[#b48fff] text-white shadow-[0_18px_36px_rgba(110,93,247,0.28)]">
+                        <Wrench className="h-6 w-6" />
                     </div>
                     <div>
-                        <h2 className="text-2xl font-bold tracking-tight">AI 工具箱</h2>
-                        <p className="text-sm text-muted-foreground">
-                            选择你需要的 AI 工具，提升工作效率
+                        <div className="app-kicker">AI 工具箱</div>
+                        <h2 className="mt-4 text-[34px] font-black tracking-[-0.04em] text-[#24233b]">探索可直接使用的 AI 工具</h2>
+                        <p className="mt-2 max-w-2xl app-subtle-text">
+                            这里汇集了适合日常办公、分析、创作和开发的高频工具入口。后续也可以继续按同一风格扩展更多工具卡片。
                         </p>
                     </div>
                 </div>
-            </div>
+            </section>
 
-            {/* 工具网格 */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                 {AI_TOOLS.map((tool) => (
                     <button
                         key={tool.title}
+                        type="button"
                         className={cn(
-                            'group flex flex-col items-start gap-3 p-5 rounded-xl border transition-all duration-300',
-                            'bg-gradient-to-br hover:shadow-lg hover:-translate-y-0.5 cursor-pointer text-left',
-                            tool.gradient,
-                            'border-border/50 hover:border-primary/30'
+                            'app-panel group flex flex-col items-start rounded-[28px] border-white/80 p-5 text-left transition-all duration-300 hover:-translate-y-1 hover:shadow-[0_22px_42px_rgba(102,99,166,0.1)]',
                         )}
                     >
-                        <div className="flex items-center justify-between w-full">
-                            <div className={cn(
-                                'flex h-10 w-10 items-center justify-center rounded-xl',
-                                'bg-background/80 backdrop-blur-sm shadow-sm'
-                            )}>
-                                <tool.icon className={cn('h-5 w-5', tool.iconColor)} />
+                        <div className="flex w-full items-start justify-between gap-3">
+                            <div
+                                className={cn(
+                                    'flex h-12 w-12 items-center justify-center rounded-[18px] bg-linear-to-br shadow-[inset_0_1px_0_rgba(255,255,255,0.95)]',
+                                    tool.tone,
+                                )}
+                            >
+                                <tool.icon className={cn('h-6 w-6', tool.iconColor)} />
                             </div>
-                            <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+                            <span className="rounded-full border border-white/80 bg-white/80 px-2.5 py-1 text-[11px] font-bold text-[#8d90a6]">
                                 {tool.category}
                             </span>
                         </div>
-                        <div className="space-y-1">
-                            <h3 className="font-semibold text-sm">{tool.title}</h3>
-                            <p className="text-xs text-muted-foreground leading-relaxed">
-                                {tool.desc}
-                            </p>
-                        </div>
-                        <div className="flex items-center gap-1 text-xs text-muted-foreground/50 group-hover:text-primary transition-colors mt-auto pt-2">
-                            <span>开始使用</span>
-                            <ArrowRight className="h-3 w-3 group-hover:translate-x-0.5 transition-transform" />
+                        <h3 className="mt-5 text-[18px] font-black tracking-tight text-[#24233b]">{tool.title}</h3>
+                        <p className="mt-2 text-sm leading-6 text-[#7b7e95]">{tool.desc}</p>
+                        <div className="mt-5 flex items-center gap-1 text-sm font-bold text-[#9ea1b5] transition-colors group-hover:text-[#6d5df6]">
+                            开始使用
+                            <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
                         </div>
                     </button>
                 ))}
-            </div>
-
-            {/* 底部提示 */}
-            <div className="text-center text-xs text-muted-foreground/50 py-4">
-                更多工具持续上线中...
-            </div>
+            </section>
         </div>
     );
 }

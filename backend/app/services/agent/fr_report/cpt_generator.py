@@ -1,6 +1,6 @@
 from html import escape
 
-from app.schemas.fr_ai_report.report_dsl import Aggregation, FieldRole, ReportDSL
+from app.schemas.agent.fr_report.report_dsl import Aggregation, FieldRole, ReportDSL
 
 
 class CptGenerator:
@@ -58,7 +58,7 @@ class CptGenerator:
             parts.append(self._cell_xml(1, index, column.title, "title"))
         for index, column in enumerate(columns, start=1):
             expression = self._field_expression(dsl.layout.dataset, column.field, column.role, column.aggregation)
-            parts.append(self._cell_xml(2, index, expression, "field"))
+            parts.append(self._cell_xml(2, index, expression, "field", column.expandDirection))
         return "\n".join(parts)
 
     def _field_expression(self, dataset_name: str, field_name: str, role: FieldRole, aggregation: Aggregation) -> str:
@@ -66,12 +66,20 @@ class CptGenerator:
             return f"={aggregation.value.upper()}({dataset_name}.{field_name})"
         return f"=${dataset_name}.{field_name}"
 
-    def _cell_xml(self, row: int, column: int, value: str, cell_type: str) -> str:
+    def _cell_xml(
+        self,
+        row: int,
+        column: int,
+        value: str,
+        cell_type: str,
+        expand_direction: str = "down",
+    ) -> str:
         style = "header" if cell_type == "title" else "body"
+        expand_xml = "" if expand_direction == "none" else f'<Expand dir="{escape(expand_direction)}"/>'
         return f"""<Cell row="{row}" column="{column}">
 <O><![CDATA[{value}]]></O>
 <PrivilegeControl/>
-<Expand dir="down"/>
+{expand_xml}
 <Style name="{style}"/>
 </Cell>"""
 

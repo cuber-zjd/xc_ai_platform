@@ -3,7 +3,7 @@ from urllib.parse import quote
 import httpx
 
 from app.core.config import settings
-from app.schemas.fr_ai_report.ai_report import PreviewValidationResult
+from app.schemas.agent.fr_report.ai_report import PreviewValidationResult
 
 
 class PreviewValidator:

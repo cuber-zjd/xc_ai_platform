@@ -74,7 +74,10 @@ export function ExamplePanel({ className }: Props) {
 - 条件类名使用 `cn()`。
 - 优先使用语义 token，例如 `bg-background`、`text-foreground`。
 - 保持暗色模式可用。
-- 项目视觉偏向 Zinc 单色、玻璃拟态、圆角布局和 App-in-App 容器。
+- 项目视觉已切换为浅色玻璃卡片、柔和紫蓝渐变点缀、超圆角布局和 App-in-App 容器。
+- 用户侧与管理后台应共享同一套品牌语言：悬浮侧边栏、轻雾面板、柔和投影、低饱和状态色。
+- 新页面优先复用 `frontend/src/index.css` 中的 `app-shell`、`app-sidebar`、`app-stage`、`app-panel`、`app-panel-soft`、`app-page`、`app-page-header`、`app-kicker`、`app-subtle-text` 等全局类。
+- 除非用户明确要求，页面内不要生成黑色或近黑色的大面积卡片；强调信息优先使用浅色渐变、浅底高亮或描边卡片表达。
 - 状态色可以使用低饱和红、绿、蓝，但不能让页面变成高饱和色块。
 - 按钮、卡片、列表项应有清晰 hover 和 transition。
 - 路由切换、弹窗、折叠内容应保持平滑。
@@ -100,10 +103,22 @@ pnpm dev
 
 ## 8. FineReport AI 报表前端
 
+- 历史任务第一版：页面需要通过 `GET /api/v1/fr/ai-reports/tasks` 展示最近任务，允许点击恢复旧任务并沿用 `conversationId` 继续生成下一轮修订。
+- 页面必须提供“新建会话”入口，清空当前任务、步骤状态、文件选择和 SQL/DSL mutation 缓存；新会话下一次生成 SQL 时不得沿用旧任务的 `conversationId`。
+- 人工反馈第一版：当前任务可提交“可用”或“需调整”反馈，统一调用 `POST /api/v1/fr/ai-reports/tasks/{task_id}/feedback`，为后续经验检索和自驱进化沉淀样本。
 - 页面入口：`frontend/src/features/fr-ai-report/pages/FrAiReportChatPage.tsx`。
 - API hooks：`frontend/src/features/fr-ai-report/hooks/useFrAiReport.ts`，统一通过 `frontend/src/api/client.ts` 调用 `/api/v1/fr/ai-reports`。
+- 当前交互改为步骤工作台，第一步聚焦“生成 SQL 并预览数据”，第二步聚焦“生成 ReportDSL 并基于 DSL 预览”，使用步骤条展示阶段进度。
+- 第一步输入区集中承载报表名称、自然语言需求、人工补充修改意见、相关表名和 Excel 模板上传，允许反复调整后重新生成。
+- 第一步结果区优先展示 SQL 文本、SQL 校验摘要、样例数据表格、需求摘要和 Excel 字段识别结果，不再默认展示 FineReport iframe 预览。
+- 第二步结果区展示 ReportDSL JSON 和 DSL 表格预览；DSL 预览由前端根据 `reportDsl.layout`、`horizontalExpansion` 与 `sqlValidation.sampleRows` 渲染，不依赖 FineReport 预览地址。
+- DSL 预览和模板资源需要优先展示 `reportDsl.reportMeta` / Excel `templateAnalysis` 中的标题、单位、更新时间、均价、备注和筛选条件，避免这些模板级信息散落或丢失。
+- 步骤条需要支持点击切换已具备条件的前后步骤；第一步回到 SQL 和数据预览，第二步回到 DSL 设计和 DSL 预览。已有 DSL 时再次点击“重新生成 DSL 并预览”会携带人工修改意见作为 `dsl_feedback`。
+- 工作台左右两侧都应按当前步骤收拢内容：第一步只展示 SQL 输入、SQL 结果、数据预览、需求摘要和模板字段；第二步只展示 DSL 修改意见、DSL 预览和 ReportDSL，避免跨步骤内容混在同一区域。
+- DSL 预览需要识别 `layout.designHints.specialRows`。当存在 `latest_change_row` 时，预览只取最新日期的涨跌指标，作为单独一行放在横向市场列下方、价格明细行上方。
+- 第一步接口优先调用 `POST /api/v1/fr/ai-reports/steps/sql/generate`；第二步接口调用 `POST /api/v1/fr/ai-reports/steps/dsl/generate`；完整报表生成接口和后续步骤接口并存，供后续阶段继续衔接。
 - 路由：用户侧路由 `/fr-ai-reports`，在 `frontend/src/router/index.tsx` 中懒加载。
-- 交互形态：左侧聊天输入自然语言需求和上传 Excel，右侧展示 FineReport `previewUrl` iframe、ReportDSL、SQL、Excel 字段分析和校验提示。
+- 交互形态：左侧聊天输入自然语言需求和上传 Excel，右侧展示 SQL、DSL 预览、ReportDSL、Excel 字段分析和校验提示；分步骤阶段不默认展示 FineReport `previewUrl` iframe。
 - 当前阶段只支持表格类报表页面，不展示图表类能力入口；需求引导要贴近周报、分组表、交叉表这类业务样式。
-- 可见文案必须使用中文；页面继续沿用 Zinc 单色、玻璃拟态、App-in-App 容器和暗色兼容风格。
-- 前端不得生成 CPT/XML，只展示后端返回的结构化 ReportDSL 和预览地址。
+- 可见文案必须使用中文；页面继续沿用浅色玻璃卡片、柔和紫蓝点缀、App-in-App 容器和暗色兼容风格。
+- 前端不得生成 CPT/XML，只展示后端返回的结构化 ReportDSL，并可用 DSL 与样例数据做轻量预览。

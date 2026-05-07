@@ -1,24 +1,56 @@
-import { useState, useEffect } from 'react';
-import { Outlet, useNavigate, useLocation } from 'react-router-dom';
-import { Button } from '@/components/ui/button';
+import { useEffect, useMemo, useState } from 'react';
+import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
-    MessageSquare,
-    Briefcase,
-    Wrench,
-    FileCheck,
     BarChart3,
+    Briefcase,
+    FileCheck,
     LogOut,
     Menu,
+    MessageSquare,
+    PanelLeftClose,
+    PanelLeftOpen,
     Sparkles,
-    Settings
+    Wrench,
 } from 'lucide-react';
+
+import { Button } from '@/components/ui/button';
+import { Toaster } from '@/components/ui/sonner';
 import { cn } from '@/lib/utils';
 import { useAuthStore } from '@/store/useAuthStore';
-import { Toaster } from "@/components/ui/sonner";
 
-/** 
- * 普通用户布局 - 彻底重构为高级毛玻璃 (Glassmorphism) 全局风格布局
- */
+const navItems = [
+    {
+        label: '小助助手',
+        icon: MessageSquare,
+        path: '/chat-home',
+        preview: '智能对话与创作助手',
+    },
+    {
+        label: '工作台',
+        icon: Briefcase,
+        path: '/workspace',
+        preview: '查看今日统计与最近任务',
+    },
+    {
+        label: 'AI 工具箱',
+        icon: Wrench,
+        path: '/toolbox',
+        preview: '探索和使用各类 AI 工具',
+    },
+    {
+        label: '合同审查',
+        icon: FileCheck,
+        path: '/contracts',
+        preview: '智能合同审查与风险提示',
+    },
+    {
+        label: '报表生成',
+        icon: BarChart3,
+        path: '/fr-ai-reports',
+        preview: '对话生成 FineReport 报表并预览',
+    },
+];
+
 export default function UserLayout() {
     const [isSidebarOpen, setIsSidebarOpen] = useState(true);
     const navigate = useNavigate();
@@ -29,13 +61,11 @@ export default function UserLayout() {
         checkAuth();
     }, [checkAuth]);
 
-    const navItems = [
-        { label: '小驰助手', icon: MessageSquare, path: '/chat-home', preview: '智能助手随时待命...' },
-        { label: '工作台', icon: Briefcase, path: '/workspace', preview: '查看今日统计与最近任务...' },
-        { label: 'AI 工具箱', icon: Wrench, path: '/toolbox', preview: '各种效率工具集锦...' },
-        { label: '合同智审', icon: FileCheck, path: '/contracts', preview: '智能合同审查与风险提示...' },
-        { label: '报表生成', icon: BarChart3, path: '/fr-ai-reports', preview: '对话生成 FineReport 报表并预览...' },
-    ];
+    const currentNav = useMemo(
+        () => navItems.find((item) => location.pathname.startsWith(item.path)),
+        [location.pathname],
+    );
+    const hideStageHeader = location.pathname.startsWith('/fr-ai-reports');
 
     const handleLogout = () => {
         logout();
@@ -43,201 +73,145 @@ export default function UserLayout() {
     };
 
     return (
-        <div className="flex h-screen w-screen bg-[#fcfdfe] relative overflow-hidden font-sans text-neutral-800 selection:bg-black/10">
-            {/* 极致高级动态波浪光晕背景 */}
-            <div className="absolute inset-0 z-0 overflow-hidden pointer-events-none">
-                {/* 动态光晕 1 */}
-                <div className="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] bg-blue-100/40 rounded-full mix-blend-multiply filter blur-[100px] animate-blob" />
-                {/* 动态光晕 2 */}
-                <div className="absolute top-[10%] right-[-5%] w-[45%] h-[45%] bg-purple-100/30 rounded-full mix-blend-multiply filter blur-[100px] animate-blob animation-delay-2000" />
-                {/* 动态光晕 3 */}
-                <div className="absolute bottom-[-10%] left-[20%] w-[50%] h-[50%] bg-pink-100/20 rounded-full mix-blend-multiply filter blur-[100px] animate-blob animation-delay-4000" />
-                
-                {/* 叠加微弱网格纹理以增加细节感 */}
-                <div className="absolute inset-0 opacity-[0.03]" 
-                    style={{ backgroundImage: `radial-gradient(#000 0.5px, transparent 0.5px)`, backgroundSize: '24px 24px' }} 
-                />
-            </div>
-
-            <style dangerouslySetInnerHTML={{ __html: `
-                @keyframes blob {
-                    0% { transform: translate(0px, 0px) scale(1); }
-                    33% { transform: translate(30px, -50px) scale(1.1); }
-                    66% { transform: translate(-20px, 20px) scale(0.9); }
-                    100% { transform: translate(0px, 0px) scale(1); }
-                }
-                .animate-blob {
-                    animation: blob 7s infinite;
-                }
-                .animation-delay-2000 {
-                    animation-delay: 2s;
-                }
-                .animation-delay-4000 {
-                    animation-delay: 4s;
-                }
-            `}} />
-
-            {/* 左侧悬浮侧边栏 - 极致玻璃拟合 */}
-            <aside
-                className={cn(
-                    "my-4 ml-4 bg-white/40 backdrop-blur-[40px] border border-white/80 flex flex-col z-20 shrink-0",
-                    "shadow-[0_8px_32px_rgba(0,0,0,0.04),inset_0_1px_1px_rgba(255,255,255,1)] rounded-[32px] transition-all duration-500 ease-in-out",
-                    isSidebarOpen ? "w-72" : "w-20"
-                )}
-            >
-                {/* 顶部标题栏 */}
-                <div className={cn(
-                    "h-24 flex items-center shrink-0 transition-all duration-300",
-                    isSidebarOpen ? "px-7 gap-4" : "justify-center"
-                )}>
-                    {isSidebarOpen ? (
-                        <div className="flex items-center gap-3 group cursor-default">
-                            <div className="bg-zinc-900 p-2.5 rounded-2xl flex items-center justify-center shadow-lg group-hover:scale-110 transition-transform duration-500">
-                                <Sparkles className="h-5 w-5 text-white" />
-                            </div>
-                            <div className="flex flex-col">
-                                <span className="font-black text-[18px] tracking-tight text-zinc-900 leading-none">
-                                    AI PLATFORM
-                                </span>
-                                <span className="text-[10px] font-bold text-zinc-400 tracking-[0.2em] mt-1.5 uppercase">
-                                    Next Gen Core
-                                </span>
-                            </div>
+        <div className="app-shell">
+            <div className="relative z-10 flex min-h-screen gap-4 p-4">
+                <aside
+                    className={cn(
+                        'app-sidebar flex shrink-0 flex-col rounded-[34px] transition-all duration-300',
+                        isSidebarOpen ? 'w-[276px]' : 'w-[92px]',
+                    )}
+                >
+                    <div className={cn('flex items-center px-5 pt-5', isSidebarOpen ? 'gap-3' : 'justify-center')}>
+                        <div className="flex h-13 w-13 items-center justify-center rounded-[22px] bg-linear-to-br from-[#6d5df6] to-[#8d7dff] text-white shadow-[0_18px_36px_rgba(110,93,247,0.32)]">
+                            <Sparkles className="h-6 w-6" />
                         </div>
-                    ) : (
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-10 w-10 rounded-2xl bg-zinc-900/5 hover:bg-zinc-900/10 text-zinc-900 transition-all duration-300"
-                            onClick={() => setIsSidebarOpen(true)}
-                        >
-                            <Menu className="h-5 w-5" />
-                        </Button>
-                    )}
-                    
-                    {isSidebarOpen && (
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8 text-zinc-300 hover:text-zinc-900 ml-auto transition-colors"
-                            onClick={() => setIsSidebarOpen(false)}
-                        >
-                             <Menu className="h-4 w-4" />
-                        </Button>
-                    )}
-                </div>
-
-                {/* 导航列表区 */}
-                <div className="flex-1 overflow-y-auto px-4 py-4 space-y-8 scrollbar-none">
-                    <div className="space-y-2">
                         {isSidebarOpen && (
-                            <div className="px-3 mb-4">
-                                <span className="text-[10px] font-extrabold text-zinc-400 tracking-[0.15em] uppercase">智能应用</span>
+                            <div className="min-w-0">
+                                <div className="truncate text-[30px] font-black tracking-[-0.04em] text-[#26243b]">
+                                    AI PLATFORM
+                                </div>
+                                <div className="mt-1 text-[11px] font-bold uppercase tracking-[0.22em] text-[#8b8da5]">
+                                    Next Gen Core
+                                </div>
                             </div>
                         )}
-                        <div className="space-y-1.5">
-                            {navItems.map((item) => {
-                                const isActive = location.pathname.startsWith(item.path);
-                                return (
-                                    <button
-                                        key={item.path}
-                                        onClick={() => navigate(item.path)}
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            className={cn('ml-auto shrink-0', !isSidebarOpen && 'ml-0')}
+                            onClick={() => setIsSidebarOpen((value) => !value)}
+                        >
+                            {isSidebarOpen ? <PanelLeftClose className="h-4 w-4" /> : <PanelLeftOpen className="h-4 w-4" />}
+                        </Button>
+                    </div>
+
+                    <div className="px-5 pt-6">
+                        {isSidebarOpen ? (
+                            <div className="text-[11px] font-bold uppercase tracking-[0.16em] text-[#a0a2b8]">
+                                智能应用
+                            </div>
+                        ) : (
+                            <div className="flex justify-center">
+                                <Button variant="ghost" size="icon" onClick={() => setIsSidebarOpen(true)}>
+                                    <Menu className="h-4 w-4" />
+                                </Button>
+                            </div>
+                        )}
+                    </div>
+
+                    <nav className="flex-1 space-y-2 px-4 py-4">
+                        {navItems.map((item, index) => {
+                            const isActive = location.pathname.startsWith(item.path);
+                            return (
+                                <button
+                                    key={item.path}
+                                    type="button"
+                                    onClick={() => navigate(item.path)}
+                                    className={cn(
+                                        'group relative flex w-full items-center overflow-hidden rounded-[24px] border text-left transition-all duration-300',
+                                        isSidebarOpen ? 'gap-3 px-3 py-3.5' : 'justify-center px-0 py-3.5',
+                                        isActive
+                                            ? 'border-transparent bg-linear-to-r from-[#6e5df7] to-[#b48fff] text-white shadow-[0_18px_34px_rgba(110,93,247,0.28)]'
+                                            : 'border-white/70 bg-white/38 text-[#62647a] hover:bg-white/68 hover:text-[#25233b]',
+                                    )}
+                                >
+                                    <div
                                         className={cn(
-                                            "w-full flex items-center gap-3 rounded-2xl transition-all duration-300 cursor-pointer group relative overflow-hidden",
-                                            isSidebarOpen ? "p-3.5 text-left" : "p-3.5 justify-center",
+                                            'flex h-11 w-11 shrink-0 items-center justify-center rounded-[18px] transition-all duration-300',
                                             isActive
-                                                ? "bg-zinc-900 text-white shadow-[0_10px_20px_rgba(0,0,0,0.1)] scale-[1.02]"
-                                                : "hover:bg-white/60 text-zinc-600 hover:text-zinc-900"
+                                                ? 'bg-white/18 text-white'
+                                                : 'bg-white/72 text-[#7d7f96] shadow-[0_8px_18px_rgba(102,99,166,0.06)]',
                                         )}
                                     >
-                                        <div className={cn(
-                                            "flex items-center justify-center shrink-0 w-9 h-9 rounded-xl transition-all duration-500",
-                                            isActive ? "bg-white/20" : "bg-white/50 group-hover:bg-white group-hover:shadow-sm"
-                                        )}>
-                                            <item.icon className={cn("h-4.5 w-4.5", isActive ? "text-white" : "text-zinc-500 group-hover:text-zinc-900")} />
-                                        </div>
-
-                                        {isSidebarOpen && (
-                                            <div className="flex flex-col overflow-hidden">
-                                                <span className={cn("text-[14px] font-bold tracking-tight", isActive ? "text-white" : "text-zinc-700")}>
-                                                    {item.label}
-                                                </span>
-                                                <span className={cn("text-[11px] truncate leading-tight mt-0.5", isActive ? "text-white/60" : "text-zinc-400 group-hover:text-zinc-500 font-medium")}>
-                                                    {item.preview}
-                                                </span>
+                                        <item.icon className="h-5 w-5" />
+                                    </div>
+                                    {isSidebarOpen && (
+                                        <div className="min-w-0">
+                                            <div className="truncate text-[15px] font-bold tracking-tight">{item.label}</div>
+                                            <div className={cn('mt-1 truncate text-[12px]', isActive ? 'text-white/72' : 'text-[#9a9cb1]')}>
+                                                {item.preview}
                                             </div>
-                                        )}
-                                        {isActive && !isSidebarOpen && (
-                                            <div className="absolute right-1 top-1/2 -translate-y-1/2 w-1 h-4 rounded-full bg-white/40" />
-                                        )}
-                                    </button>
-                                );
-                            })}
-                        </div>
-                    </div>
-                </div>
+                                        </div>
+                                    )}
+                                    {isSidebarOpen && !isActive && (
+                                        <div className="ml-auto text-[12px] font-bold text-[#b5b7c8]">{`0${index + 1}`}</div>
+                                    )}
+                                </button>
+                            );
+                        })}
+                    </nav>
 
-                {/* 底部用户信息栏 - 悬浮卡片风格 */}
-                <div className="p-4 mt-auto">
-                    <div className={cn(
-                        "bg-white/30 backdrop-blur-xl border border-white/60 rounded-[24px] transition-all duration-300 overflow-hidden",
-                        isSidebarOpen ? "p-4" : "p-2",
-                        "shadow-[0_4px_12px_rgba(0,0,0,0.02)]"
-                    )}>
-                        {isSidebarOpen && (
-                            <div className="flex items-center gap-4 mb-4">
-                                <div className="relative shrink-0">
-                                    <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-zinc-900 text-white text-sm font-black shadow-md">
+                    <div className="p-4">
+                        <div className="rounded-[28px] border border-white/80 bg-white/55 p-4 shadow-[0_12px_34px_rgba(102,99,166,0.05)]">
+                            <div className={cn('flex items-center gap-3', !isSidebarOpen && 'justify-center')}>
+                                <div className="relative">
+                                    <div className="flex h-12 w-12 items-center justify-center rounded-[18px] bg-[#f0f2ff] text-sm font-black text-[#4f5aa8]">
                                         {(user?.full_name || user?.username || 'U').charAt(0).toUpperCase()}
                                     </div>
-                                    <div className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-green-500 border-2 border-white" />
+                                    <div className="absolute -bottom-0.5 -right-0.5 h-4 w-4 rounded-full border-2 border-white bg-emerald-400" />
                                 </div>
-                                <div className="flex-1 min-w-0">
-                                    <div className="text-[14px] font-black text-zinc-900 truncate tracking-tight">
-                                        {user?.full_name || user?.username}
+                                {isSidebarOpen && (
+                                    <div className="min-w-0">
+                                        <div className="truncate text-sm font-black text-[#24233b]">{user?.full_name || user?.username}</div>
+                                        <div className="mt-1 text-[11px] font-bold uppercase tracking-[0.14em] text-[#9ea0b5]">
+                                            Access Granted
+                                        </div>
                                     </div>
-                                    <div className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider mt-0.5">
-                                        {user?.role === 'admin' ? 'Administrator' : 'Access Granted'}
-                                    </div>
-                                </div>
-                            </div>
-                        )}
-
-                        <div className="flex gap-2">
-                            {isSidebarOpen && (
-                                <button className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl bg-white/60 hover:bg-white text-zinc-600 hover:text-zinc-900 transition-all text-[11px] font-bold border border-white/50">
-                                    <Settings className="h-3.5 w-3.5" />
-                                    Account
-                                </button>
-                            )}
-                            <button
-                                onClick={handleLogout}
-                                className={cn(
-                                    "flex items-center justify-center gap-2 py-2.5 rounded-xl transition-all border",
-                                    isSidebarOpen 
-                                        ? "flex-1 bg-red-50/30 hover:bg-red-50 text-red-500 border-red-100/50 hover:border-red-100 text-[11px] font-bold" 
-                                        : "w-full bg-red-50 text-red-500 border-red-100 p-2"
                                 )}
-                                title={!isSidebarOpen ? "退出登录" : undefined}
+                            </div>
+
+                            <Button
+                                variant="outline"
+                                className={cn('mt-4 w-full text-[#ef4444] hover:text-[#dc2626]', !isSidebarOpen && 'mt-3 px-0')}
+                                onClick={handleLogout}
                             >
-                                <LogOut className="h-3.5 w-3.5" />
-                                {isSidebarOpen && <span>Logout</span>}
-                            </button>
+                                <LogOut className="h-4 w-4" />
+                                {isSidebarOpen && '退出登录'}
+                            </Button>
                         </div>
                     </div>
-                </div>
-            </aside>
+                </aside>
 
-            {/* 主内容区域 */}
-            <main className="flex-1 flex flex-col min-w-0 relative z-10 h-full p-4 pl-6 overflow-hidden">
-                <div className="flex-1 overflow-hidden rounded-[40px] bg-white/20 backdrop-blur-sm border border-white/40 shadow-[0_12px_40px_rgba(0,0,0,0.03)] flex flex-col">
-                    <div className="flex-1 overflow-auto scrollbar-none p-2 relative">
-                        {/* 用于页面内容的微弱内阴影，增加深度感 */}
-                        <div className="absolute inset-0 pointer-events-none rounded-[40px] shadow-[inset_0_2px_10px_rgba(0,0,0,0.02)]" />
-                        <Outlet />
+                <main className="flex min-w-0 flex-1 flex-col">
+                    <div className="app-stage flex min-h-[calc(100vh-2rem)] flex-1 flex-col rounded-[38px] p-3">
+                        {!hideStageHeader ? (
+                            <header className="app-panel-soft flex items-center justify-between gap-4 px-5 py-4">
+                                <div>
+                                    <div className="app-kicker">智能工作区</div>
+                                    <h1 className="mt-3 text-[30px] font-black tracking-[-0.04em] text-[#24233b]">
+                                        {currentNav?.label ?? 'AI Platform'}
+                                    </h1>
+                                    <p className="mt-1 text-sm text-[#7a7d92]">{currentNav?.preview ?? '统一的智能应用工作台体验'}</p>
+                                </div>
+                            </header>
+                        ) : null}
+
+                        <div className="min-h-0 flex-1 overflow-auto">
+                            <Outlet />
+                        </div>
                     </div>
-                </div>
-            </main>
+                </main>
+            </div>
             <Toaster />
         </div>
     );

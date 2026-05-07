@@ -83,7 +83,7 @@ pnpm build
 - MCP 服务必须接入鉴权，并保持工具输入输出 Schema 清晰。
 - 前端 API 统一通过 `frontend/src/api/client.ts` 的 Axios 封装。
 - 服务端状态使用 TanStack Query，全局认证状态使用 Zustand。
-- UI 风格遵循项目现有的 Zinc 单色、玻璃拟态、App-in-App 容器和暗色模式兼容约定。
+- UI 风格遵循项目现有的浅色玻璃卡片、柔和紫蓝点缀、超圆角容器、App-in-App 分层和暗色模式兼容约定。
 
 ## 6. 文档维护规则
 
@@ -96,4 +96,19 @@ pnpm build
 ## 7. FineReport AI 报表生成约束
 
 - FineReport AI 报表生成必须遵循“AI 只生成 ReportDSL，CPT/XML 只能由确定性程序生成”的边界。
+- 当前前端交互应优先按分步骤推进，第一步先收集需求、人工修改意见、Excel 和相关表名，完成 SQL 生成与数据预览，再进入后续报表设计和预览发布步骤。
+- 第二步通过 `POST /api/v1/fr/ai-reports/steps/dsl/generate` 基于第一步任务产物生成 ReportDSL，并写回同一条任务记录；该步骤不得生成 CPT/XML，也不得调用 FineReport 预览。
+- 第二步允许携带 `dsl_feedback` 重新生成 ReportDSL，用于只调整版式和 DSL 预览，不重复跑 SQL。
+- 第二步预览为前端基于 ReportDSL 布局和 SQL 样例数据渲染的轻量预览，尤其需要支持 `horizontalExpansion` 横向扩展，不代表 FineReport 运行时预览结果。
+- ReportDSL 必须通过 `reportMeta` 承载标题、单位、更新时间、均价、备注和筛选条件等模板级语义；Excel 标题识别应结合全报表语义、合并单元格和表格区域上方文本，不能简单把第一行当标题。
+- 对非标准表格需要优先沉淀到 `layout.designHints`：例如“涨跌只保留最新一天、单独一行、放在市场下面价格列表上面”应表达为 `specialRows.latest_change_row`，前端 DSL 预览按该提示渲染。
+- FineReport AI 报表任务需要沉淀历史任务和会话上下文；新任务应优先写入 `conversation_id`、`revision_no` 和 `parent_task_id`，便于恢复旧任务、追踪多轮人工修订和后续经验检索。
+- 人工反馈应通过结构化反馈记录沉淀为正向样本或待优化样本；第一版只做历史经验积累和后续检索基础，不允许自动改写全局提示词、业务规则或代码。
+- SQL 生成应优先服务 FineReport 设计器布局：Excel 中城市、市场、区域等横向表头可通过 ReportDSL/FineReport 横向扩展表达时，SQL 保持 `record_date/market/price/change_amt` 等长表结果，不强行用大量 `CASE WHEN`、`PIVOT` 或聚合转宽表。
 - 生成文件只能写入 MinIO `webroot/APP/reportlets_ai_staging/`，不得直接写正式 reportlets。
+
+## 8. 当前前端视觉基调
+
+- 全局基调以浅色背景、雾化玻璃卡片、柔和紫蓝渐变和大圆角容器为主，不再使用偏重的纯 Zinc 单色后台感。
+- 用户侧与管理后台应共用一致的品牌节奏：悬浮侧边栏、柔和阴影、信息卡片分组、低饱和状态色。
+- 新页面优先复用 `app-shell`、`app-stage`、`app-panel`、`app-page`、`app-page-header` 等全局样式类，避免重复手写大段散装容器样式。

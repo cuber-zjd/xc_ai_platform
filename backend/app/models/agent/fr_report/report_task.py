@@ -21,12 +21,16 @@ class FrAiReportTask(BaseDBModel, table=True):
     __tablename__ = "fr_ai_report_task"
 
     task_id: str = Field(index=True, unique=True)
+    conversation_id: str | None = Field(default=None, index=True)
+    parent_task_id: str | None = Field(default=None, index=True)
+    revision_no: int = Field(default=1, index=True)
     report_name: str = Field(index=True)
     report_type: str | None = Field(default=None, index=True)
     status: FrAiReportTaskStatus = Field(default=FrAiReportTaskStatus.GENERATING)
     data_source_status: str | None = Field(default=None)
 
     source_file_name: str | None = None
+    source_table_name: str | None = None
     requirement_text: str | None = None
     table_schema: dict[str, Any] | None = Field(default=None, sa_type=JSONB)
 
@@ -47,3 +51,27 @@ class FrAiReportTask(BaseDBModel, table=True):
 
     errors: list[str] = Field(default_factory=list, sa_type=JSONB)
     warnings: list[str] = Field(default_factory=list, sa_type=JSONB)
+
+
+class FrAiReportConversation(BaseDBModel, table=True):
+    __tablename__ = "fr_ai_report_conversation"
+
+    conversation_id: str = Field(index=True, unique=True)
+    title: str = Field(index=True)
+    user_id: str | None = Field(default=None, index=True)
+    latest_task_id: str | None = Field(default=None, index=True)
+    status: str = Field(default="active", index=True)
+    source_table_name: str | None = Field(default=None, index=True)
+    summary: dict[str, Any] | None = Field(default=None, sa_type=JSONB)
+
+
+class FrAiReportFeedback(BaseDBModel, table=True):
+    __tablename__ = "fr_ai_report_feedback"
+
+    feedback_id: str = Field(index=True, unique=True)
+    conversation_id: str | None = Field(default=None, index=True)
+    task_id: str = Field(index=True)
+    feedback_type: str = Field(default="note", index=True)
+    content: str
+    payload: dict[str, Any] | None = Field(default=None, sa_type=JSONB)
+    is_positive: bool | None = Field(default=None, index=True)

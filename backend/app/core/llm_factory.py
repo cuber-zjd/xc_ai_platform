@@ -250,7 +250,12 @@ class LLMFactory:
 
         model_kwargs: dict[str, Any] = {}
         if json_mode:
-            model_kwargs["response_format"] = {"type": "json_object"}
+            # 兼容性处理：部分模型不支持 json_object (例如 doubao-seed-2-0-pro)
+            # 如果模型代码中包含 doubao-seed-2-0-pro，则跳过 response_format 设置，依赖 Prompt 约束
+            if "doubao-seed-2-0-pro" in model_code:
+                logger.debug(f"模型 {model_code} 不支持 json_object，已跳过 response_format 设置")
+            else:
+                model_kwargs["response_format"] = {"type": "json_object"}
 
         # 思考模式处理 (兼容 DeepSeek 和 火山引擎)
         if "extra_body" not in model_kwargs:
