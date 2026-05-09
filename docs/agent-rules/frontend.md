@@ -122,3 +122,12 @@ pnpm dev
 - 当前阶段只支持表格类报表页面，不展示图表类能力入口；需求引导要贴近周报、分组表、交叉表这类业务样式。
 - 可见文案必须使用中文；页面继续沿用浅色玻璃卡片、柔和紫蓝点缀、App-in-App 容器和暗色兼容风格。
 - 前端不得生成 CPT/XML，只展示后端返回的结构化 ReportDSL，并可用 DSL 与样例数据做轻量预览。
+
+## 9. Insight 业务域前端风格隔离
+
+- Insight 业务域目录为 `frontend/src/app/insight/`，用于“研发营销市场洞察平台”。
+- Insight 页面必须通过 `/insight/*` 路由挂载到独立 `InsightLayout`，不得复用旧系统 `UserLayout`、`AdminLayout` 或页面级 `app-*` 容器样式。
+- Insight 主题通过 `InsightThemeScope` 挂载 `data-app="insight"` 与 `.insight-theme`，并在 `frontend/src/app/insight/theme/tokens.css` 内局部重声明 shadcn/ui CSS variables。
+- 新增 Insight 页面优先复用 `frontend/src/app/insight/components/` 下的页面级组件，例如 `PageTitle`、`SectionCard`、`FilterBar`、`InsightTag`、`DataTableCard`、`ChartCard`。
+- Insight 风格 token、业务语义色和图表规范分别维护在 `theme/tokens.css`、`theme/semantic-colors.ts`、`theme/chart-theme.ts`，不得通过修改 `:root` 或旧系统全局样式实现换肤。
+- Insight 可复用 shadcn/ui 基础组件，但对外视觉必须由 insight 局部 token 和封装组件控制，避免旧系统紫蓝玻璃风格污染新业务域。

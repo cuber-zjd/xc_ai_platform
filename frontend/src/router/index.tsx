@@ -34,6 +34,14 @@ const AgentTestPage = lazy(() => import("@/pages/agent-test/AgentTestPage"));
 const FrAiReportChatPage = lazy(() =>
     import("@/features/fr-ai-report/pages/FrAiReportChatPage").then((module) => ({ default: module.FrAiReportChatPage })),
 );
+const InsightLayout = lazy(() => import("@/app/insight").then((module) => ({ default: module.InsightLayout })));
+const InsightDashboardPage = lazy(() => import("@/app/insight").then((module) => ({ default: module.DashboardPage })));
+const IntelligenceCenterPage = lazy(() => import("@/app/insight").then((module) => ({ default: module.IntelligenceCenterPage })));
+const IntelligenceDetailPage = lazy(() => import("@/app/insight").then((module) => ({ default: module.IntelligenceDetailPage })));
+const CompanyArchivePage = lazy(() => import("@/app/insight").then((module) => ({ default: module.CompanyArchivePage })));
+const ReportCenterPage = lazy(() => import("@/app/insight").then((module) => ({ default: module.ReportCenterPage })));
+const DataSourceConfigPage = lazy(() => import("@/app/insight").then((module) => ({ default: module.DataSourceConfigPage })));
+const SettingsPage = lazy(() => import("@/app/insight").then((module) => ({ default: module.SettingsPage })));
 
 const PageLoader = () => (
     <div className="app-page flex min-h-[60vh] items-center justify-center">
@@ -260,6 +268,75 @@ const router = createBrowserRouter([
                 element: (
                     <Suspense fallback={<PageLoader />}>
                         <ContractDetailPage />
+                    </Suspense>
+                ),
+            },
+        ],
+    },
+    {
+        path: "/insight",
+        element: (
+            <ProtectedRoute>
+                <Suspense fallback={<PageLoader />}>
+                    <InsightLayout />
+                </Suspense>
+            </ProtectedRoute>
+        ),
+        errorElement: <RouteErrorPage />,
+        children: [
+            {
+                index: true,
+                element: (
+                    <Suspense fallback={<PageLoader />}>
+                        <InsightDashboardPage />
+                    </Suspense>
+                ),
+            },
+            {
+                path: "intelligence",
+                element: (
+                    <Suspense fallback={<PageLoader />}>
+                        <IntelligenceCenterPage />
+                    </Suspense>
+                ),
+            },
+            {
+                path: "intelligence/detail",
+                element: (
+                    <Suspense fallback={<PageLoader />}>
+                        <IntelligenceDetailPage />
+                    </Suspense>
+                ),
+            },
+            {
+                path: "companies",
+                element: (
+                    <Suspense fallback={<PageLoader />}>
+                        <CompanyArchivePage />
+                    </Suspense>
+                ),
+            },
+            {
+                path: "reports",
+                element: (
+                    <Suspense fallback={<PageLoader />}>
+                        <ReportCenterPage />
+                    </Suspense>
+                ),
+            },
+            {
+                path: "data-sources",
+                element: (
+                    <Suspense fallback={<PageLoader />}>
+                        <DataSourceConfigPage />
+                    </Suspense>
+                ),
+            },
+            {
+                path: "settings",
+                element: (
+                    <Suspense fallback={<PageLoader />}>
+                        <SettingsPage />
                     </Suspense>
                 ),
             },
