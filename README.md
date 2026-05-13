@@ -118,11 +118,16 @@ docker compose ps
 
 ### 3. 后端部署 (FastAPI)
 
+
+
+
 ```bash
 cd backend
 
+
 # 3.1 安装依赖
 uv sync
+uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 # 3.2 配置环境变量
 cp .env.example .env
