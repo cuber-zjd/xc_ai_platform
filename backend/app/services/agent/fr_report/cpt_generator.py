@@ -1,5 +1,6 @@
 from html import escape
 
+from app.core.config import settings
 from app.schemas.agent.fr_report.report_dsl import Aggregation, FieldRole, ReportDSL
 
 
@@ -17,7 +18,7 @@ class CptGenerator:
 </Parameters>
 <Attributes maxMemRowCount="-1"/>
 <Connection class="com.fr.data.impl.NameDatabaseConnection">
-<DatabaseName><![CDATA[AI_PLATFORM_DEFAULT]]></DatabaseName>
+<DatabaseName><![CDATA[{settings.FR_AI_FINEREPORT_DB_NAME}]]></DatabaseName>
 </Connection>
 <Query><![CDATA[{dataset.sql}]]></Query>
 <PageQuery><![CDATA[]]></PageQuery>

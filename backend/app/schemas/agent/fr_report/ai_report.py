@@ -79,6 +79,26 @@ class GenerateDslStepResponse(BaseModel):
     updateTime: datetime
 
 
+class GenerateCptStepResponse(BaseModel):
+    taskId: str
+    conversationId: str | None = None
+    parentTaskId: str | None = None
+    revisionNo: int = 1
+    status: str
+    reportName: str
+    reportType: str
+    cptObjectPath: str | None = None
+    dslObjectPath: str | None = None
+    sqlObjectPath: str | None = None
+    createSqlObjectPath: str | None = None
+    logObjectPath: str | None = None
+    previewUrl: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    createTime: datetime
+    updateTime: datetime
+
+
 class PreviewValidationResult(BaseModel):
     previewUrl: str
     httpStatus: int | None = None

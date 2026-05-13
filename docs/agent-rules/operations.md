@@ -111,8 +111,21 @@ uv sync
 ## 7. FineReport 配置
 
 - 新增环境变量：`FINEREPORT_PREVIEW_BASE_URL`。
+- FineReport AI 第三步配置详见 `docs/fr-ai-report-third-step.md`；当前已确认 MinIO S3 API endpoint 为 `192.168.14.41:9000`，bucket 为 `fanruan`，FineReport 访问根地址为 `http://192.168.14.41:1080`。
+- CPT 数据连接名环境变量：`FR_AI_FINEREPORT_DB_NAME`，当前默认 `XcTest`。
 - SQL Server 校验环境变量：`FR_AI_SQLSERVER_ENABLED`、`FR_AI_SQLSERVER_HOST`、`FR_AI_SQLSERVER_PORT`、`FR_AI_SQLSERVER_DATABASE`、`FR_AI_SQLSERVER_USER`、`FR_AI_SQLSERVER_PASSWORD`、`FR_AI_SQLSERVER_QUERY_TIMEOUT_SECONDS`、`FR_AI_SQLSERVER_MAX_ROWS`。
 - `FR_AI_SQLSERVER_ENABLED=false` 时跳过数据 SQL 校验；启用后用于 FineReport AI 报表生成链路中的只读 SQL Server 预执行校验。
 - 用途：AI 报表生成后调用 FineReport 预览 URL 校验 HTTP 状态和页面报错信息。
 - 未配置时：生成任务仍可完成，`PreviewValidator` 会返回 warning 并跳过 HTTP 校验。
 - 新增后端依赖：`openpyxl`，用于 `ExcelAnalyzer` 读取 `.xlsx` 文件。
+
+## 8. SAP 助手配置
+
+- SAP 助手后端代码兼容未安装 `pyrfc` 的开发环境；真实连接 SAP ECC 时需要安装 SAP NetWeaver RFC SDK 和 Python `pyrfc`。
+- 当前 Python 依赖固定使用 `pyrfc==3.3.1`；Windows 还必须把 SAP NetWeaver RFC SDK 的 `nwrfcsdk\lib` 加入系统 `PATH`，或配置 `SAPNWRFC_HOME=D:\sap\nwrfcsdk` / `SAP_NWRFC_LIB_DIR=D:\sap\nwrfcsdk\lib`；Linux 需要把 `/opt/sap/nwrfcsdk/lib` 加入 `LD_LIBRARY_PATH`。
+- Windows 还需要安装 x64 版 Microsoft Visual C++ 2013 Redistributable。若 `sapnwrfc.dll` 存在但仍提示 `_cyrfc` DLL 找不到，优先检查 `C:\Windows\System32\MSVCR120.dll` 和 `C:\Windows\System32\MSVCP120.dll` 是否存在。
+- 验证命令：`cd backend && uv run python -c "from pyrfc import Connection; print(Connection)"`。如果提示 `_cyrfc` DLL 找不到，说明 Python 包已安装但 SAP NWRFC SDK 未配置。
+- SAP RFC 用户和密码必须通过环境变量提供，例如 `SAP_PRD_800_USER`、`SAP_PRD_800_PASSWORD`，管理页面只保存这些环境变量名。
+- SAP 系统配置入口为 `/admin/sap-systems`，接口为 `/api/v1/sap/systems`。
+- ABAP RFC 示例文件位于 `docs/sap-rfc/`，生产部署前需要在 SAP 侧补充审计表、权限对象、返回量控制和 ZILOG 真实查询逻辑。
+- 通用知识库接口为 `/api/v1/knowledge-bases`，文件写入 MinIO，切片和索引元数据写 PostgreSQL；后续接入真实向量检索时使用现有 Milvus 服务。

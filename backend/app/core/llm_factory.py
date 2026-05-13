@@ -25,7 +25,7 @@ LLM 工厂 - 数据库驱动 + 熔断降级
 import asyncio
 import time
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage

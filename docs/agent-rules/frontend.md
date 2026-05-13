@@ -116,14 +116,23 @@ pnpm dev
 - 步骤条需要支持点击切换已具备条件的前后步骤；第一步回到 SQL 和数据预览，第二步回到 DSL 设计和 DSL 预览。已有 DSL 时再次点击“重新生成 DSL 并预览”会携带人工修改意见作为 `dsl_feedback`。
 - 工作台左右两侧都应按当前步骤收拢内容：第一步只展示 SQL 输入、SQL 结果、数据预览、需求摘要和模板字段；第二步只展示 DSL 修改意见、DSL 预览和 ReportDSL，避免跨步骤内容混在同一区域。
 - DSL 预览需要识别 `layout.designHints.specialRows`。当存在 `latest_change_row` 时，预览只取最新日期的涨跌指标，作为单独一行放在横向市场列下方、价格明细行上方。
-- 第一步接口优先调用 `POST /api/v1/fr/ai-reports/steps/sql/generate`；第二步接口调用 `POST /api/v1/fr/ai-reports/steps/dsl/generate`；完整报表生成接口和后续步骤接口并存，供后续阶段继续衔接。
+- 第一步接口优先调用 `POST /api/v1/fr/ai-reports/steps/sql/generate`；第二步接口调用 `POST /api/v1/fr/ai-reports/steps/dsl/generate`；第三步接口调用 `POST /api/v1/fr/ai-reports/steps/cpt/generate` 生成 CPT、上传 MinIO staging 并返回 FineReport 预览地址；完整报表生成接口和后续步骤接口并存。
 - 路由：用户侧路由 `/fr-ai-reports`，在 `frontend/src/router/index.tsx` 中懒加载。
 - 交互形态：左侧聊天输入自然语言需求和上传 Excel，右侧展示 SQL、DSL 预览、ReportDSL、Excel 字段分析和校验提示；分步骤阶段不默认展示 FineReport `previewUrl` iframe。
 - 当前阶段只支持表格类报表页面，不展示图表类能力入口；需求引导要贴近周报、分组表、交叉表这类业务样式。
 - 可见文案必须使用中文；页面继续沿用浅色玻璃卡片、柔和紫蓝点缀、App-in-App 容器和暗色兼容风格。
 - 前端不得生成 CPT/XML，只展示后端返回的结构化 ReportDSL，并可用 DSL 与样例数据做轻量预览。
 
-## 9. Insight 业务域前端风格隔离
+## 9. SAP 助手前端
+
+- 用户入口：`/sap-assistant`；管理入口：`/admin/sap-systems`。
+- SAP 助手页面采用“左侧聊天 + 右侧动态工作区”，必须展示执行时间线，让用户知道 AI 当前正在识别系统、调用工具、读取源码、查询 DDIC、查询 ZILOG 或整理证据。
+- 右侧动态工作区至少包含时间线、证据、工具结果和血缘图四类视图。
+- SAP 证据不得只塞进聊天文本；源码、日志、DDIC、数据样例和知识库片段需要用可展开卡片或结构化面板展示。
+- 流式协议在现有 `agent-workspace` 基础上扩展 `evidence`、`flowchart`、`system_context` 和 `tool_status` 类型。
+- 生产系统或敏感查询应通过明确的人工确认卡片呈现查询范围、系统、对象、字段和最大行数。
+
+## 10. Insight 业务域前端风格隔离
 
 - Insight 业务域目录为 `frontend/src/app/insight/`，用于“研发营销市场洞察平台”。
 - Insight 页面必须通过 `/insight/*` 路由挂载到独立 `InsightLayout`，不得复用旧系统 `UserLayout`、`AdminLayout` 或页面级 `app-*` 容器样式。

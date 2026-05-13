@@ -3,7 +3,6 @@ OnlyOffice Document Server 服务
 负责生成 JWT 签名的编辑器配置
 """
 import jwt
-from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 from app.core.config import settings
 from app.core.logger import logger

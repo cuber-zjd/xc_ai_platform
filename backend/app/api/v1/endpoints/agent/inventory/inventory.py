@@ -1,7 +1,6 @@
 import re
-from typing import Any, List, Optional
+from typing import Any, List
 from fastapi import APIRouter, Depends
-from sqlmodel import select, or_
 from sqlalchemy import text
 from app.api import deps
 from app.db.session import async_session, get_db
@@ -217,8 +216,8 @@ async def query_materials(
         where_clause, params = build_where_clause(conditions)
         
         # 执行查询
-        sql = f"SELECT id, material_code, material_desc, storage_loc, storage_bin, "
-        sql += f"unrestricted_qty, base_uom, material_group, net_amount "
+        sql = "SELECT id, material_code, material_desc, storage_loc, storage_bin, "
+        sql += "unrestricted_qty, base_uom, material_group, net_amount "
         sql += f"FROM material_inventory WHERE {where_clause} LIMIT :limit"
         params["limit"] = request.limit
         

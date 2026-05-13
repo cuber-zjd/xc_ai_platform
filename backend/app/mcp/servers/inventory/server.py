@@ -1,6 +1,5 @@
 from typing import List, Any
 from sqlalchemy import text
-from sqlmodel import select
 from app.mcp.base import BaseMCPServer
 from app.mcp.servers.inventory.schema import MaterialQuerySchema, MaterialSearchSchema
 from app.db.session import async_session

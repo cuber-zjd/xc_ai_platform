@@ -47,10 +47,9 @@ function ViewFocusNode({ position, onFocus }: { position: [number, number, numbe
     <group position={position}>
       <Float speed={2} rotationIntensity={0.5} floatIntensity={0.5}>
         <mesh 
-          onPointerOver={() => setHovered(true)} 
-          onPointerOut={() => setHovered(false)}
+          onPointerOver={() => { setHovered(true); document.body.style.cursor = "pointer"; }}
+          onPointerOut={() => { setHovered(false); document.body.style.cursor = "auto"; }}
           onClick={(e) => { e.stopPropagation(); onFocus(); }}
-          cursor="pointer"
         >
           <sphereGeometry args={[0.18, 16, 16]} />
           <meshStandardMaterial 

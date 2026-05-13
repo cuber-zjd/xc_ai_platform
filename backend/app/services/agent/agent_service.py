@@ -1,5 +1,5 @@
 from typing import Optional, List, Set
-from sqlmodel import select, func, delete, or_
+from sqlmodel import select, delete
 from sqlmodel.ext.asyncio.session import AsyncSession
 from app.models.agent.agent_group import AgentGroup
 from app.models.agent.agent_app import AgentApp
@@ -12,7 +12,6 @@ from app.schemas.agent.agent import (
     AgentAppCreate, AgentAppUpdate,
     WorkbenchGroup, WorkbenchAgent
 )
-from app.schemas.page import Page
 from app.services.system.file_service import file_service
 
 class AgentService:

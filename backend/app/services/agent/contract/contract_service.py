@@ -6,15 +6,13 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from sqlmodel import select, desc
 
 from app.models.contract.contract_model import Contract, ContractStatusEnum, ContractAuditLog
-from app.schemas.agent.contract.contract import ContractCreate, ContractUpdate
+from app.schemas.agent.contract.contract import ContractCreate
 from app.services.system.file_service import file_service
 from app.core.logger import logger
 
 from fastapi import BackgroundTasks
 from app.agents.definitions.contract_review.graph import review_graph
-from app.core.logger import logger
-from app.models.contract.contract_model import ContractStatusEnum, TrafficLightEnum, ContractAuditLog, RiskLevelEnum
-import asyncio
+from app.models.contract.contract_model import TrafficLightEnum, RiskLevelEnum
 
 async def run_analysis_task(contract_id: int, file_path: str, contract_type: str, session: AsyncSession): # Note: Session management in background task is tricky
     # Better to create a new session here or pass a session factory
@@ -25,7 +23,8 @@ async def run_analysis_task(contract_id: int, file_path: str, contract_type: str
         
         # 1. Update Status to ANALYZING
         contract = await contract_service.get_contract(db, contract_id)
-        if not contract: return
+        if not contract:
+            return
         contract.status = ContractStatusEnum.ANALYZING
         db.add(contract)
         await db.commit()

@@ -34,11 +34,13 @@ import {
     useCreateFrAiReportFeedback,
     useFrAiReportTask,
     useFrAiReportTasks,
+    useGenerateFrAiReportCptStep,
     useGenerateFrAiReportDslStep,
     useGenerateFrAiReportSqlStep,
 } from '@/features/fr-ai-report/hooks/useFrAiReport';
 import type {
     ExcelFieldAnalysis,
+    GenerateCptStepResponse,
     GenerateDslStepResponse,
     GenerateSqlStepResponse,
     ReportDsl,
@@ -70,8 +72,8 @@ const STATUS_LABELS: Record<string, string> = {
     failed: '失败',
 };
 
-type StepTask = Partial<ReportTaskRead> & Partial<GenerateSqlStepResponse> & Partial<GenerateDslStepResponse>;
-type ResultTabKey = 'result' | 'dslPreview' | 'dsl' | 'preview' | 'summary' | 'template' | 'excel';
+type StepTask = Partial<ReportTaskRead> & Partial<GenerateSqlStepResponse> & Partial<GenerateDslStepResponse> & Partial<GenerateCptStepResponse>;
+type ResultTabKey = 'result' | 'dslPreview' | 'dsl' | 'finePreview' | 'preview' | 'summary' | 'template' | 'excel';
 
 const DEFAULT_REQUIREMENT = '按年份、日期、区域生成交叉日报，列展示各区域价格，并支持开始日期和结束日期筛选。';
 const DEFAULT_REPORT_NAME = '区域统计表';
@@ -98,16 +100,20 @@ export function FrAiReportChatPage() {
 
     const generateMutation = useGenerateFrAiReportSqlStep();
     const dslMutation = useGenerateFrAiReportDslStep();
+    const cptMutation = useGenerateFrAiReportCptStep();
     const taskQuery = useFrAiReportTask(taskId);
     const taskListQuery = useFrAiReportTasks(1, 20);
     const feedbackMutation = useCreateFrAiReportFeedback();
 
-    const currentTask = (
-        (dslMutation.data?.taskId === taskId ? dslMutation.data : undefined) ??
-        taskQuery.data ??
-        (generateMutation.data?.taskId === taskId ? generateMutation.data : undefined)
-    ) as StepTask | undefined;
-    const taskItems = taskListQuery.data?.items ?? [];
+    const currentTask = taskId
+        ? ({
+            ...(generateMutation.data?.taskId === taskId ? generateMutation.data : {}),
+            ...(taskQuery.data ?? {}),
+            ...(dslMutation.data?.taskId === taskId ? dslMutation.data : {}),
+            ...(cptMutation.data?.taskId === taskId ? cptMutation.data : {}),
+        } as StepTask)
+        : undefined;
+    const taskItems = useMemo(() => taskListQuery.data?.items ?? [], [taskListQuery.data?.items]);
     const conversationGroups = useMemo(() => groupTasksByConversation(taskItems), [taskItems]);
     const primarySheet =
         currentTask?.excelAnalysis?.sheets?.find(
@@ -162,6 +168,7 @@ export function FrAiReportChatPage() {
         setExpandedConversationId(null);
         generateMutation.reset();
         dslMutation.reset();
+        cptMutation.reset();
         if (fileInputRef.current) {
             fileInputRef.current.value = '';
         }
@@ -181,6 +188,23 @@ export function FrAiReportChatPage() {
             },
             onError: () => {
                 toast.error('ReportDSL 生成失败，请检查第一步结果或后端日志。');
+            },
+        });
+    };
+
+    const handleGenerateCpt = () => {
+        if (!currentTask?.taskId || !currentTask.reportDsl) {
+            toast.error('请先完成第二步 ReportDSL 生成。');
+            return;
+        }
+        cptMutation.mutate(currentTask.taskId, {
+            onSuccess: (data) => {
+                setTaskId(data.taskId);
+                setActiveTab('finePreview');
+                toast.success(data.previewUrl ? '第三步已完成，已生成 FineReport 预览地址。' : '第三步已完成，预览地址待配置后可用。');
+            },
+            onError: () => {
+                toast.error('CPT 生成或 MinIO 上传失败，请检查后端配置。');
             },
         });
     };
@@ -280,6 +304,7 @@ export function FrAiReportChatPage() {
                         activeStep={activeStep}
                         hasSql={Boolean(currentTask?.querySql)}
                         hasDsl={Boolean(currentTask?.reportDsl)}
+                        hasCpt={Boolean(currentTask?.cptObjectPath || currentTask?.previewUrl)}
                         onStepChange={(step) => setActiveTab(getDefaultTabForStep(step, currentTask))}
                     />
                 </div>
@@ -288,9 +313,15 @@ export function FrAiReportChatPage() {
             <div className="grid min-h-0 min-w-0 flex-1 gap-3 overflow-hidden xl:grid-cols-[minmax(0,0.82fr)_minmax(0,1.55fr)_minmax(0,1fr)] 2xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.65fr)_minmax(0,1fr)]">
                 <section className="app-panel flex min-h-0 min-w-0 flex-col overflow-hidden rounded-[30px] p-4 2xl:p-5">
                     <SectionTitle
-                        icon={activeStep === 1 ? PencilLine : Code2}
-                        title={activeStep === 1 ? '第一步输入材料' : '第二步 DSL 设计'}
-                        description={activeStep === 1 ? '用于生成 SQL 和样例数据预览。' : '只调整 ReportDSL 版式和 DSL 预览，不重复生成 SQL。'}
+                        icon={activeStep === 1 ? PencilLine : activeStep === 2 ? Code2 : Eye}
+                        title={activeStep === 1 ? '第一步输入材料' : activeStep === 2 ? '第二步 DSL 设计' : '第三步 FineReport 预览'}
+                        description={
+                            activeStep === 1
+                                ? '用于生成 SQL 和样例数据预览。'
+                                : activeStep === 2
+                                    ? '只调整 ReportDSL 版式和 DSL 预览，不重复生成 SQL。'
+                                    : '生成 CPT、上传 staging 并获取 FineReport 预览。'
+                        }
                     />
 
                     <StepInputPanel
@@ -304,6 +335,7 @@ export function FrAiReportChatPage() {
                         currentTask={currentTask}
                         isGeneratingSql={generateMutation.isPending}
                         isGeneratingDsl={dslMutation.isPending}
+                        isGeneratingCpt={cptMutation.isPending}
                         fileInputRef={fileInputRef}
                         onReportNameChange={setReportName}
                         onSourceTableNameChange={setSourceTableName}
@@ -312,6 +344,7 @@ export function FrAiReportChatPage() {
                         onRevisionNoteChange={setRevisionNote}
                         onGenerateSql={handleGenerate}
                         onGenerateDsl={handleGenerateDsl}
+                        onGenerateCpt={handleGenerateCpt}
                     />
                 </section>
 
@@ -331,7 +364,7 @@ export function FrAiReportChatPage() {
                     <IssueCard issues={issueList} />
                     <StatusCard
                         task={currentTask}
-                        isLoading={taskQuery.isFetching || generateMutation.isPending || dslMutation.isPending}
+                        isLoading={taskQuery.isFetching || generateMutation.isPending || dslMutation.isPending || cptMutation.isPending}
                         isSavingFeedback={feedbackMutation.isPending}
                         onFeedback={handleFeedback}
                         className="h-full min-h-0 overflow-y-auto"
@@ -353,6 +386,7 @@ function StepInputPanel({
     currentTask,
     isGeneratingSql,
     isGeneratingDsl,
+    isGeneratingCpt,
     fileInputRef,
     onReportNameChange,
     onSourceTableNameChange,
@@ -361,6 +395,7 @@ function StepInputPanel({
     onRevisionNoteChange,
     onGenerateSql,
     onGenerateDsl,
+    onGenerateCpt,
 }: {
     activeStep: number;
     reportName: string;
@@ -372,6 +407,7 @@ function StepInputPanel({
     currentTask?: StepTask;
     isGeneratingSql: boolean;
     isGeneratingDsl: boolean;
+    isGeneratingCpt: boolean;
     fileInputRef: RefObject<HTMLInputElement | null>;
     onReportNameChange: (value: string) => void;
     onSourceTableNameChange: (value: string) => void;
@@ -380,7 +416,58 @@ function StepInputPanel({
     onRevisionNoteChange: (value: string) => void;
     onGenerateSql: () => void;
     onGenerateDsl: () => void;
+    onGenerateCpt: () => void;
 }) {
+    if (activeStep === 3) {
+        return (
+            <div className="mt-5 flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
+                <div className="rounded-[24px] border border-[#d8f0df] bg-emerald-50/72 p-4">
+                    <div className="text-sm font-black text-[#243d30]">承接第二步结果</div>
+                    <div className="mt-3 grid gap-2">
+                        <Metric label="任务" value={currentTask?.taskId ? currentTask.taskId.slice(0, 8) : '待生成 DSL'} />
+                        <Metric label="ReportDSL" value={currentTask?.reportDsl ? '已生成' : '未生成'} />
+                        <Metric label="CPT" value={currentTask?.cptObjectPath ? '已上传 staging' : '待生成'} />
+                        <Metric label="预览地址" value={currentTask?.previewUrl ? '已生成' : '待生成'} />
+                    </div>
+                </div>
+
+                <div className="rounded-[28px] border border-[#d8f0df] bg-linear-to-br from-[#f2fff7] to-[#f7fbff] p-4 shadow-[0_18px_36px_rgba(80,150,110,0.08)]">
+                    <div className="flex items-center gap-2 text-sm font-black text-[#33513d]">
+                        <ShieldCheck className="h-4 w-4 text-emerald-600" />
+                        本次只生成 staging 预览
+                    </div>
+                    <div className="mt-3 space-y-2 text-xs leading-6 text-[#657c6c]">
+                        <div>MinIO 路径：{currentTask?.cptObjectPath || 'webroot/APP/reportlets_ai_staging/{task_id}/report.cpt'}</div>
+                        <div>正式 reportlets：不复制、不覆盖。</div>
+                    </div>
+                </div>
+
+                <Button
+                    type="button"
+                    size="lg"
+                    className="w-full"
+                    disabled={!currentTask?.reportDsl || isGeneratingCpt}
+                    onClick={onGenerateCpt}
+                >
+                    {isGeneratingCpt ? <Loader2 className="h-4 w-4 animate-spin" /> : <Eye className="h-4 w-4" />}
+                    {currentTask?.cptObjectPath ? '重新生成 FineReport 预览' : '生成 FineReport 预览'}
+                </Button>
+
+                {currentTask?.previewUrl ? (
+                    <Button
+                        type="button"
+                        variant="outline"
+                        className="w-full bg-white/82"
+                        onClick={() => window.open(currentTask.previewUrl || '', '_blank', 'noopener,noreferrer')}
+                    >
+                        <Eye className="h-4 w-4" />
+                        打开 FineReport 预览
+                    </Button>
+                ) : null}
+            </div>
+        );
+    }
+
     if (activeStep === 2) {
         return (
             <div className="mt-5 flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
@@ -506,11 +593,13 @@ function StepBar({
     activeStep,
     hasSql,
     hasDsl,
+    hasCpt,
     onStepChange,
 }: {
     activeStep: number;
     hasSql: boolean;
     hasDsl: boolean;
+    hasCpt: boolean;
     onStepChange: (step: number) => void;
 }) {
     const steps = [
@@ -523,7 +612,7 @@ function StepBar({
         <div className="grid gap-3 xl:grid-cols-3">
             {steps.map((step, index) => {
                 const active = step.id === activeStep;
-                const completed = (step.id === 1 && hasSql) || (step.id === 2 && hasDsl);
+                const completed = (step.id === 1 && hasSql) || (step.id === 2 && hasDsl) || (step.id === 3 && hasCpt);
                 const disabled = (step.id === 2 && !hasSql) || (step.id === 3 && !hasDsl);
                 return (
                     <button
@@ -759,6 +848,8 @@ function StatusCard({
                 />
                 <Metric label="SQL 校验" value={getSqlValidationLabel(task?.sqlValidation)} />
                 <Metric label="ReportDSL" value={task?.reportDsl ? '已生成' : '待生成'} />
+                <Metric label="CPT 文件" value={task?.cptObjectPath ? '已上传' : '待生成'} />
+                <Metric label="FineReport 预览" value={task?.previewUrl ? '已生成' : '待生成'} />
                 <Metric label="来源表名" value={task?.sourceTableName || '未填写'} />
                 <Metric label="Excel 模板" value={task?.sourceFileName || '未上传'} />
             </div>
@@ -832,18 +923,22 @@ function GenerationTabs({
         label: string;
         hint: string;
         icon: LucideIcon;
-    }> = activeStep === 2
+    }> = activeStep === 3
         ? [
+            { key: 'finePreview', label: 'FineReport 预览', hint: '查看 CPT 运行预览', icon: Eye },
+        ]
+        : activeStep === 2
+            ? [
             { key: 'dslPreview', label: 'DSL 预览', hint: '按 DSL 布局渲染表格', icon: Eye },
             { key: 'dsl', label: 'ReportDSL', hint: '查看结构化设计 JSON', icon: Code2 },
-        ]
-        : [
+            ]
+            : [
             { key: 'result', label: 'SQL 结果', hint: '查看 SQL 文本', icon: Database },
             { key: 'preview', label: '数据预览', hint: '查看字段与样例数据', icon: Table2 },
             { key: 'summary', label: '需求摘要', hint: '查看结构化需求拆解', icon: ScrollText },
             { key: 'template', label: '模版资源', hint: '查看 Excel 模版语义', icon: ScrollText },
             { key: 'excel', label: 'Excel 字段参考', hint: '查看字段角色识别', icon: FileSpreadsheet },
-        ];
+            ];
 
     return (
         <div className="app-panel flex h-full min-h-0 flex-col overflow-hidden rounded-[32px] p-5">
@@ -851,12 +946,12 @@ function GenerationTabs({
                 <div className="flex flex-col gap-2">
                     <div className="flex items-center gap-2 text-sm font-black text-[#2b2942]">
                         <Sparkles className="h-4 w-4 text-[#6d5df6]" />
-                        {activeStep === 2 ? '第二步生成区' : '第一步生成区'}
+                        {activeStep === 3 ? '第三步预览区' : activeStep === 2 ? '第二步生成区' : '第一步生成区'}
                     </div>
                 </div>
 
                 <div className="overflow-hidden rounded-[24px] border border-white/75 bg-linear-to-r from-[#f7f5ff] via-white/88 to-[#eef6ff] p-1.5 shadow-[0_10px_26px_rgba(105,111,194,0.06)]">
-                    <div className={cn('grid grid-cols-2 gap-1.5', activeStep === 2 ? 'lg:grid-cols-2' : 'lg:grid-cols-3 2xl:grid-cols-5')}>
+                    <div className={cn('grid grid-cols-2 gap-1.5', activeStep === 2 || activeStep === 3 ? 'lg:grid-cols-2' : 'lg:grid-cols-3 2xl:grid-cols-5')}>
                         {tabs.map((tab) => {
                             const active = activeTab === tab.key;
                             const Icon = tab.icon;
@@ -884,7 +979,11 @@ function GenerationTabs({
                 </div>
 
                 <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-                    {activeStep === 2 ? (
+                    {activeStep === 3 ? (
+                        <>
+                            {activeTab === 'finePreview' ? <FineReportPreviewCard task={task} /> : null}
+                        </>
+                    ) : activeStep === 2 ? (
                         <>
                             {activeTab === 'dslPreview' ? <DslPreviewCard task={task} /> : null}
                             {activeTab === 'dsl' ? <DslJsonCard dsl={task?.reportDsl} /> : null}
@@ -917,6 +1016,51 @@ function DslJsonCard({ dsl }: { dsl?: ReportDsl | null }) {
                 <CopyActionButton text={dslText} label="复制 DSL" />
             </div>
             <CodeBlock title="ReportDSL JSON" content={dslText} />
+        </div>
+    );
+}
+
+function FineReportPreviewCard({ task }: { task?: StepTask }) {
+    if (!task?.previewUrl) {
+        return (
+            <div className="rounded-[28px] border border-dashed border-[#d9ddf1] bg-white/70 p-6 text-sm leading-7 text-[#858aa5]">
+                执行第三步后，这里会展示 FineReport 运行时预览。
+            </div>
+        );
+    }
+
+    return (
+        <div className="space-y-4">
+            <div className="rounded-[26px] border border-emerald-200/80 bg-emerald-50/86 p-4">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                    <div className="min-w-0">
+                        <div className="text-sm font-black text-emerald-950">FineReport 预览已生成</div>
+                        <div className="mt-2 break-all text-xs leading-5 text-emerald-800/80">{task.previewUrl}</div>
+                    </div>
+                    <Button
+                        type="button"
+                        size="sm"
+                        className="shrink-0"
+                        onClick={() => window.open(task.previewUrl || '', '_blank', 'noopener,noreferrer')}
+                    >
+                        <Eye className="h-4 w-4" />
+                        打开预览
+                    </Button>
+                </div>
+                <div className="mt-4 grid gap-2 md:grid-cols-2">
+                    <Metric label="CPT 文件" value={task.cptObjectPath || '未返回'} />
+                    <Metric label="DSL 文件" value={task.dslObjectPath || '未返回'} />
+                    <Metric label="SQL 文件" value={task.sqlObjectPath || '未返回'} />
+                    <Metric label="日志文件" value={task.logObjectPath || '未返回'} />
+                </div>
+            </div>
+            <div className="h-[520px] overflow-hidden rounded-[26px] border border-[#e7e9fb] bg-white">
+                <iframe
+                    title="FineReport 预览"
+                    src={task.previewUrl}
+                    className="h-full w-full border-0"
+                />
+            </div>
         </div>
     );
 }
@@ -1411,6 +1555,9 @@ function compareDateLike(left: unknown, right: unknown) {
 }
 
 function getStepFromTab(tab: ResultTabKey) {
+    if (tab === 'finePreview') {
+        return 3;
+    }
     if (tab === 'dslPreview' || tab === 'dsl') {
         return 2;
     }
@@ -1422,7 +1569,7 @@ function getDefaultTabForStep(step: number, task?: StepTask): ResultTabKey {
         return task?.reportDsl ? 'dslPreview' : 'dsl';
     }
     if (step === 3) {
-        return task?.reportDsl ? 'dslPreview' : 'preview';
+        return task?.reportDsl ? 'finePreview' : 'preview';
     }
     return 'result';
 }

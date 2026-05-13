@@ -1,7 +1,6 @@
 from typing import Optional, List, Dict
-from datetime import datetime
 from enum import Enum
-from sqlmodel import Field, Relationship, SQLModel
+from sqlmodel import Field, Relationship
 from sqlalchemy.dialects.postgresql import JSONB
 
 from app.models.base import BaseDBModel

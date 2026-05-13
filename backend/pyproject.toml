@@ -3,7 +3,7 @@ name = "ai-platform-backend"
 version = "0.1.0"
 description = "AI Platform Backend with FastAPI and LangGraph"
 authors = [{ name = "AI Assistant", email = "ai@example.com" }]
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.13"
 dependencies = [
     "fastapi[all]",
     "uvicorn[standard]",
@@ -32,6 +32,9 @@ dependencies = [
     "debugpy>=1.8.20",
     "langchain-core>=1.2.23",
     "mcp>=1.0.0",
+    "ruff>=0.15.12",
+    "pyrfc==3.3.1",
+    "deepagents>=0.5.9",
 ]
 
 [build-system]

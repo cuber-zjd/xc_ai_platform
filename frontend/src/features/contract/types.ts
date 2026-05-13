@@ -1,22 +1,28 @@
-export enum ContractStatus {
-    UPLOADING = "uploading",
-    ANALYZING = "analyzing",
-    ANALYSIS_COMPLETED = "analysis_completed",
-    ANALYSIS_FAILED = "analysis_failed",
-}
+export const ContractStatus = {
+    UPLOADING: "uploading",
+    ANALYZING: "analyzing",
+    ANALYSIS_COMPLETED: "analysis_completed",
+    ANALYSIS_FAILED: "analysis_failed",
+} as const;
 
-export enum TrafficLight {
-    GREEN = "green",
-    YELLOW = "yellow",
-    RED = "red",
-    NONE = "none",
-}
+export type ContractStatus = (typeof ContractStatus)[keyof typeof ContractStatus];
 
-export enum RiskLevel {
-    CRITICAL = "critical",
-    WARNING = "warning",
-    INFO = "info",
-}
+export const TrafficLight = {
+    GREEN: "green",
+    YELLOW: "yellow",
+    RED: "red",
+    NONE: "none",
+} as const;
+
+export type TrafficLight = (typeof TrafficLight)[keyof typeof TrafficLight];
+
+export const RiskLevel = {
+    CRITICAL: "critical",
+    WARNING: "warning",
+    INFO: "info",
+} as const;
+
+export type RiskLevel = (typeof RiskLevel)[keyof typeof RiskLevel];
 
 export interface ContractAuditLog {
     id: number;

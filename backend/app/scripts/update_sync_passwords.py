@@ -7,10 +7,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
-from sqlmodel import select
-from app.db.session import async_session
-from app.models.system.sys_user import SysUser
-from app.core.security import get_password_hash
+from sqlmodel import select  # noqa: E402
+from app.db.session import async_session  # noqa: E402
+from app.models.system.sys_user import SysUser  # noqa: E402
+from app.core.security import get_password_hash  # noqa: E402
 
 async def update_passwords():
     async with async_session() as session:

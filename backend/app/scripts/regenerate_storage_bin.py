@@ -7,8 +7,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
-from sqlalchemy import text
-from app.db.session import async_session
+from sqlalchemy import text  # noqa: E402
+from app.db.session import async_session  # noqa: E402
 
 
 def generate_storage_bin() -> str:

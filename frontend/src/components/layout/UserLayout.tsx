@@ -3,6 +3,7 @@ import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
     BarChart3,
     Briefcase,
+    Code2,
     FileCheck,
     LogOut,
     Menu,
@@ -49,6 +50,12 @@ const navItems = [
         path: '/fr-ai-reports',
         preview: '对话生成 FineReport 报表并预览',
     },
+    {
+        label: 'SAP 助手',
+        icon: Code2,
+        path: '/sap-assistant',
+        preview: '串联代码、日志、结构和证据链',
+    },
 ];
 
 export default function UserLayout() {
@@ -65,7 +72,7 @@ export default function UserLayout() {
         () => navItems.find((item) => location.pathname.startsWith(item.path)),
         [location.pathname],
     );
-    const hideStageHeader = location.pathname.startsWith('/fr-ai-reports');
+    const hideStageHeader = location.pathname.startsWith('/fr-ai-reports') || location.pathname.startsWith('/sap-assistant');
 
     const handleLogout = () => {
         logout();

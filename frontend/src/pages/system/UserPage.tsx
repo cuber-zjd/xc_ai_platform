@@ -35,7 +35,7 @@ import { toast } from "sonner";
 
 export default function UserPage() {
     const queryClient = useQueryClient();
-    const [page, setPage] = useState(1);
+    const [page] = useState(1);
     const [isCreateOpen, setIsCreateOpen] = useState(false);
     const [editingUser, setEditingUser] = useState<User | null>(null);
 

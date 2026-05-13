@@ -1,10 +1,8 @@
-import asyncio
-from typing import Dict, List
-from langchain_core.messages import SystemMessage, HumanMessage
+from typing import Dict
+from langchain_core.messages import HumanMessage
 from app.core.llm_factory import LLMFactory
 from app.agents.definitions.contract_review.state import ReviewState, AuditFinding
 from app.services.system.file_service import file_service
-from app.services.agent.contract.rule_service import rule_service
 from app.core.logger import logger
 import io
 
@@ -256,9 +254,6 @@ async def synthesizer_node(state: ReviewState) -> Dict:
         "warning": warning_count,
         "score": max(0, 100 - critical_count * 20 - warning_count * 5)
     }
-    
-    # Convert AuditFinding objects to dicts for JSON serialization
-    serialized_findings = [f.dict() for f in all_risks]
     
     # Update Contract in DB? 
     # Ideally, the graph returns result and Service updates DB.

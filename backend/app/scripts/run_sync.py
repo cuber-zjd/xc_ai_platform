@@ -4,10 +4,6 @@ from sqlmodel import SQLModel
 from app.db.session import engine
 from app.services.system.hr_sync_service import HrSyncService
 # Import models so SQLModel knows about them for create_all
-from app.models.system.sys_user import SysUser
-from app.models.system.sys_company import SysCompany
-from app.models.system.sys_dept import SysDept
-from app.models.system.sys_post import SysPost
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

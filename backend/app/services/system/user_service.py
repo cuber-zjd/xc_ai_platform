@@ -1,4 +1,4 @@
-from typing import Optional, List
+from typing import Optional
 from sqlmodel import select, func, cast, String
 from sqlmodel.ext.asyncio.session import AsyncSession
 from app.models.system.sys_user import SysUser

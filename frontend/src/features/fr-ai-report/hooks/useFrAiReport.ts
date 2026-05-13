@@ -5,6 +5,7 @@ import type {
     CptPublishResponse,
     FrAiReportFeedbackPayload,
     FrAiReportFeedbackRead,
+    GenerateCptStepResponse,
     GenerateDslStepResponse,
     GenerateReportPayload,
     GenerateReportResponse,
@@ -110,6 +111,28 @@ export function useGenerateFrAiReportDslStep() {
                 timeout: 60000,
             });
             return response as unknown as GenerateDslStepResponse;
+        },
+        onSuccess: (data) => {
+            queryClient.invalidateQueries({ queryKey: ['fr-ai-report-task', data.taskId] });
+            queryClient.invalidateQueries({ queryKey: ['fr-ai-report-tasks'] });
+        },
+    });
+}
+
+export function useGenerateFrAiReportCptStep() {
+    const queryClient = useQueryClient();
+
+    return useMutation({
+        mutationFn: async (taskId: string) => {
+            const formData = new FormData();
+            formData.append('task_id', taskId);
+            const response = await apiClient.post<GenerateCptStepResponse>(`${BASE_URL}/steps/cpt/generate`, formData, {
+                headers: {
+                    'Content-Type': 'multipart/form-data',
+                },
+                timeout: 60000,
+            });
+            return response as unknown as GenerateCptStepResponse;
         },
         onSuccess: (data) => {
             queryClient.invalidateQueries({ queryKey: ['fr-ai-report-task', data.taskId] });

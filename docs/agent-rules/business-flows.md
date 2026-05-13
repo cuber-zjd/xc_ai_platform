@@ -117,7 +117,8 @@
 - 第一步完成后，把需求文本、来源表名、Excel 分析、需求摘要、SQL、SQL 校验结果和日志写回同一个任务记录，供人工回看和后续步骤接力。
 - 第二步入口使用 `POST /api/v1/fr/ai-reports/steps/dsl/generate`，基于同一任务的第一步产物继续生成 ReportDSL，并写回 `fr_ai_report_task.report_dsl`；前端预览直接基于 DSL 布局和 SQL 样例数据渲染，不借助 FineReport 预览。
 - 第二步可携带 `dsl_feedback` 重生成 DSL，用于人工指出版式调整；例如“涨跌只保留最新一天，单独一行，放在市场下面、价格列表上面”会沉淀为 `layout.designHints.specialRows.latest_change_row`，由前端 DSL 预览按最新日期涨跌单行渲染。
-- 第三步再生成 CPT、写入 staging 并返回 FineReport 预览地址。
+- 第三步入口使用 `POST /api/v1/fr/ai-reports/steps/cpt/generate`，基于同一任务的 ReportDSL 确定性生成 CPT、写入 staging 并返回 FineReport 预览地址。
+- 第三步当前只做 staging 预览，不做正式 reportlets 复制；对接细节见 `docs/fr-ai-report-third-step.md`。MinIO 对象路径固定为 `webroot/APP/reportlets_ai_staging/{task_id}/report.cpt`，FineReport 预览 `viewlet` 第一版使用 `reportlets_ai_staging/{task_id}/report.cpt`。
 
 入口文件：
 - 后端接口：`backend/app/api/v1/endpoints/agent/fr_report.py`
@@ -139,3 +140,41 @@
 10. `MinIOStagingService` 将 CPT、DSL、SQL、建表 SQL 和生成日志写入 `webroot/APP/reportlets_ai_staging/{task_id}/`。
 11. `PreviewValidator` 调用 FineReport 预览 URL，返回 `previewUrl`、`errors` 和 `warnings`。
 12. `publish` 接口当前只标记任务已发布，仍保留在 staging，不直接写正式 reportlets。
+
+## 8. SAP 助手流程
+
+入口文件：
+- 前端页面：`frontend/src/features/sap-assistant/pages/SapAssistantPage.tsx`
+- SAP 系统管理页：`frontend/src/pages/system/sap/SapSystemManagerPage.tsx`
+- 后端接口：`backend/app/api/v1/endpoints/agent/sap_assistant.py`
+- 编排服务：`backend/app/services/agent/sap_assistant/assistant_service.py`
+- RFC 客户端：`backend/app/services/agent/sap_assistant/rfc_client.py`
+- ABAP 示例：`docs/sap-rfc/`
+
+流程：
+1. 用户进入 `/sap-assistant`，可从历史会话列表恢复旧会话，也可新建会话并选择 SAP 系统和可选知识库。
+2. 前端通过 `/api/v1/sap/assistant/chat/stream` 发起流式聊天请求。
+3. 后端创建或恢复 `sap_assistant_session`，写入用户消息。
+4. `SapAssistantService` 识别意图、解析系统，并交由 `SapGraphAgentService` 使用 LangGraph 状态机自主选择下一步工具调用或停止总结。
+5. `SapToolService` 调用 `SapRfcClient`，再由 SAP 侧 `ZFM_AI_*` RFC 获取事务码、源码、DDIC、ZILOG 或只读分页数据。
+6. 每次工具调用写入 `sap_tool_call`，证据写入 `sap_evidence_record`。
+7. 如选择知识库，后端通过通用知识库服务检索片段并合并到证据链。
+8. 每轮工具结果返回后，LangGraph 决策节点只读取压缩观察、源码关键片段和会话记忆，判断继续调用工具、停止回答或请求人工介入；只有在模型决策失败时才允许使用轻量规则兜底。
+9. 对源码定位类问题，可以读取完整源码作为工具产物，但进入 LLM 上下文前必须由服务层抽取可执行证据片段、调用关系和必要摘要，避免反复把全文交给模型。
+10. SAP 助手会话需要读取最近消息和证据作为下一轮上下文，不允许只保存不使用；前端通过 `/api/v1/sap/assistant/sessions` 和 `/api/v1/sap/assistant/sessions/{id}/messages` 展示历史会话。
+11. 如果达到单轮最大工具步数仍未完成，回答中需要明确说明已达到自动追查上限，并提示用户可以继续追问以接着当前证据链运行。
+12. 后端通过 LLM 总结回答；模型不可用时使用规则兜底回答。
+13. 前端在主对话气泡内折叠展示执行时间线，让用户在聊天主线中看到 AI 正在做什么；右侧动态工作区不再作为 SAP 助手第一版必需界面。
+
+安全边界：
+- 平台不直连 SAP 数据库。
+- SAP 系统配置不保存密码明文，只保存环境变量名。
+- 生产系统数据查询必须通过 RFC 内部只读逻辑、行数限制、分页/分段读取、脱敏和审计。
+## SAP 助手状态化调查补充
+
+- SAP 助手聊天入口当前优先走 `backend/app/services/agent/sap_assistant/deep_agent_service.py`。`graph_agent_service.py` 作为 LangGraph 实验实现保留，用于后续验证状态机降 token 方案；未达到 deepagents 的自主追查效果前不得切为默认入口。
+- SAP 助手的源码分析不再依赖单纯 ReAct 循环反复让模型决定下一步；LangGraph 状态需要维护调查进度，包括工具调用去重、最近观察摘要、源码关键证据片段、直接赋值证据、计算证据和发现的函数调用。
+- 为减少 token，工具完整结果只推送给前端、审计和数据库持久化；LLM 决策节点只读取压缩后的观察摘要，源码全文读取后由服务层抽取可执行片段和调用关系，再决定是否继续追查或直接总结。
+- 涉及字段取值、金额计算或字段血缘的问题，只有找到可执行代码证据后才能给出确定结论。有效证据包括 `SELECT`、`LOOP`、`READ TABLE`、`CALL FUNCTION`、`PERFORM`、赋值和计算语句；注释和 `DATA/TYPES` 定义只能作为线索。
+- 如果调查状态已经包含目标字段的可执行赋值或计算证据，应停止继续重复读取和检索并进入总结阶段。
+- 同一源码对象的读取需要去重控制，避免在同一程序中来回读取造成 token 和时间浪费；必要时改为追踪真实 `CALL FUNCTION` 或查询 DDIC、日志、只读样例数据补证。

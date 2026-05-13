@@ -103,7 +103,7 @@ uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - 列表入口：`GET /api/v1/fr/ai-reports/tasks` 返回分页历史任务；反馈入口：`POST /api/v1/fr/ai-reports/tasks/{task_id}/feedback` 记录正向样本或待优化样本。
 - 自驱进化第一版只做经验数据沉淀，不允许自动改写全局 Prompt、业务规则或确定性 CPT 生成逻辑。
 - 接口入口：`backend/app/api/v1/endpoints/agent/fr_report.py`，统一挂载到 `/api/v1/fr/ai-reports`。
-- 当前需要同时维护“第一步 SQL 生成”“第二步 DSL 生成”与“全流程生成”三类接口，其中第一步接口为 `POST /api/v1/fr/ai-reports/steps/sql/generate`，用于只生成 SQL、执行只读校验并返回样例数据；第二步接口为 `POST /api/v1/fr/ai-reports/steps/dsl/generate`，基于同一任务的 SQL、需求摘要、Excel 分析和表结构生成 ReportDSL，不生成 CPT/XML，不调用 FineReport 预览。
+- 当前需要同时维护“第一步 SQL 生成”“第二步 DSL 生成”“第三步 CPT 生成”与“全流程生成”四类接口，其中第一步接口为 `POST /api/v1/fr/ai-reports/steps/sql/generate`，用于只生成 SQL、执行只读校验并返回样例数据；第二步接口为 `POST /api/v1/fr/ai-reports/steps/dsl/generate`，基于同一任务的 SQL、需求摘要、Excel 分析和表结构生成 ReportDSL，不生成 CPT/XML，不调用 FineReport 预览；第三步接口为 `POST /api/v1/fr/ai-reports/steps/cpt/generate`，基于同一任务的 ReportDSL 确定性生成 CPT、上传 MinIO staging 并返回 FineReport 预览地址。
 - 任务模型：`backend/app/models/agent/fr_report/report_task.py`，保存 Excel 分析、需求摘要、ReportDSL、SQL、建表 SQL、生成日志、MinIO staging 路径和预览校验结果。
 - Schema：`backend/app/schemas/agent/fr_report/report_dsl.py` 定义第一版 ReportDSL 和 JSON Schema，当前阶段只落地 `detail_table`、`group_table`、`pivot_table` 三类表格报表。
 - ReportDSL 需要通过 `reportMeta` 承载模板级语义，包括标题、单位、更新时间、均价、备注和筛选条件；这些信息不能只停留在 Excel `templateAnalysis` 或 `layout.designHints`。
@@ -111,6 +111,8 @@ uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - 分步骤改造时，优先把阶段产物持久化到同一个任务表中，至少保留 `requirement_text`、`source_table_name`、Excel 分析、需求摘要、SQL、SQL 校验结果与日志，方便人工回看和后续步骤接力。
 - 第二步生成的 ReportDSL 继续写回同一条 `fr_ai_report_task.report_dsl`，前端预览直接基于 DSL 布局和 SQL 样例数据渲染，用于人工确认版式，不代表 FineReport 运行时预览结果。
 - 第二步接口可接收 `dsl_feedback` 做 DSL 版式重生成，只更新需求摘要中的 DSL 修订提示、ReportDSL 和日志，不重复生成 SQL；非标准表格结构优先落入 `layout.designHints.specialRows`，例如最新一天涨跌单行使用 `latest_change_row`。
+- 第三步当前只允许从已确认的 `report_dsl` 确定性生成 CPT、写入 MinIO staging 并返回 FineReport 预览地址；不做正式 reportlets 复制、审批发布或覆盖。
+- 第三步对接细节见 `docs/fr-ai-report-third-step.md`。CPT XML 按 FineReport 11.5.0 样例生成，数据库连接名来自 `FR_AI_FINEREPORT_DB_NAME`，当前默认 `XcTest`。
 - Agent 实现：`RequirementAgent`、`DataModelAgent`、`SqlAgent`、`ReportDesignerAgent` 必须优先通过 `app.core.llm_factory.LLMFactory` 调用已配置大模型生成结构化 JSON；模型不可用或 JSON 校验失败时才使用规则兜底。
 - 表结构与 SQL 校验：用户只提供单表或多表表名时，`SqlServerQueryService` 可查询 SQL Server `INFORMATION_SCHEMA.COLUMNS` 获取字段结构并推断字段类型/角色；多表会生成 `tables`、字段来源和 `joinHints` 供 `SqlAgent` 生成 JOIN SQL。`SqlAgent` 生成 SQL 后由同一服务做只读预执行校验，只允许 `SELECT/WITH` 查询，禁止 DDL/DML/存储过程/多语句，参数使用安全默认值绑定，失败时允许 `SqlAgent` 基于错误修复一次。
 - SQL ReAct：`SqlReActAgent` 会读取 Excel 模板摘要、真实表结构和 SQL Server TOP 样例数据，生成 SQL 后立即执行只读校验；如果 SQL 不可执行会把错误和样例数据反馈给大模型继续修复，最多迭代 3 轮。对于 Excel 中城市、市场、区域等横向表头，优先通过 ReportDSL/FineReport 横向扩展表达，SQL 保持 `record_date/market/price/change_amt` 等长表结果，不因模板横向表头强制生成大量 `CASE WHEN`、`PIVOT` 或聚合宽表列。
@@ -118,3 +120,22 @@ uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - Excel 标题识别不能简单默认第一行，应结合表格区域上方文本、合并单元格、标题关键词和全报表语义打分判断；筛选条件、单位、更新时间、备注等辅助文本不能误判为标题。
 - 关键边界：AI/Agent 只能输出结构化 ReportDSL、需求摘要、逻辑表结构和 SQL；FineReport `.cpt`/XML 必须由 `CptGenerator` 确定性生成。
 - 存储边界：生成产物只能写入 MinIO `webroot/APP/reportlets_ai_staging/{task_id}/`，不得直接写正式 reportlets。
+
+## 10. SAP 助手
+
+- 接口入口：`backend/app/api/v1/endpoints/agent/sap_assistant.py`，统一挂载到 `/api/v1/sap`。
+- 会话接口：`GET /api/v1/sap/assistant/sessions`、`GET /api/v1/sap/assistant/sessions/{id}/messages`，用于前端历史会话恢复。
+- 通用知识库入口：`backend/app/api/v1/endpoints/knowledge_bases.py`，统一挂载到 `/api/v1/knowledge-bases`，不得绑定到 SAP 专属命名。
+- SAP 模型：`backend/app/models/agent/sap_assistant.py`，保存系统配置、会话、消息、工具调用和证据记录。
+- 知识库模型：`backend/app/models/knowledge_base.py`，保存知识库、文档、切片和索引任务。
+- SAP 服务分层位于 `backend/app/services/agent/sap_assistant/`：`SapAssistantService -> SapToolService -> SapRfcClient`，工具调用必须记录审计和证据。
+- SAP RFC 客户端需要兼容未安装 `pyrfc` 的开发环境；未配置时可以返回明确的未配置或演示证据，但不得假装已经真实查询生产系统。
+- AI 不允许直接执行任意 SQL 或保存数据库账号；业务数据必须通过 SAP 侧只读 RFC 查询，并采用小批量、多轮调用减少 token 消耗。
+- 回答必须尽量包含 SAP 系统上下文、使用的工具、证据来源和不确定性说明。
+## SAP 助手 Agent 状态约束补充
+
+- SAP 助手聊天入口当前优先走 `backend/app/services/agent/sap_assistant/deep_agent_service.py`，并复用 `SapToolService -> SapRfcClient` 调用 SAP 侧 `ZFM_AI_*` RFC；`graph_agent_service.py` 仅作为 LangGraph 实验实现保留，未达到 deepagents 的自主追查效果前不得切为默认入口。
+- SAP 助手服务层必须维护源码调查状态，不能只依赖模型逐轮自由规划。状态至少包含工具调用去重、最近观察摘要、源码关键证据片段、直接赋值证据、计算证据和已发现函数调用。
+- 为减少 token，工具完整结果只进入前端流式事件、审计和数据库记录；LLM 决策阶段只接收压缩观察，源码全文读取后必须先抽取可执行证据片段和调用关系，再进入下一轮决策或总结。
+- 字段取值、金额计算、字段血缘类问题只有在存在可执行代码证据时才能下确定结论；注释、标题和字段定义不得被改写成事实结论。
+- 当调查状态已经满足回答条件时，后端应强制进入总结阶段，避免模型继续重复搜索；当证据不足时，后端应自动选择未执行过的补查工具，而不是把“下一步建议调用工具”交给用户。

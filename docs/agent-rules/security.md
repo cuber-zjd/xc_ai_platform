@@ -69,5 +69,16 @@
 - 用户上传 Excel 和生成的 CPT/DSL/SQL/日志统一写入 MinIO staging 路径 `webroot/APP/reportlets_ai_staging/`。
 - AI 不允许直接生成 CPT/XML，只允许生成 ReportDSL；CPT 必须由确定性程序生成。
 - `publish` 不得绕过审核直接写正式 reportlets，第一版仅标记发布状态并保留 staging 路径。
+- 第三步只做 staging 预览，不复制到 `webroot/APP/reportlets/` 正式目录；MinIO `MINIO_SECRET_KEY` 必须来自本地 `.env`、服务器配置或专用 Access Key，不得写入仓库文档。
 - 预览校验调用外部 FineReport URL 时不得携带真实密钥，不得在日志中输出敏感参数值。
 - SQL Server 表结构查询和数据校验连接信息必须来自环境变量或本地 `.env`，不得硬编码真实账号密码；单表/多表结构查询仅访问 `INFORMATION_SCHEMA.COLUMNS` 元数据，数据校验只允许只读 `SELECT/WITH` 查询，禁止 DDL/DML/存储过程/多语句，并限制样例行数。
+
+## 10. SAP 助手安全规则
+
+- 平台不得直连 SAP 数据库，不得保存 SAP 数据库账号。
+- SAP RFC 密码不得写入数据库、文档或代码；系统配置只允许保存环境变量名。
+- SAP 表数据读取必须通过 SAP 侧 `ZFM_AI_READ_TABLE_SAFE` 或等价只读 RFC，并在 SAP 内部执行最大行数、分页/分段读取、脱敏和审计。
+- AI 不得把自然语言转换成任意 SQL 后直接执行；只能生成查询意图或结构化 ranges。
+- 生产系统默认应限制更严：小行数、敏感字段脱敏、必要时人工确认。
+- 工具调用日志不得输出完整密码、token、业务敏感字段原值或大批量业务数据。
+- ABAP 示例中的 ZILOG 查询、只读取数和审计表必须按现场权限体系审核后才能传输到生产。

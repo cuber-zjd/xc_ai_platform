@@ -43,6 +43,8 @@ class PreviewValidator:
         encoded = quote(reportlet_path, safe="/")
         if not base_url:
             return f"/webroot/decision/view/report?viewlet={encoded}"
+        if base_url.endswith("/webroot/decision/view/report"):
+            return f"{base_url}?viewlet={encoded}"
         return f"{base_url}/webroot/decision/view/report?viewlet={encoded}"
 
 

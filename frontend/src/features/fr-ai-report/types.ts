@@ -166,6 +166,26 @@ export interface GenerateDslStepResponse {
     updateTime: string;
 }
 
+export interface GenerateCptStepResponse {
+    taskId: string;
+    conversationId?: string | null;
+    parentTaskId?: string | null;
+    revisionNo: number;
+    status: string;
+    reportName: string;
+    reportType: ReportType | string;
+    cptObjectPath?: string | null;
+    dslObjectPath?: string | null;
+    sqlObjectPath?: string | null;
+    createSqlObjectPath?: string | null;
+    logObjectPath?: string | null;
+    previewUrl?: string | null;
+    warnings: string[];
+    errors: string[];
+    createTime: string;
+    updateTime: string;
+}
+
 export interface PreviewValidationResult {
     previewUrl: string;
     httpStatus?: number | null;
@@ -206,6 +226,9 @@ export interface ReportTaskRead {
     requirementText?: string | null;
     cptObjectPath?: string | null;
     dslObjectPath?: string | null;
+    sqlObjectPath?: string | null;
+    createSqlObjectPath?: string | null;
+    logObjectPath?: string | null;
     previewUrl?: string | null;
     errors: string[];
     warnings: string[];

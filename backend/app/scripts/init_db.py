@@ -1,6 +1,5 @@
 import asyncio
 import sys
-import os
 from sqlalchemy import text
 from sqlmodel import select
 
@@ -13,9 +12,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
-from app.db.session import engine, async_session
-from app.models.system.sys_user import SysUser
-from app.core.security import get_password_hash
+from app.db.session import engine, async_session  # noqa: E402
+from app.models.system.sys_user import SysUser  # noqa: E402
+from app.core.security import get_password_hash  # noqa: E402
 
 async def init_db():
     async with engine.begin() as conn:

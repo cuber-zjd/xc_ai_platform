@@ -1,5 +1,4 @@
 import requests
-import json
 import os
 
 # 配置项

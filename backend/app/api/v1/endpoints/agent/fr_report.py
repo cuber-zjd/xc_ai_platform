@@ -8,6 +8,7 @@ from app.api.deps import get_current_user, get_db
 from app.models.system.sys_user import SysUser
 from app.schemas.agent.fr_report.ai_report import (
     CptPublishResponse,
+    GenerateCptStepResponse,
     FrAiReportFeedbackCreate,
     FrAiReportFeedbackRead,
     GenerateDslStepResponse,
@@ -64,6 +65,21 @@ async def generate_dsl_step(
     _ = current_user
     try:
         result = await fr_ai_report_service.generate_dsl_step(db, task_id, dsl_feedback)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Result.success(result)
+
+
+@router.post("/steps/cpt/generate", response_model=Result[GenerateCptStepResponse])
+async def generate_cpt_step(
+    *,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+    task_id: str = Form(...),
+) -> Result[GenerateCptStepResponse]:
+    _ = current_user
+    try:
+        result = await fr_ai_report_service.generate_cpt_step(db, task_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return Result.success(result)

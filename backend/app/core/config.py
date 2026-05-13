@@ -1,10 +1,14 @@
+import os
 from pathlib import Path
 from typing import List, Union
+
 from pydantic import AnyHttpUrl, PostgresDsn
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from dotenv import load_dotenv
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
+load_dotenv(BACKEND_DIR / ".env")
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "AI Platform"
@@ -52,6 +56,7 @@ class Settings(BaseSettings):
 
     # FineReport
     FINEREPORT_PREVIEW_BASE_URL: str = ""
+    FR_AI_FINEREPORT_DB_NAME: str = "XcTest"
     FR_AI_SQLSERVER_ENABLED: bool = False
     FR_AI_SQLSERVER_HOST: str = ""
     FR_AI_SQLSERVER_PORT: int = 1433
@@ -86,7 +91,6 @@ class Settings(BaseSettings):
             path=self.POSTGRES_DB,
         )
 
-import os
 settings = Settings()
 settings.sqlalchemy_database_uri = str(settings.compute_database_url()) # Pydantic v2 fix
 

@@ -1,11 +1,10 @@
 from typing import List
-from fastapi import APIRouter, Depends, File, UploadFile, Form, HTTPException, status, BackgroundTasks
+from fastapi import APIRouter, Depends, File, UploadFile, Form, HTTPException, BackgroundTasks
 from sqlmodel.ext.asyncio.session import AsyncSession
 from app.api.deps import get_db
 from app.schemas.agent.contract.contract import ContractRead, ContractCreate, ContractDetailRead
 from app.services.agent.contract.contract_service import contract_service
 from app.services.system.file_service import file_service
-from app.models.contract.contract_model import Contract
 
 router = APIRouter()
 @router.post("/upload", response_model=ContractRead)

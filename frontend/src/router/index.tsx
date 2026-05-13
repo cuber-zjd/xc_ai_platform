@@ -31,6 +31,8 @@ const ChatHomePage = lazy(() => import("@/pages/user-home/ChatHomePage"));
 const WorkbenchPage = lazy(() => import("@/pages/dashboard/WorkbenchPage"));
 const ToolboxPage = lazy(() => import("@/pages/user-home/ToolboxPage"));
 const AgentTestPage = lazy(() => import("@/pages/agent-test/AgentTestPage"));
+const SapAssistantPage = lazy(() => import("@/features/sap-assistant/pages/SapAssistantPage"));
+const SapSystemManagerPage = lazy(() => import("@/pages/system/sap/SapSystemManagerPage"));
 const FrAiReportChatPage = lazy(() =>
     import("@/features/fr-ai-report/pages/FrAiReportChatPage").then((module) => ({ default: module.FrAiReportChatPage })),
 );
@@ -209,6 +211,14 @@ const router = createBrowserRouter([
                 ),
             },
             {
+                path: "sap-systems",
+                element: (
+                    <Suspense fallback={<PageLoader />}>
+                        <SapSystemManagerPage />
+                    </Suspense>
+                ),
+            },
+            {
                 path: "settings",
                 element: <div className="app-page flex h-64 items-center justify-center text-[#8b8fa5]">系统设置页面开发中...</div>,
             },
@@ -260,6 +270,14 @@ const router = createBrowserRouter([
                 element: (
                     <Suspense fallback={<PageLoader />}>
                         <FrAiReportChatPage />
+                    </Suspense>
+                ),
+            },
+            {
+                path: "sap-assistant",
+                element: (
+                    <Suspense fallback={<PageLoader />}>
+                        <SapAssistantPage />
                     </Suspense>
                 ),
             },

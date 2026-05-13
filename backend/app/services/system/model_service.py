@@ -4,7 +4,6 @@
 提供模型配置的 CRUD 操作以及按名称/级别查询等业务逻辑。
 """
 
-from typing import Optional
 
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -68,7 +67,7 @@ class ModelService:
         statement = select(SysModel).where(
             SysModel.model_name == model_name,
             SysModel.is_deleted == 0,
-            SysModel.is_enabled == True,
+            SysModel.is_enabled,
         )
         result = await session.exec(statement)
         return result.first()
@@ -83,7 +82,7 @@ class ModelService:
             select(SysModel)
             .where(
                 SysModel.is_deleted == 0,
-                SysModel.is_enabled == True,
+                SysModel.is_enabled,
                 SysModel.model_type == model_type,
             )
             .order_by(SysModel.model_level, SysModel.priority)
@@ -104,7 +103,7 @@ class ModelService:
                 SysModel.model_level == level,
                 SysModel.model_type == model_type,
                 SysModel.is_deleted == 0,
-                SysModel.is_enabled == True,
+                SysModel.is_enabled,
             )
             .order_by(SysModel.priority)
         )
@@ -124,7 +123,7 @@ class ModelService:
                 SysModel.capability == capability,
                 SysModel.model_type == model_type,
                 SysModel.is_deleted == 0,
-                SysModel.is_enabled == True,
+                SysModel.is_enabled,
             )
             .order_by(SysModel.model_level, SysModel.priority)
         )
@@ -150,7 +149,7 @@ class ModelService:
                 SysModel.model_level >= current_level,
                 SysModel.model_type == model_type,
                 SysModel.is_deleted == 0,
-                SysModel.is_enabled == True,
+                SysModel.is_enabled,
             )
             .order_by(SysModel.model_level, SysModel.priority)
         )

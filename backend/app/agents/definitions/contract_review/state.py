@@ -1,5 +1,5 @@
 from typing import TypedDict, List, Dict, Optional
-from pydantic import BaseModel,Field
+from pydantic import BaseModel
 
 class AuditFinding(BaseModel):
     summary: str

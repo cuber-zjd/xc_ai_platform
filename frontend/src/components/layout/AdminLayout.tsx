@@ -4,6 +4,7 @@ import {
     BarChart3,
     Bot,
     BrainCircuit,
+    ServerCog,
     LayoutDashboard,
     LogOut,
     Menu,
@@ -28,6 +29,7 @@ const navItems = [
     { label: '权限管理', icon: Shield, path: '/admin/permissions', preview: '定义角色权限与访问边界' },
     { label: '系统设置', icon: Settings, path: '/admin/settings', preview: '环境、功能开关与系统参数' },
     { label: '报表生成', icon: BarChart3, path: '/admin/fr-ai-reports', preview: 'FineReport 报表步骤化生成' },
+    { label: 'SAP 系统', icon: ServerCog, path: '/admin/sap-systems', preview: '维护 RFC 连接与环境切换' },
 ];
 
 export default function AdminLayout() {

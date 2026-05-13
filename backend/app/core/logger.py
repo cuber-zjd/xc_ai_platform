@@ -1,7 +1,6 @@
 import os
 import sys
 from loguru import logger
-from app.core.config import settings
 
 # Configure Loguru
 def setup_logging():

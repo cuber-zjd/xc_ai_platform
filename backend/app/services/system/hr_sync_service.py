@@ -1,4 +1,4 @@
-from typing import List, Dict, Any
+from typing import Any
 import pyodbc
 import logging
 from datetime import datetime
@@ -8,7 +8,7 @@ from app.models.system.sys_user import SysUser
 from app.models.system.sys_company import SysCompany
 from app.models.system.sys_dept import SysDept
 from app.models.system.sys_post import SysPost
-from app.db.session import engine, async_session 
+from app.db.session import engine 
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -56,15 +56,20 @@ class HrSyncService:
             return (7, "其他")
         
         s = str(val).strip()
-        desc = s
-        
-        if s == '试用': return (0, s)
-        if s == '正式': return (1, s)
-        if s == '临时': return (2, s)
-        if s == '试用延期': return (3, s)
-        if s == '解聘': return (4, s)
-        if s == '离职': return (5, s)
-        if s == '退休': return (6, s)
+        if s == '试用':
+            return (0, s)
+        if s == '正式':
+            return (1, s)
+        if s == '临时':
+            return (2, s)
+        if s == '试用延期':
+            return (3, s)
+        if s == '解聘':
+            return (4, s)
+        if s == '离职':
+            return (5, s)
+        if s == '退休':
+            return (6, s)
         
         return (7, s) # Default to Other
 
@@ -90,7 +95,7 @@ class HrSyncService:
         """
         try:
             return int(val)
-        except:
+        except Exception:
             return 0 # Default Not Deleted
 
     @staticmethod
@@ -122,7 +127,8 @@ class HrSyncService:
             for row in data:
                 try:
                     sync_id = str(row['sync_id']) if row['sync_id'] else None
-                    if not sync_id: continue
+                    if not sync_id:
+                        continue
                     
                     statement = select(SysCompany).where(SysCompany.sync_id == sync_id)
                     result = await session.exec(statement)
@@ -136,7 +142,7 @@ class HrSyncService:
                     obj.parent_id = str(row['parent_id']) if row['parent_id'] else None
                     try:
                         obj.order = int(row['order_index']) if row['order_index'] else 0
-                    except:
+                    except Exception:
                         obj.order = 0
                     
                     obj.is_deleted = HrSyncService.map_common_status(row['deleted_flag'])
@@ -179,7 +185,8 @@ class HrSyncService:
             for row in data:
                 try:
                     sync_id = str(row['sync_id']) if row['sync_id'] else None
-                    if not sync_id: continue
+                    if not sync_id:
+                        continue
                     
                     statement = select(SysDept).where(SysDept.sync_id == sync_id)
                     result = await session.exec(statement)
@@ -194,7 +201,7 @@ class HrSyncService:
                     obj.company_id = str(row['company_id']) if row['company_id'] else None
                     try:
                         obj.order = int(row['order_index']) if row['order_index'] else 0
-                    except:
+                    except Exception:
                         obj.order = 0
                     
                     obj.is_deleted = HrSyncService.map_common_status(row['deleted_flag'])
@@ -234,7 +241,8 @@ class HrSyncService:
             for row in data:
                 try:
                     sync_id = str(row['sync_id']) if row['sync_id'] else None
-                    if not sync_id: continue
+                    if not sync_id:
+                        continue
                     
                     statement = select(SysPost).where(SysPost.sync_id == sync_id)
                     result = await session.exec(statement)

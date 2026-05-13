@@ -20,6 +20,7 @@ from app.schemas.agent.fr_report.ai_report import (
     FrAiReportFeedbackCreate,
     FrAiReportFeedbackRead,
     GenerateDslStepResponse,
+    GenerateCptStepResponse,
     GenerateReportResponse,
     GenerateSqlStepResponse,
     PreviewValidationResult,
@@ -393,6 +394,104 @@ class FrAiReportService:
                 errors=task.errors,
             )
 
+    async def generate_cpt_step(
+        self,
+        session: AsyncSession,
+        task_id: str,
+    ) -> GenerateCptStepResponse:
+        await self._ensure_task_columns(session)
+        task = await self.get_task(session, task_id)
+        if task is None:
+            raise ValueError("任务不存在")
+        if not task.report_dsl:
+            raise ValueError("请先完成第二步 ReportDSL 生成")
+        if not task.query_sql:
+            raise ValueError("任务缺少 SQL，无法生成 CPT")
+
+        logs = list(task.generation_log or [])
+        logs.append(self._log("开始执行 FineReport AI 报表第三步：生成 CPT 并上传 MinIO staging"))
+        task.status = FrAiReportTaskStatus.GENERATING
+        task.generation_log = logs
+        task.update_time = datetime.now()
+        session.add(task)
+        await session.commit()
+        await session.refresh(task)
+
+        try:
+            dsl = ReportDSL.model_validate(task.report_dsl)
+            validation_warnings = dsl_validator.validate(dsl)
+            logs.append(self._log("ReportDSL 校验通过，开始确定性生成 CPT"))
+
+            cpt_bytes = cpt_generator.generate(dsl)
+            logs.append(self._log("确定性 CPT 生成完成"))
+
+            artifacts = await minio_staging_service.save_artifacts(
+                task_id=task.task_id,
+                cpt_bytes=cpt_bytes,
+                dsl=dsl.model_dump(mode="json"),
+                query_sql=task.query_sql,
+                create_table_sql=task.create_table_sql,
+                generation_log=logs,
+            )
+            logs.append(self._log("CPT、DSL、SQL 和生成日志已写入 MinIO staging"))
+
+            reportlet_path = f"reportlets_ai_staging/{task.task_id}/report.cpt"
+            preview_result = await preview_validator.validate(reportlet_path)
+            if preview_result.errors:
+                logs.append(self._log("FineReport 预览校验未通过"))
+            else:
+                logs.append(self._log("FineReport 预览地址生成完成"))
+
+            sql_validation = task.sql_validation or {}
+            sql_errors = list(sql_validation.get("errors", []))
+            sql_warnings = list(sql_validation.get("warnings", []))
+            task.report_type = dsl.reportType.value
+            task.cpt_object_path = artifacts["cptObjectPath"]
+            task.dsl_object_path = artifacts["dslObjectPath"]
+            task.sql_object_path = artifacts["sqlObjectPath"]
+            task.create_sql_object_path = artifacts["createSqlObjectPath"]
+            task.log_object_path = artifacts["logObjectPath"]
+            task.preview_url = preview_result.previewUrl
+            task.warnings = validation_warnings + sql_warnings + preview_result.warnings
+            task.errors = sql_errors + preview_result.errors
+            task.status = FrAiReportTaskStatus.VALIDATED if not task.errors else FrAiReportTaskStatus.VALIDATION_FAILED
+            task.generation_log = logs
+            task.update_time = datetime.now()
+            session.add(task)
+            if task.conversation_id:
+                result = await session.exec(
+                    select(FrAiReportConversation).where(
+                        FrAiReportConversation.conversation_id == task.conversation_id,
+                        FrAiReportConversation.is_deleted == 0,
+                    )
+                )
+                conversation = result.first()
+                if conversation:
+                    await self._touch_conversation(session, conversation, task)
+            await session.commit()
+            await session.refresh(task)
+            return self.to_cpt_step_schema(task)
+        except DslValidationError as exc:
+            task.status = FrAiReportTaskStatus.FAILED
+            task.errors = exc.errors
+            task.warnings = exc.warnings
+            task.generation_log = logs + [self._log("第三步 ReportDSL 校验失败，未生成 CPT")]
+            task.update_time = datetime.now()
+            session.add(task)
+            await session.commit()
+            await session.refresh(task)
+            return self.to_cpt_step_schema(task)
+        except Exception as exc:
+            logger.exception(f"FineReport AI CPT 步骤生成失败：{exc}")
+            task.status = FrAiReportTaskStatus.FAILED
+            task.errors = [str(exc)]
+            task.generation_log = logs + [self._log("第三步执行异常")]
+            task.update_time = datetime.now()
+            session.add(task)
+            await session.commit()
+            await session.refresh(task)
+            return self.to_cpt_step_schema(task)
+
     async def get_task(self, session: AsyncSession, task_id: str) -> FrAiReportTask | None:
         result = await session.exec(select(FrAiReportTask).where(FrAiReportTask.task_id == task_id))
         return result.first()
@@ -580,6 +679,27 @@ class FrAiReportService:
             reportType=task.report_type or "",
             reportDsl=ReportDSL.model_validate(task.report_dsl) if task.report_dsl else None,
             sqlValidation=SqlValidationResult.model_validate(task.sql_validation) if task.sql_validation else None,
+            warnings=task.warnings or [],
+            errors=task.errors or [],
+            createTime=task.create_time,
+            updateTime=task.update_time,
+        )
+
+    def to_cpt_step_schema(self, task: FrAiReportTask) -> GenerateCptStepResponse:
+        return GenerateCptStepResponse(
+            taskId=task.task_id,
+            conversationId=task.conversation_id,
+            parentTaskId=task.parent_task_id,
+            revisionNo=task.revision_no or 1,
+            status=task.status.value,
+            reportName=task.report_name,
+            reportType=task.report_type or "",
+            cptObjectPath=task.cpt_object_path,
+            dslObjectPath=task.dsl_object_path,
+            sqlObjectPath=task.sql_object_path,
+            createSqlObjectPath=task.create_sql_object_path,
+            logObjectPath=task.log_object_path,
+            previewUrl=task.preview_url,
             warnings=task.warnings or [],
             errors=task.errors or [],
             createTime=task.create_time,

@@ -1,7 +1,6 @@
 import base64
 import json
-from typing import Any, List
-from fastapi import APIRouter, Depends, File, UploadFile, HTTPException
+from fastapi import APIRouter, Depends, File, Form, UploadFile
 from loguru import logger
 from langchain_core.messages import SystemMessage, HumanMessage
 
@@ -21,11 +20,12 @@ router = APIRouter()
 )
 @observe(name="extract_data_with_image")
 async def extract_data_with_image(
-    file: UploadFile = File(..., description="要识别的图片文件")
+    file: UploadFile = File(..., description="要识别的图片文件"),
+    prompt: str | None = Form(None, description="用户自定义提取要求，可覆盖默认表头/表尾处理规则"),
 ):
     """
     外部接口：通过图片提取结构化数据（二维数组）
-    支持识别图片中的表格或列表数据，不包含表头及表尾。
+    支持识别图片中的表格或列表数据，默认不包含表头及表尾；如用户提示词明确要求包含，则以用户提示词为准。
     返回格式：[[row1_col1, row1_col2, ...], [row2_col1, row2_col2, ...]]
     """
     try:
@@ -43,18 +43,23 @@ async def extract_data_with_image(
             "你是一个精通OCR与表格数据解析的专家。\n"
             "用户会给你一张图片，请你识别并提取其中的主要表格数据，并以JSON格式返回一个二维数组。\n"
             "具体要求如下：\n"
-            "1. 只提取表格中的正文行数据，**严禁包含表头（标题行）以及表尾（合计、备注等）**。\n"
-            "2. 输出格式必须是一个严格的二维数组：[[单元格1, 单元格2, ...], [单元格1, 单元格2, ...]]。\n"
-            "3. 你的输出只能包含JSON二维数组，不要输出任何Markdown标记、代码块标记或解释性文字。\n"
-            "4. 如果识别到的某列数据为空，请在该位置填入 null 或空字符串。"
+            "1. 默认只提取表格中的正文行数据，不包含表头（标题行）以及表尾（合计、备注等）。\n"
+            "2. 如果用户自定义提取要求中明确提出需要包含表头、标题行、合计、备注或其他表尾内容，必须以用户要求为准。\n"
+            "3. 如果用户自定义提取要求与默认规则冲突，优先执行用户自定义提取要求。\n"
+            "4. 输出格式必须是一个严格的二维数组：[[单元格1, 单元格2, ...], [单元格1, 单元格2, ...]]。\n"
+            "5. 你的输出只能包含JSON二维数组，不要输出任何Markdown标记、代码块标记或解释性文字。\n"
+            "6. 如果识别到的某列数据为空，请在该位置填入 null 或空字符串。"
         )
+        user_text = "请提取这张图片中的数据并返回二维数组。"
+        if prompt and prompt.strip():
+            user_text += f"\n\n用户自定义提取要求：\n{prompt.strip()}"
 
         # 构建多模态消息
         messages = [
             SystemMessage(content=system_prompt),
             HumanMessage(
                 content=[
-                    {"type": "text", "text": "请提取这张图片中的数据并返回二维数组："},
+                    {"type": "text", "text": user_text},
                     {
                         "type": "image_url",
                         "image_url": {"url": f"data:{mime_type};base64,{base64_image}"},
