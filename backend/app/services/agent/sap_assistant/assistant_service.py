@@ -326,9 +326,20 @@ class SapAssistantService:
         try:
             response = await task
         except Exception as exc:
-            error_item = self._timeline("deepagents_error", "failed", "deepagents 执行失败", str(exc))
+            is_recursion_error = sap_deep_agent_service._is_recursion_limit_error(exc)
+            error_detail = sap_deep_agent_service._friendly_agent_error(exc) if is_recursion_error else str(exc)
+            error_item = self._timeline(
+                "deepagents_error",
+                "skipped" if is_recursion_error else "failed",
+                "停止自动追查" if is_recursion_error else "deepagents 执行失败",
+                error_detail,
+            )
             yield timeline_event(error_item)
-            fallback_answer = f"deepagents 执行失败：{exc}"
+            fallback_answer = (
+                f"{error_detail}\n\n当前没有拿到完整的自动总结结果，请基于已有时间线和证据继续追问。"
+                if is_recursion_error
+                else f"deepagents 执行失败：{exc}"
+            )
             db.add(SapAssistantMessage(session_id=session.id or 0, role="user", content=request.message))
             db.add(SapAssistantMessage(session_id=session.id or 0, role="assistant", content=fallback_answer, message_metadata={"timeline": [error_item]}))
             await db.commit()

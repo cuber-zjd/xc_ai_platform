@@ -28,6 +28,7 @@ class SapDeepAgentService:
     MAX_TOOL_RESULT_TEXT = 2200
     MAX_SOURCE_PACK_TEXT = 22000
     MAX_TOOL_CALLS = 12
+    GRAPH_RECURSION_LIMIT = 60
     EXCLUDED_DEEPAGENT_TOOLS = frozenset(
         {
             "write_todo",
@@ -101,7 +102,7 @@ class SapDeepAgentService:
                             )
                         ]
                     },
-                    config={"recursion_limit": 28},
+                    config={"recursion_limit": self.GRAPH_RECURSION_LIMIT},
                 )
             except SapAgentStop as exc:
                 stop_item = self._timeline("agent_stop", "success", "停止自动追查", exc.reason)
@@ -118,9 +119,11 @@ class SapDeepAgentService:
                 )
             except Exception as exc:
                 reason = str(exc)
-                status = "skipped" if "Recursion limit" in reason or "GRAPH_RECURSION_LIMIT" in reason else "failed"
+                is_recursion_error = self._is_recursion_limit_error(exc)
+                status = "skipped" if is_recursion_error else "failed"
                 title = "停止自动追查" if status == "skipped" else "deepagents 执行失败"
-                error_item = self._timeline("deepagents_error", status, title, reason)
+                stop_reason = self._friendly_agent_error(exc) if is_recursion_error else reason
+                error_item = self._timeline("deepagents_error", status, title, stop_reason)
                 timeline.append(error_item)
                 await self._emit_timeline(event_sink, error_item)
                 answer = await self._compose_budget_answer(
@@ -128,7 +131,7 @@ class SapDeepAgentService:
                     system,
                     tool_results,
                     evidence,
-                    "deepagents 未自然收束，已切换为后端证据总结" if status == "skipped" else reason,
+                    stop_reason,
                     event_sink,
                     model_name=request.model_name,
                 )
@@ -405,6 +408,18 @@ class SapDeepAgentService:
             return f"已达到本轮 deepagents 工具调用上限 {self.MAX_TOOL_CALLS} 次"
 
         return ""
+
+    def _is_recursion_limit_error(self, exc: Exception) -> bool:
+        reason = f"{type(exc).__name__}: {exc}"
+        return any(token in reason for token in ("Recursion limit", "GRAPH_RECURSION_LIMIT", "GraphRecursionError"))
+
+    def _friendly_agent_error(self, exc: Exception) -> str:
+        if self._is_recursion_limit_error(exc):
+            return (
+                f"已达到本轮自动追查步数上限（{self.GRAPH_RECURSION_LIMIT} 步），"
+                "系统已停止继续调用工具，并基于已有 SAP 证据生成阶段性结论。"
+            )
+        return str(exc)
 
     def _llm_tool_return(self, tool_name: str, data: Any, status: str, summary: str, params: dict[str, Any] | None = None) -> str:
         if status != "success":

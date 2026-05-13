@@ -79,14 +79,15 @@ class SapToolService:
         evidence = self._build_evidence(tool_name, params, rfc_result)
 
         status = "success" if self._is_successful_result(rfc_result) else "failed"
+        summary = self._rfc_summary(tool_name, rfc_result)
         result = SapToolResult(
             tool_name=tool_name,
             status=status,
-            summary=self._summary(tool_name, rfc_result),
+            summary=summary,
             duration_ms=duration_ms,
             data=rfc_result.get("data") if status == "success" else {"request": self._rfc_params(tool_name, params), "response": rfc_result.get("data")},
             evidence=evidence,
-            error_message=None if status == "success" else rfc_result.get("message"),
+            error_message=None if status == "success" else summary,
         )
 
         tool_call.status = status
@@ -199,7 +200,14 @@ class SapToolService:
             if isinstance(field, str) and field.strip():
                 normalized.append({"FIELDNAME": field.strip().upper()})
             elif isinstance(field, dict):
-                field_name = str(field.get("FIELDNAME") or field.get("fieldname") or field.get("field_name") or "").strip()
+                field_name = str(
+                    field.get("FIELDNAME")
+                    or field.get("fieldname")
+                    or field.get("field_name")
+                    or field.get("field")
+                    or field.get("name")
+                    or ""
+                ).strip()
                 if field_name:
                     normalized.append({"FIELDNAME": field_name.upper()})
         return normalized
@@ -211,8 +219,15 @@ class SapToolService:
         for item in ranges:
             if not isinstance(item, dict):
                 continue
-            field_name = str(item.get("FIELDNAME") or item.get("fieldname") or item.get("field_name") or "").strip()
-            low = str(item.get("LOW") or item.get("low") or "").strip()
+            field_name = str(
+                item.get("FIELDNAME")
+                or item.get("fieldname")
+                or item.get("field_name")
+                or item.get("field")
+                or item.get("name")
+                or ""
+            ).strip()
+            low = str(item.get("LOW") or item.get("low") or item.get("value") or "").strip()
             if not field_name or not low:
                 continue
             normalized.append(
@@ -235,7 +250,14 @@ class SapToolService:
                 field_name = item.strip()
                 direction = "DESC"
             elif isinstance(item, dict):
-                field_name = str(item.get("FIELDNAME") or item.get("fieldname") or item.get("field_name") or "").strip()
+                field_name = str(
+                    item.get("FIELDNAME")
+                    or item.get("fieldname")
+                    or item.get("field_name")
+                    or item.get("field")
+                    or item.get("name")
+                    or ""
+                ).strip()
                 direction = str(item.get("DIRECTION") or item.get("direction") or item.get("order") or "DESC").strip().upper()
             else:
                 continue
@@ -437,10 +459,10 @@ class SapToolService:
             SapToolEvidence(
                 evidence_type=self._evidence_type(tool_name),
                 title=title_map.get(tool_name, tool_name),
-                summary=rfc_result.get("message"),
+                summary=self._rfc_summary(tool_name, rfc_result),
                 source_object=params.get("tcode") or params.get("object_name") or params.get("table_name"),
                 location=self._function_name(tool_name),
-                confidence=0.9 if rfc_result.get("success") else 0.2,
+                confidence=0.9 if self._is_successful_result(rfc_result) else 0.2,
                 content={"data": data, "function": rfc_result.get("function"), "message": rfc_result.get("message")},
             )
         ]
@@ -455,6 +477,18 @@ class SapToolService:
         if tool_name in {"safe_table_read", "latest_table_read"}:
             return "data"
         return "sap"
+
+    def _rfc_summary(self, tool_name: str, rfc_result: dict[str, Any]) -> str:
+        data = rfc_result.get("data")
+        if isinstance(data, dict):
+            parsed = data.get("JSON_PARSED")
+            if isinstance(parsed, dict) and parsed.get("success") is False:
+                message = parsed.get("message") or "SAP 工具返回业务失败"
+                subrc = parsed.get("subrc")
+                if subrc is not None:
+                    return f"{message}（subrc={subrc}）"
+                return str(message)
+        return rfc_result.get("message") or f"{tool_name} 执行完成"
 
     def _summary(self, tool_name: str, rfc_result: dict[str, Any]) -> str:
         return rfc_result.get("message") or f"{tool_name} 执行完成"

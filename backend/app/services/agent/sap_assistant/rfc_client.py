@@ -78,12 +78,14 @@ class SapRfcClient:
         }
         if system.ashost:
             params["ashost"] = system.ashost
-        if system.mshost:
+            if system.sysnr:
+                params["sysnr"] = system.sysnr
+        elif system.mshost:
             params["mshost"] = system.mshost
-        if system.sysnr:
-            params["sysnr"] = system.sysnr
-        if system.group:
-            params["group"] = system.group
+            if system.sysnr:
+                params["sysnr"] = system.sysnr
+            if system.group:
+                params["group"] = system.group
         if system.user_env_key:
             params["user"] = self._resolve_secret(system.user_env_key)
         if system.password_env_key:
