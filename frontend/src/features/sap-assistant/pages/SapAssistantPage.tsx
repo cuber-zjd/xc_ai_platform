@@ -27,6 +27,22 @@ import type {
 
 const WELCOME_MESSAGE = '你好，我是 SAP 助手。可以问我事务码、RFC 函数、字段血缘、ZILOG 日志或知识库中的问题。';
 
+type VisibleStoredMessage = SapAssistantStoredMessage & { role: ChatMessage['role'] };
+
+function createClientId(prefix: string) {
+  if (globalThis.crypto?.randomUUID) {
+    return globalThis.crypto.randomUUID();
+  }
+
+  if (globalThis.crypto?.getRandomValues) {
+    const values = new Uint32Array(2);
+    globalThis.crypto.getRandomValues(values);
+    return `${prefix}-${Date.now().toString(36)}-${Array.from(values, (value) => value.toString(36)).join('')}`;
+  }
+
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
 export default function SapAssistantPage() {
   const [systems, setSystems] = useState<SapSystem[]>([]);
   const [models, setModels] = useState<ModelConfig[]>([]);
@@ -118,7 +134,7 @@ export default function SapAssistantPage() {
       const data = await apiClient.get(`/sap/assistant/sessions/${id}/messages`);
       const stored = (data ?? []) as unknown as SapAssistantStoredMessage[];
       const restored = stored
-        .filter((item) => item.role === 'user' || item.role === 'assistant')
+        .filter((item): item is VisibleStoredMessage => item.role === 'user' || item.role === 'assistant')
         .map<ChatMessage>((item) => ({
           id: String(item.id),
           role: item.role,
@@ -139,8 +155,8 @@ export default function SapAssistantPage() {
     setInput('');
     setIsStreaming(true);
 
-    const userMessage: ChatMessage = { id: crypto.randomUUID(), role: 'user', content: text };
-    const assistantId = crypto.randomUUID();
+    const userMessage: ChatMessage = { id: createClientId('user'), role: 'user', content: text };
+    const assistantId = createClientId('assistant');
     pendingTextRef.current = '';
     visibleAnswerRef.current = '';
     if (typewriterTimerRef.current) window.clearInterval(typewriterTimerRef.current);
