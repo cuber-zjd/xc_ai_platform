@@ -155,15 +155,15 @@
 1. 用户进入 `/sap-assistant`，可从历史会话列表恢复旧会话，也可新建会话并选择 SAP 系统和可选知识库。
 2. 前端通过 `/api/v1/sap/assistant/chat/stream` 发起流式聊天请求。
 3. 后端创建或恢复 `sap_assistant_session`，写入用户消息。
-4. `SapAssistantService` 识别意图、解析系统，并交由 `SapGraphAgentService` 使用 LangGraph 状态机自主选择下一步工具调用或停止总结。
-5. `SapToolService` 调用 `SapRfcClient`，再由 SAP 侧 `ZFM_AI_*` RFC 获取事务码、源码、DDIC、ZILOG 或只读分页数据。
+4. `SapAssistantService` 创建或恢复会话、解析 SAP 系统，并交由 `SapDeepAgentService` 使用 SAP 专用 Agent 自主规划工具调用、更新证据链和决定是否调用 `finish_investigation`；该 Agent 复用 deepagents 的摘要压缩、工具调用修复和提示缓存中间件，但不注入默认 todo、文件、shell 或 subagent 工具；历史 LangGraph 和自定义 ReAct 实现已移除。
+5. `SapToolService` 调用 `SapRfcClient`，再由 SAP 侧 `ZFM_AI_*` RFC 获取事务码、源码、DDIC 或只读分页数据；源码类工具会完整拉取并写入缓存、前端事件、审计和数据库记录，但默认只把与用户问题相关的源码包作为工具观察交给 SAP 工具 Agent。`zilog_logs` 和 `latest_table_read` 完成前不得暴露给 SAP 工具 Agent。
 6. 每次工具调用写入 `sap_tool_call`，证据写入 `sap_evidence_record`。
 7. 如选择知识库，后端通过通用知识库服务检索片段并合并到证据链。
-8. 每轮工具结果返回后，LangGraph 决策节点只读取压缩观察、源码关键片段和会话记忆，判断继续调用工具、停止回答或请求人工介入；只有在模型决策失败时才允许使用轻量规则兜底。
-9. 对源码定位类问题，可以读取完整源码作为工具产物，但进入 LLM 上下文前必须由服务层抽取可执行证据片段、调用关系和必要摘要，避免反复把全文交给模型。
+8. 每轮工具结果返回后，SAP 工具 Agent 决策阶段读取工具观察、证据账本和会话记忆，判断继续调用工具、停止回答或请求人工介入；服务层只做异常兜底和会话持久化，不再维护自定义 ReAct 工具循环。
+9. 对源码定位类问题，LLM 先使用 `program_source` / `function_source` 获取问题相关源码包，自主定位字段赋值、金额计算、取数语句和真实 `CALL FUNCTION` 链路；当源码包缺少关键上下文时，才调用 `source_full_text` 显式获取全文。
 10. SAP 助手会话需要读取最近消息和证据作为下一轮上下文，不允许只保存不使用；前端通过 `/api/v1/sap/assistant/sessions` 和 `/api/v1/sap/assistant/sessions/{id}/messages` 展示历史会话。
 11. 如果达到单轮最大工具步数仍未完成，回答中需要明确说明已达到自动追查上限，并提示用户可以继续追问以接着当前证据链运行。
-12. 后端通过 LLM 总结回答；模型不可用时使用规则兜底回答。
+12. 后端通过 `SapDeepAgentService` 的总结阶段生成回答；模型不可用时仅基于已有 deepagent 证据做轻量兜底。
 13. 前端在主对话气泡内折叠展示执行时间线，让用户在聊天主线中看到 AI 正在做什么；右侧动态工作区不再作为 SAP 助手第一版必需界面。
 
 安全边界：
@@ -172,9 +172,10 @@
 - 生产系统数据查询必须通过 RFC 内部只读逻辑、行数限制、分页/分段读取、脱敏和审计。
 ## SAP 助手状态化调查补充
 
-- SAP 助手聊天入口当前优先走 `backend/app/services/agent/sap_assistant/deep_agent_service.py`。`graph_agent_service.py` 作为 LangGraph 实验实现保留，用于后续验证状态机降 token 方案；未达到 deepagents 的自主追查效果前不得切为默认入口。
-- SAP 助手的源码分析不再依赖单纯 ReAct 循环反复让模型决定下一步；LangGraph 状态需要维护调查进度，包括工具调用去重、最近观察摘要、源码关键证据片段、直接赋值证据、计算证据和发现的函数调用。
-- 为减少 token，工具完整结果只推送给前端、审计和数据库持久化；LLM 决策节点只读取压缩后的观察摘要，源码全文读取后由服务层抽取可执行片段和调用关系，再决定是否继续追查或直接总结。
+- SAP 助手聊天入口固定走 `backend/app/services/agent/sap_assistant/deep_agent_service.py`。该入口按 deepagents 源码思路组装 SAP 专用 Agent，复用摘要压缩、工具调用修复和提示缓存中间件，禁用 deepagents 默认 todo、文件、shell 和 subagent 工具。
+- SAP 助手的源码分析不再保留旧 LangGraph 或自定义 ReAct 循环；调查状态由 deepagent 服务维护，包括工具调用去重、证据账本、源码对象索引和预算状态。
+- 当前 SAP 工具 Agent 默认源码工具为 `program_source` 和 `function_source`，完整源码进入服务层缓存、审计和前端事件，LLM 默认接收问题相关源码包；服务层负责源码缓存、审计和证据强弱标注。
+- 接近工具预算或递归限制时，后端先压缩调查状态，保留已执行计划、强弱证据、缺口和剩余预算，再由 Agent 决定继续读取关键源码包、请求全文、跳过可选分支或进入总结。
 - 涉及字段取值、金额计算或字段血缘的问题，只有找到可执行代码证据后才能给出确定结论。有效证据包括 `SELECT`、`LOOP`、`READ TABLE`、`CALL FUNCTION`、`PERFORM`、赋值和计算语句；注释和 `DATA/TYPES` 定义只能作为线索。
 - 如果调查状态已经包含目标字段的可执行赋值或计算证据，应停止继续重复读取和检索并进入总结阶段。
 - 同一源码对象的读取需要去重控制，避免在同一程序中来回读取造成 token 和时间浪费；必要时改为追踪真实 `CALL FUNCTION` 或查询 DDIC、日志、只读样例数据补证。

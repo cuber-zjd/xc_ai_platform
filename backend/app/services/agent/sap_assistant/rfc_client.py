@@ -2,6 +2,7 @@ import asyncio
 import importlib
 import json
 import os
+import re
 from typing import Any
 
 from app.core.logger import logger
@@ -30,6 +31,8 @@ class SapRfcClient:
             return {
                 "success": False,
                 "function": function_name,
+                "errorType": "sdk_not_available",
+                "retryable": False,
                 "message": "pyrfc 已安装，但未找到 SAP NetWeaver RFC SDK 动态库。请安装 NWRFC SDK 并把 lib 目录加入 PATH。",
                 "data": None,
             }
@@ -38,6 +41,8 @@ class SapRfcClient:
             return {
                 "success": False,
                 "function": function_name,
+                "errorType": "sdk_not_available",
+                "retryable": False,
                 "message": "后端未安装 pyrfc 或 SAP NetWeaver RFC SDK，无法发起正式 SAP RFC 调用。",
                 "data": None,
             }
@@ -47,6 +52,8 @@ class SapRfcClient:
             return {
                 "success": False,
                 "function": function_name,
+                "errorType": "missing_credentials",
+                "retryable": False,
                 "message": "SAP RFC 用户或密码环境变量未配置。",
                 "data": None,
             }
@@ -57,10 +64,16 @@ class SapRfcClient:
             return {"success": True, "function": function_name, "message": "调用成功", "data": result}
         except Exception as exc:
             logger.error(f"SAP RFC 调用失败 {function_name}: {exc}")
+            masked_message = self._mask_error(str(exc))
+            diagnosis = self._diagnose_error(masked_message)
             return {
                 "success": False,
                 "function": function_name,
-                "message": self._mask_error(str(exc)),
+                "errorType": diagnosis["errorType"],
+                "retryable": diagnosis["retryable"],
+                "target": diagnosis.get("target"),
+                "message": diagnosis["message"],
+                "rawMessage": masked_message,
                 "data": None,
             }
 
@@ -102,6 +115,62 @@ class SapRfcClient:
         for token in ("passwd", "password", "PWD"):
             message = message.replace(token, "***")
         return message[:800]
+
+    def _diagnose_error(self, message: str) -> dict[str, Any]:
+        upper_message = message.upper()
+        target = self._extract_error_target(message)
+        if any(
+            token in upper_message
+            for token in (
+                "RFC_COMMUNICATION_FAILURE",
+                "WSAETIMEDOUT",
+                "CONNECTION TIMED OUT",
+                "CONNECT CALL FAILED",
+                "PARTNER",
+                "NOT REACHED",
+                "NIPCONNECT",
+            )
+        ):
+            target_text = f"（目标：{target}）" if target else ""
+            return {
+                "errorType": "connection_failure",
+                "retryable": True,
+                "target": target,
+                "message": f"SAP RFC 网络连接失败{target_text}，未能执行远程函数；这不能作为业务数据不存在的证据。",
+            }
+        if "LOGON" in upper_message or "PASSWORD" in upper_message or "NAME OR PASSWORD" in upper_message:
+            return {
+                "errorType": "authentication_failure",
+                "retryable": False,
+                "target": target,
+                "message": "SAP RFC 登录失败，请检查 RFC 用户、密码环境变量和账号状态。",
+            }
+        if "TIMEOUT" in upper_message:
+            target_text = f"（目标：{target}）" if target else ""
+            return {
+                "errorType": "timeout",
+                "retryable": True,
+                "target": target,
+                "message": f"SAP RFC 调用超时{target_text}，未能取得结果；这不能作为业务数据不存在的证据。",
+            }
+        return {
+            "errorType": "rfc_error",
+            "retryable": False,
+            "target": target,
+            "message": message,
+        }
+
+    def _extract_error_target(self, message: str) -> str | None:
+        partner_match = re.search(r"partner\s+'([^']+)'", message, flags=re.IGNORECASE)
+        if partner_match:
+            return partner_match.group(1)
+        connect_match = re.search(r"Connect call failed\s+\('([^']+)'\s*,\s*(\d+)\)", message, flags=re.IGNORECASE)
+        if connect_match:
+            return f"{connect_match.group(1)}:{connect_match.group(2)}"
+        detail_match = re.search(r"NiPConnect2:\s*([^\s\r\n]+)", message, flags=re.IGNORECASE)
+        if detail_match:
+            return detail_match.group(1)
+        return None
 
     def _normalize_result(self, result: Any) -> Any:
         if not isinstance(result, dict):

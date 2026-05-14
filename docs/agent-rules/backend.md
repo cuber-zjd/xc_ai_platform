@@ -128,14 +128,15 @@ uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - 通用知识库入口：`backend/app/api/v1/endpoints/knowledge_bases.py`，统一挂载到 `/api/v1/knowledge-bases`，不得绑定到 SAP 专属命名。
 - SAP 模型：`backend/app/models/agent/sap_assistant.py`，保存系统配置、会话、消息、工具调用和证据记录。
 - 知识库模型：`backend/app/models/knowledge_base.py`，保存知识库、文档、切片和索引任务。
-- SAP 服务分层位于 `backend/app/services/agent/sap_assistant/`：`SapAssistantService -> SapToolService -> SapRfcClient`，工具调用必须记录审计和证据。
+- SAP 服务分层位于 `backend/app/services/agent/sap_assistant/`：`SapAssistantService -> SapDeepAgentService -> SapToolService -> SapRfcClient`，工具调用必须记录审计和证据。
 - SAP RFC 客户端需要兼容未安装 `pyrfc` 的开发环境；未配置时可以返回明确的未配置或演示证据，但不得假装已经真实查询生产系统。
-- AI 不允许直接执行任意 SQL 或保存数据库账号；业务数据必须通过 SAP 侧只读 RFC 查询，并采用小批量、多轮调用减少 token 消耗。
+- AI 不允许直接执行任意 SQL 或保存数据库账号；业务数据必须通过 SAP 侧只读 RFC 查询，并采用小批量、多轮调用减少 token 消耗。`safe_table_read` 调用必须显式指定少量字段和高选择性 ranges 条件，默认最多 5 行；禁止空字段或无条件读取宽表。
 - 回答必须尽量包含 SAP 系统上下文、使用的工具、证据来源和不确定性说明。
 ## SAP 助手 Agent 状态约束补充
 
-- SAP 助手聊天入口当前优先走 `backend/app/services/agent/sap_assistant/deep_agent_service.py`，并复用 `SapToolService -> SapRfcClient` 调用 SAP 侧 `ZFM_AI_*` RFC；`graph_agent_service.py` 仅作为 LangGraph 实验实现保留，未达到 deepagents 的自主追查效果前不得切为默认入口。
-- SAP 助手服务层必须维护源码调查状态，不能只依赖模型逐轮自由规划。状态至少包含工具调用去重、最近观察摘要、源码关键证据片段、直接赋值证据、计算证据和已发现函数调用。
-- 为减少 token，工具完整结果只进入前端流式事件、审计和数据库记录；LLM 决策阶段只接收压缩观察，源码全文读取后必须先抽取可执行证据片段和调用关系，再进入下一轮决策或总结。
+- SAP 助手聊天入口固定走 `backend/app/services/agent/sap_assistant/deep_agent_service.py`，并复用 `SapToolService -> SapRfcClient` 调用 SAP 侧 `ZFM_AI_*` RFC；该入口按 deepagents 源码思路组装 SAP 专用 Agent，保留摘要压缩、工具调用修复和提示缓存中间件，但禁用 deepagents 默认 todo、文件、shell 和 subagent 工具；历史 LangGraph 和自定义 ReAct 实现已移除。
+- SAP 助手服务层必须维护源码调查状态，不能只依赖模型逐轮自由规划。状态至少包含工具调用去重、最近观察摘要、直接赋值证据、计算证据和已发现函数调用。
+- 当前源码调查采用“全量拉取、聚焦观察、按需全文”策略：`program_source` 和 `function_source` 在服务层完整读取源码并写入缓存、前端事件、审计和数据库记录，但默认只把与用户问题相关的源码包交给 LLM；只有聚焦源码包不足以判断关键逻辑时，Agent 才能显式调用 `source_full_text` 获取全文。
+- SAP 助手调查状态需要维护 `evidence_ledger`、源码对象索引和工具预算；接近预算或递归限制时先压缩状态，再决定继续读取关键源码包、请求 `source_full_text`、跳过可选补强或调用 `finish_investigation`。
 - 字段取值、金额计算、字段血缘类问题只有在存在可执行代码证据时才能下确定结论；注释、标题和字段定义不得被改写成事实结论。
 - 当调查状态已经满足回答条件时，后端应强制进入总结阶段，避免模型继续重复搜索；当证据不足时，后端应自动选择未执行过的补查工具，而不是把“下一步建议调用工具”交给用户。
