@@ -649,6 +649,14 @@ class SapDeepAgentService:
         if isinstance(exc, SQLAlchemyError) or "sqlalchemy" in f"{type(exc).__module__}.{type(exc).__name__}".lower():
             return "后台记录工具调用时数据库连接中断，系统已停止本轮自动追查并基于已获得的证据生成阶段性回答。"
         reason = str(exc)
+        if "LLM_PROXY_MODE" in reason:
+            return reason
+        if "Unknown scheme for proxy URL" in reason or "socks://" in reason:
+            return (
+                "模型服务代理配置不可用：当前代理地址使用了不被模型客户端接受的 socks:// 协议。"
+                "请将服务器环境变量 HTTP_PROXY/HTTPS_PROXY/ALL_PROXY 中的 socks:// 改为 socks5://，"
+                "或配置 LLM_PROXY_MODE=url、LLM_PROXY_URL=socks5://host:port 后重启服务。"
+            )
         if "ConnectionDoesNotExistError" in reason or "connection was closed in the middle of operation" in reason:
             return "后台数据库连接在记录工具调用时中断，系统已停止本轮自动追查并基于已获得的证据生成阶段性回答。"
         return str(exc)

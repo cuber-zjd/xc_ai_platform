@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     LANGFUSE_SECRET_KEY: str = "sk-lf-..."
     LANGFUSE_HOST: str = "http://localhost:9506"
 
+    # LLM network proxy
+    # auto: 兼容系统代理环境变量；off: 模型调用忽略系统代理；env: 强制使用系统代理；url: 只使用 LLM_PROXY_URL
+    LLM_PROXY_MODE: str = "auto"
+    LLM_PROXY_URL: str = ""
+
     # OnlyOffice Document Server
     ONLYOFFICE_SERVER_URL: str = "http://192.168.14.44:9509"
     ONLYOFFICE_JWT_SECRET: str = "ai_platform_onlyoffice_secret"

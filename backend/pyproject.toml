@@ -18,7 +18,7 @@ dependencies = [
     "langfuse",
     "python-multipart",
     "pymilvus",
-    "httpx",
+    "httpx[socks]",
     "pydantic-settings",
     "python-jose[cryptography]",
     "passlib[argon2]",

@@ -129,3 +129,12 @@ uv sync
 - SAP 系统配置入口为 `/admin/sap-systems`，接口为 `/api/v1/sap/systems`。
 - ABAP RFC 示例文件位于 `docs/sap-rfc/`，生产部署前需要在 SAP 侧补充审计表、权限对象、返回量控制和 ZILOG 真实查询逻辑。
 - 通用知识库接口为 `/api/v1/knowledge-bases`，文件写入 MinIO，切片和索引元数据写 PostgreSQL；后续接入真实向量检索时使用现有 Milvus 服务。
+
+## 9. 模型服务代理配置
+
+- 后端模型调用统一经过 `backend/app/core/llm_factory.py`，不得在业务代码里绕过工厂直接实例化 `ChatOpenAI`。
+- 代理策略由 `LLM_PROXY_MODE` 控制：`auto` 为默认值；`off` 表示模型调用忽略系统代理；`env` 表示使用 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 及其小写形式；`url` 表示只使用 `LLM_PROXY_URL`。
+- `auto` 模式下，如果配置了 `LLM_PROXY_URL`，模型调用使用该显式代理并忽略系统代理；如果未配置，则兼容系统代理环境变量。这样本地无代理可以直连，服务器有代理也可以按需接入。
+- 如果服务器使用 SOCKS 代理，必须使用 `socks5://host:port`，不要使用 `socks://host:port`；LLM 工厂会将遗留的 `socks://` 自动规范为 `socks5://`，避免 `ChatOpenAI` 初始化时报 `Unknown scheme for proxy URL`。
+- 后端依赖已启用 `httpx[socks]`，用于支持 HTTPX/OpenAI 客户端通过 SOCKS 代理访问外部模型服务。
+- 推荐部署策略：本地 `.env` 保持 `LLM_PROXY_MODE=auto` 且不配置 `LLM_PROXY_URL`；服务器如果必须走代理，配置 `LLM_PROXY_MODE=url` 和 `LLM_PROXY_URL=socks5://127.0.0.1:7897`；服务器如果全局代理会干扰模型服务，配置 `LLM_PROXY_MODE=off`。

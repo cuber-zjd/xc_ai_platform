@@ -23,10 +23,12 @@ LLM 工厂 - 数据库驱动 + 熔断降级
 """
 
 import asyncio
+import os
 import time
 from enum import Enum
 from typing import Any
 
+import httpx
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage
 from langchain_openai import ChatOpenAI
@@ -194,6 +196,79 @@ class LLMFactory:
     RECOVERY_TIMEOUT = 60  # 熔断后 60 秒尝试恢复
 
     @classmethod
+    def _build_http_client_options(cls) -> dict[str, Any]:
+        """为模型调用构建独立 HTTP 客户端，避免系统代理在不同部署环境里暗中影响 LLM。"""
+        cls._normalize_proxy_environment()
+        mode = (settings.LLM_PROXY_MODE or "auto").strip().lower()
+        proxy_url = cls._normalize_proxy_url(settings.LLM_PROXY_URL.strip()) if settings.LLM_PROXY_URL else ""
+
+        if mode in {"off", "none", "disabled", "false", "0"}:
+            logger.info("模型调用代理模式: off，LLM 将忽略系统代理环境变量")
+            return cls._http_client_options(proxy_url=None, trust_env=False)
+
+        if mode == "url":
+            if not proxy_url:
+                raise ValueError("LLM_PROXY_MODE=url 时必须配置 LLM_PROXY_URL")
+            logger.info(f"模型调用代理模式: url，使用显式代理 {cls._redact_proxy_url(proxy_url)}")
+            return cls._http_client_options(proxy_url=proxy_url, trust_env=False)
+
+        if mode == "env":
+            logger.info("模型调用代理模式: env，使用系统代理环境变量")
+            return {}
+
+        if mode == "auto":
+            if proxy_url:
+                logger.info(f"模型调用代理模式: auto，使用 LLM_PROXY_URL {cls._redact_proxy_url(proxy_url)}")
+                return cls._http_client_options(proxy_url=proxy_url, trust_env=False)
+            return {}
+
+        raise ValueError("LLM_PROXY_MODE 只能是 auto、off、env 或 url")
+
+    @classmethod
+    def _http_client_options(cls, proxy_url: str | None, trust_env: bool) -> dict[str, Any]:
+        timeout = httpx.Timeout(600.0, connect=30.0)
+        return {
+            "http_client": httpx.Client(proxy=proxy_url, trust_env=trust_env, timeout=timeout),
+            "http_async_client": httpx.AsyncClient(proxy=proxy_url, trust_env=trust_env, timeout=timeout),
+        }
+
+    @classmethod
+    def _normalize_proxy_environment(cls) -> None:
+        """兼容常见代理写法，避免 OpenAI/HTTPX 初始化时拒绝 socks:// scheme。"""
+        proxy_keys = (
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        )
+        for key in proxy_keys:
+            value = os.getenv(key)
+            if not value:
+                continue
+            normalized = cls._normalize_proxy_url(value)
+            if normalized != value:
+                os.environ[key] = normalized
+                logger.warning(f"已将环境变量 {key} 的代理协议从 socks:// 规范为 socks5://")
+
+    @staticmethod
+    def _normalize_proxy_url(value: str) -> str:
+        if value.lower().startswith("socks://"):
+            return f"socks5://{value[len('socks://'):]}"
+        return value
+
+    @staticmethod
+    def _redact_proxy_url(value: str) -> str:
+        try:
+            url = httpx.URL(value)
+        except Exception:
+            return "***"
+        if url.username or url.password:
+            return str(url.copy_with(username="***", password="***"))
+        return str(url)
+
+    @classmethod
     def _get_circuit_breaker(cls, model_name: str) -> CircuitBreaker:
         """获取或创建模型的熔断器"""
         if model_name not in cls._circuit_breakers:
@@ -246,6 +321,7 @@ class LLMFactory:
 
         内部方法，不直接暴露给业务层。
         """
+        http_client_options = cls._build_http_client_options()
         callbacks = cls._create_langfuse_callbacks()
 
         model_kwargs: dict[str, Any] = {}
@@ -278,6 +354,7 @@ class LLMFactory:
             stream_usage=True, # 确保流式输出时返回 token 统计
             callbacks=callbacks if callbacks else None,
             model_kwargs=model_kwargs,
+            **http_client_options,
         )
         return llm
 
