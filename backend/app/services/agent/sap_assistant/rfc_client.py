@@ -3,6 +3,7 @@ import importlib
 import json
 import os
 import re
+import sys
 from typing import Any
 
 from app.core.logger import logger
@@ -183,9 +184,58 @@ class SapRfcClient:
                 try:
                     normalized["JSON_PARSED"] = json.loads(json_text)
                 except json.JSONDecodeError:
+                    parse_error = sys.exception()
+                    repaired_text = self._repair_json_text(json_text)
+                    if repaired_text != json_text:
+                        try:
+                            normalized["JSON_PARSED"] = json.loads(repaired_text)
+                            normalized["JSON_TEXT_REPAIRED"] = repaired_text
+                            normalized["JSON_REPAIR_NOTE"] = "RFC JSON_TEXT 包含未转义控制字符，平台侧已做容错修复。"
+                            return normalized
+                        except json.JSONDecodeError:
+                            parse_error = sys.exception()
                     normalized["JSON_PARSE_ERROR"] = "RFC JSON_TEXT 解析失败，保留原始文本。"
+                    if isinstance(parse_error, json.JSONDecodeError):
+                        normalized["JSON_PARSE_ERROR_DETAIL"] = (
+                            f"{parse_error.msg} at line {parse_error.lineno} column {parse_error.colno} char {parse_error.pos}"
+                        )
+                        normalized["JSON_TEXT_PREVIEW"] = json_text[max(0, parse_error.pos - 160) : parse_error.pos + 160]
                 return normalized
         return result
+
+    def _repair_json_text(self, text: str) -> str:
+        """修复常见 RFC 手工拼 JSON 问题：字符串中的裸控制字符。"""
+        repaired: list[str] = []
+        in_string = False
+        escaped = False
+        for char in text:
+            if escaped:
+                repaired.append(char)
+                escaped = False
+                continue
+            if char == "\\":
+                repaired.append(char)
+                escaped = True
+                continue
+            if char == '"':
+                repaired.append(char)
+                in_string = not in_string
+                continue
+            if in_string:
+                if char == "\n":
+                    repaired.append("\\n")
+                    continue
+                if char == "\r":
+                    repaired.append("\\r")
+                    continue
+                if char == "\t":
+                    repaired.append("\\t")
+                    continue
+                if ord(char) < 32:
+                    repaired.append(f"\\u{ord(char):04x}")
+                    continue
+            repaired.append(char)
+        return "".join(repaired)
 
     def _configure_nwrfc_dll_path(self) -> None:
         if os.name != "nt":

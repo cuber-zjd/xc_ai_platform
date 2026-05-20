@@ -10,7 +10,17 @@
 DATA: lt_dfies TYPE STANDARD TABLE OF dfies,
       ls_dfies TYPE dfies,
       lv_json  TYPE string,
+      lv_fieldtext TYPE string,
+      lv_rollname TYPE string,
       ls_json_line TYPE zsai_json_line.
+
+FORM escape_json CHANGING cv_text TYPE string.
+  REPLACE ALL OCCURRENCES OF '\' IN cv_text WITH '\\'.
+  REPLACE ALL OCCURRENCES OF '"' IN cv_text WITH '\"'.
+  REPLACE ALL OCCURRENCES OF cl_abap_char_utilities=>cr_lf IN cv_text WITH '\n'.
+  REPLACE ALL OCCURRENCES OF cl_abap_char_utilities=>newline IN cv_text WITH '\n'.
+  REPLACE ALL OCCURRENCES OF cl_abap_char_utilities=>horizontal_tab IN cv_text WITH '\t'.
+ENDFORM.
 
 REFRESH et_json_lines.
 
@@ -42,8 +52,12 @@ LOOP AT lt_dfies INTO ls_dfies.
   IF sy-tabix > 1.
     lv_json = lv_json && ','.
   ENDIF.
+  lv_rollname = ls_dfies-rollname.
+  lv_fieldtext = ls_dfies-fieldtext.
+  PERFORM escape_json CHANGING lv_rollname.
+  PERFORM escape_json CHANGING lv_fieldtext.
   lv_json = lv_json &&
-    |\{"fieldname":"{ ls_dfies-fieldname }","rollname":"{ ls_dfies-rollname }","datatype":"{ ls_dfies-datatype }","leng":{ ls_dfies-leng },"decimals":{ ls_dfies-decimals },"ddtext":"{ ls_dfies-fieldtext }"\}|.
+    |\{"fieldname":"{ ls_dfies-fieldname }","rollname":"{ lv_rollname }","datatype":"{ ls_dfies-datatype }","leng":{ ls_dfies-leng },"decimals":{ ls_dfies-decimals },"ddtext":"{ lv_fieldtext }"\}|.
 ENDLOOP.
 lv_json = lv_json && ']}'.
 

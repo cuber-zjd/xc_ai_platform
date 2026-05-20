@@ -22,7 +22,7 @@
 | `ZFM_AI_GET_PROGRAM_SOURCE` | AI 读取程序或函数完整源码 |
 | `ZFM_AI_GET_DDIC_META` | AI 查询 DDIC 表和结构元数据 |
 | `ZFM_AI_QUERY_ZILOG` | AI 查询 ZILOG 函数日志 |
-| `ZFM_AI_READ_TABLE_SAFE` | AI 只读分页读取表数据 |
+| `ZFM_AI_READ_TABLE_SAFE` | AI 受控只读分页读取表数据 |
 
 ## RFC 接口类型约定
 
@@ -31,6 +31,7 @@
 - 示例统一使用 `ET_JSON_LINES STRUCTURE ZSAI_JSON_LINE` 返回 JSON 分片，每行 `CHAR255`。
 - 平台侧会把 `ET_JSON_LINES-LINE` 拼接成 `JSON_TEXT` 再解析或展示。
 - 函数内部局部变量可以用 `string` 拼 JSON；RFC Importing/Exporting/Tables 接口尽量使用 DDIC 基本类型、`CHAR` 和扁平结构。
+- 如果手工拼接 JSON，所有来自 SAP 文本字段或业务值的字符串必须先转义反斜杠、双引号、换行和制表符；否则字段描述里出现特殊字符时，平台会得到 `JSON_PARSE_ERROR`，该工具结果不能作为可用证据。
 
 ## 需要先建的 SE11 结构
 
@@ -71,7 +72,7 @@
 
 - 不开放任意 SQL。
 - 所有工具只读，不做写入、删除、提交或修改。
-- `ZFM_AI_READ_TABLE_SAFE` 默认最大返回 80 行，示例最大限制 200 行。
+- `ZFM_AI_READ_TABLE_SAFE` 默认最大返回 80 行，示例最大限制 200 行；平台侧暴露给 Agent 时还会进一步限制字段、条件和最大行数。
 - WHERE 条件使用结构化 ranges，由 RFC 内部转换，禁止把 AI 生成的 SQL 字符串直接传入 SAP 执行。
 - 所有 RFC 建议写调用审计日志，至少记录用户、时间、函数名、对象名、行数和执行结果。
 

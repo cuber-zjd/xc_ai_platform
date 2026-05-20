@@ -202,7 +202,7 @@ services:
 
       NEXTAUTH_SECRET: auto_generated_secret_for_dev_mode
       SALT: auto_generated_salt_for_dev_mode
-      NEXTAUTH_URL: http://localhost:9506
+      NEXTAUTH_URL: http://192.168.14.44:9506
       LANGFUSE_INIT_ORG_ID: org_default
       LANGFUSE_INIT_PROJECT_ID: p_default
       LANGFUSE_INIT_USER_EMAIL: admin@admin.com

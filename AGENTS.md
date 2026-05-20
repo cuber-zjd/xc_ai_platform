@@ -122,12 +122,15 @@ pnpm build
 - SAP 助手后端按智能体归属放在 `backend/app/api/v1/endpoints/agent/sap_assistant.py`、`backend/app/services/agent/sap_assistant/`、`backend/app/models/agent/sap_assistant.py` 和 `backend/app/schemas/agent/sap_assistant.py`。
 - SAP 助手核心边界是“AI 组织证据链，SAP 侧 RFC 受控取数”，不得让 AI 直接持有或使用数据库账号。
 - SAP 助手聊天入口固定走 `backend/app/services/agent/sap_assistant/deep_agent_service.py`；该文件按 deepagents 源码思路组装 SAP 专用 Agent，复用摘要压缩、工具调用修复和提示缓存中间件，但禁用 deepagents 默认 todo、文件、shell 和 subagent 工具；历史 LangGraph 和自定义 ReAct 实现已移除。
-- 所有 SAP 代码、DDIC、样例数据访问优先通过 `ZFM_AI_*` 受控 RFC；示例 ABAP 文件位于 `docs/sap-rfc/`。`zilog_logs` 和 `latest_table_read` 工具完成前不得暴露给 SAP 助手 AI。
+- 所有 SAP 代码、DDIC 和样例数据访问优先通过 `ZFM_AI_*` 受控 RFC；示例 ABAP 文件位于 `docs/sap-rfc/`。`zilog_logs` 和 `latest_table_read` 工具完成前不得暴露给 SAP 助手 AI。
 - SAP 助手源码调查当前试验“完整源码上下文优先”：Agent 可直接通过 `program_source` / `function_source` 获取完整程序或函数源码交给 AI 自主分析，服务层仍负责工具去重、审计、缓存和证据记录。
 - SAP 助手源码调查采用“全量拉取、聚焦观察、按需全文”策略：源码完整进入服务层缓存、审计和前端事件，LLM 默认只接收与问题相关的源码包；聚焦源码包不足时才调用 `source_full_text` 获取全文。
 - SAP 助手达到工具或递归预算前应先压缩调查状态，基于强证据、弱证据、缺口和不确定性决定继续读取关键源码包、请求全文、跳过可选补强或调用 `finish_investigation` 总结。
 - SAP 系统配置只保存连接定位和环境变量名，不保存 RFC 用户密码明文。
-- 表数据查询必须通过只读 RFC，并控制最大行数、分页/分段读取、脱敏和审计；优先多轮小批量获取，避免一次返回过多 token。
+- SAP 助手需要先判断问题意图：客户、物料、供应商、发货、开票、订单、库存、采购等业务数据查询优先查 DDIC 和只读数据；只有用户明确给出事务码、程序、函数、接口、字段血缘或计算逻辑时，才优先查事务码或源码。
+- 调用 BAPI/RFC 或读取 SAP 表前必须注意内部格式和前导零，例如客户 `KUNNR`、供应商 `LIFNR` 通常 10 位，物料 `MATNR` 在 ECC 通常 18 位，销售/交货/开票凭证 `VBELN`、会计凭证 `BELNR`、采购订单 `EBELN` 通常 10 位，行项目 `POSNR` 通常 6 位；不确定时先查 DDIC 长度和转换出口。
+- SAP 助手解释相对日期必须使用当前日期作为基准；用户只说“今年”“本月”或“5月份”且未给年份时，按当前年份/月推导，并转换为 SAP 内部日期范围 `YYYYMMDD`。
 - SAP 助手的 `safe_table_read` 必须按“少字段、少行、强条件”使用：显式提供 1-8 个字段、至少一个高选择性 ranges 条件，默认 `max_rows=5`；不得空字段或无条件读取宽表，遇到 subrc=6 需要缩小到 fields<=5、max_rows<=3 后重试。
+- SAP 助手支持本轮模型思考模式开关；本地 LM Studio 等模型不需要思考时可关闭，后端会以 `enable_reasoning=false` 调用模型。
 - 通用知识库能力位于 `/api/v1/knowledge-bases`，设计目标是被 SAP 助手和后续其他智能体复用，不允许写成 SAP 专属 RAG。
 - SAP 助手流式协议会推送文本、执行时间线、工具结果、证据片段、系统上下文和流程图，前端必须让用户能看到 AI 当前正在做什么。

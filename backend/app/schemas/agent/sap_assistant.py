@@ -60,6 +60,7 @@ class SapAssistantChatRequest(BaseModel):
     sap_system_id: int | None = None
     knowledge_base_ids: list[int] = []
     model_name: str | None = Field(default=None, description="指定模型名称；为空时使用默认复杂推理模型")
+    enable_reasoning: bool = Field(default=False, description="是否开启模型思考模式；本地模型不需要时可关闭")
     require_confirmation_token: str | None = None
 
 

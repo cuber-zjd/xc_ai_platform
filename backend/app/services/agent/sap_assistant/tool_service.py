@@ -184,6 +184,8 @@ class SapToolService:
             return False
         data = rfc_result.get("data")
         if isinstance(data, dict):
+            if data.get("JSON_PARSE_ERROR"):
+                return False
             parsed = data.get("JSON_PARSED")
             if isinstance(parsed, dict) and parsed.get("success") is False:
                 return False
@@ -844,6 +846,13 @@ class SapToolService:
             return str(rfc_result.get("message") or f"{self._tool_label(tool_name)}执行失败")
         data = rfc_result.get("data")
         if isinstance(data, dict):
+            if data.get("JSON_PARSE_ERROR"):
+                detail = data.get("JSON_PARSE_ERROR_DETAIL") or data.get("JSON_PARSE_ERROR")
+                return (
+                    f"{self._tool_label(tool_name)}返回的 JSON 无法解析：{detail}。"
+                    "这通常是 SAP 侧 RFC 手工拼接 JSON 时未转义字段文本中的引号、反斜杠或控制字符导致；"
+                    "本次结果不能作为可用 DDIC/业务证据。"
+                )
             parsed = data.get("JSON_PARSED")
             if isinstance(parsed, dict) and parsed.get("success") is False:
                 message = parsed.get("message") or "SAP 工具返回业务失败"
@@ -885,6 +894,12 @@ class SapToolService:
             )
         if rfc_result.get("errorType"):
             return f"{self._tool_label(tool_name)}执行失败，不能作为确定业务结论。"
+        data = rfc_result.get("data")
+        if isinstance(data, dict) and data.get("JSON_PARSE_ERROR"):
+            return (
+                f"{self._tool_label(tool_name)}返回内容不是合法 JSON，Agent 不能可靠读取字段结构或业务数据；"
+                "需要修复 SAP 侧 RFC JSON 转义后重试，不能把本次结果当作已验证证据。"
+            )
         parsed_failure = self._parsed_failure(rfc_result)
         if parsed_failure.get("errorType") == "read_table_buffer_exceeded":
             return (
@@ -897,6 +912,8 @@ class SapToolService:
         data = rfc_result.get("data")
         if not isinstance(data, dict):
             return {}
+        if data.get("JSON_PARSE_ERROR"):
+            return {"errorType": "json_parse_error", "detail": data.get("JSON_PARSE_ERROR_DETAIL")}
         parsed = data.get("JSON_PARSED")
         if not isinstance(parsed, dict) or parsed.get("success") is not False:
             return {}

@@ -279,7 +279,12 @@ class LLMFactory:
         return cls._circuit_breakers[model_name]
 
     @classmethod
-    def _create_langfuse_callbacks(cls) -> list:
+    def _create_langfuse_callbacks(
+        cls,
+        *,
+        trace_context: dict[str, str] | None = None,
+        update_trace: bool = False,
+    ) -> list:
         """创建 LangFuse 追踪回调"""
         callbacks = []
         if LangfuseCallbackHandler is not None:
@@ -293,7 +298,10 @@ class LLMFactory:
                 os.environ["LANGFUSE_HOST"] = settings.LANGFUSE_HOST
                 os.environ["LANGFUSE_DEBUG"] = "False"
 
-                handler = LangfuseCallbackHandler()
+                handler = LangfuseCallbackHandler(
+                    trace_context=trace_context,
+                    update_trace=update_trace,
+                )
                 callbacks.append(handler)
                 logger.info(f"LangFuse 追踪器已就绪 (Host: {settings.LANGFUSE_HOST})")
             except Exception as e:
@@ -303,6 +311,21 @@ class LLMFactory:
                 "LangFuse CallbackHandler 未加载，请检查是否安装了 langfuse 库"
             )
         return callbacks
+
+    @classmethod
+    def create_langfuse_callbacks_for_trace(
+        cls,
+        trace_context: dict[str, str] | None,
+        *,
+        update_trace: bool = False,
+    ) -> list:
+        """为已有 LangFuse trace 创建 LangChain 回调。"""
+        if not trace_context:
+            return []
+        return cls._create_langfuse_callbacks(
+            trace_context=trace_context,
+            update_trace=update_trace,
+        )
 
     @classmethod
     def _build_llm(
@@ -315,6 +338,7 @@ class LLMFactory:
         streaming: bool = True,
         json_mode: bool = False,
         enable_reasoning: bool = False,
+        enable_langfuse_callbacks: bool = True,
     ) -> BaseChatModel:
         """
         根据配置构建 LLM 实例
@@ -322,7 +346,7 @@ class LLMFactory:
         内部方法，不直接暴露给业务层。
         """
         http_client_options = cls._build_http_client_options()
-        callbacks = cls._create_langfuse_callbacks()
+        callbacks = cls._create_langfuse_callbacks() if enable_langfuse_callbacks else []
 
         model_kwargs: dict[str, Any] = {}
         if json_mode:
@@ -391,6 +415,7 @@ class LLMFactory:
         streaming: bool = True,
         json_mode: bool = False,
         enable_reasoning: bool = False,
+        enable_langfuse_callbacks: bool = True,
     ) -> BaseChatModel:
         """
         按模型名称获取 LLM 实例
@@ -439,6 +464,7 @@ class LLMFactory:
             streaming=streaming,
             json_mode=json_mode,
             enable_reasoning=enable_reasoning,
+            enable_langfuse_callbacks=enable_langfuse_callbacks,
         )
 
     @classmethod
@@ -450,6 +476,7 @@ class LLMFactory:
         streaming: bool = True,
         json_mode: bool = False,
         enable_reasoning: bool = False,
+        enable_langfuse_callbacks: bool = True,
     ) -> BaseChatModel:
         """
         按模型级别获取 LLM 实例（自动选择该级别优先级最高的可用模型）
@@ -486,6 +513,7 @@ class LLMFactory:
                     streaming=streaming,
                     json_mode=json_mode,
                     enable_reasoning=enable_reasoning,
+                    enable_langfuse_callbacks=enable_langfuse_callbacks,
                 )
 
         raise ValueError(f"级别 {level} 无可用模型（可能全部熔断）")
@@ -499,6 +527,7 @@ class LLMFactory:
         streaming: bool = True,
         json_mode: bool = False,
         enable_reasoning: bool = False,
+        enable_langfuse_callbacks: bool = True,
     ) -> BaseChatModel:
         """
         按能力标签获取 LLM 实例（推荐入口）
@@ -537,6 +566,7 @@ class LLMFactory:
                     streaming=streaming,
                     json_mode=json_mode,
                     enable_reasoning=enable_reasoning,
+                    enable_langfuse_callbacks=enable_langfuse_callbacks,
                 )
 
         # 没找到匹配能力的，降级到 general
@@ -549,6 +579,7 @@ class LLMFactory:
                 streaming=streaming,
                 json_mode=json_mode,
                 enable_reasoning=enable_reasoning,
+                enable_langfuse_callbacks=enable_langfuse_callbacks,
             )
 
         raise ValueError(f"无可用的 {model_type} 模型（capability={capability}）")

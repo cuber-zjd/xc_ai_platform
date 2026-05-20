@@ -131,6 +131,8 @@ uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - SAP 服务分层位于 `backend/app/services/agent/sap_assistant/`：`SapAssistantService -> SapDeepAgentService -> SapToolService -> SapRfcClient`，工具调用必须记录审计和证据。
 - SAP RFC 客户端需要兼容未安装 `pyrfc` 的开发环境；未配置时可以返回明确的未配置或演示证据，但不得假装已经真实查询生产系统。
 - AI 不允许直接执行任意 SQL 或保存数据库账号；业务数据必须通过 SAP 侧只读 RFC 查询，并采用小批量、多轮调用减少 token 消耗。`safe_table_read` 调用必须显式指定少量字段和高选择性 ranges 条件，默认最多 5 行；禁止空字段或无条件读取宽表。
+- SAP 助手系统提示词内维护极短 mini-shot，示例化 DDIC -> `safe_table_read`、前导零、日期范围和源码后补证路径；示例必须短小，不得演变成固定流程。
+- SAP 助手聊天请求支持 `enable_reasoning`，用于本轮开启或关闭模型思考模式；本地 LM Studio 等模型不需要思考时可传 `false`。
 - 回答必须尽量包含 SAP 系统上下文、使用的工具、证据来源和不确定性说明。
 ## SAP 助手 Agent 状态约束补充
 

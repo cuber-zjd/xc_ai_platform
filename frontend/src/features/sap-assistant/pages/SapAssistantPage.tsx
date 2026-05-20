@@ -7,6 +7,7 @@ import {
   Loader2,
   MessageSquarePlus,
   Plus,
+  Brain,
   Send,
   UploadCloud,
 } from 'lucide-react';
@@ -50,6 +51,7 @@ export default function SapAssistantPage() {
   const [sessions, setSessions] = useState<SapAssistantSession[]>([]);
   const [selectedSystemId, setSelectedSystemId] = useState<number | ''>('');
   const [selectedModelName, setSelectedModelName] = useState('');
+  const [enableReasoning, setEnableReasoning] = useState(false);
   const [selectedKbIds, setSelectedKbIds] = useState<number[]>([]);
   const [newKbName, setNewKbName] = useState('');
   const [newKbDescription, setNewKbDescription] = useState('');
@@ -184,6 +186,7 @@ export default function SapAssistantPage() {
           session_id: sessionId,
           sap_system_id: selectedSystemId || null,
           model_name: selectedModelName || null,
+          enable_reasoning: enableReasoning,
           knowledge_base_ids: selectedKbIds,
         }),
       });
@@ -382,6 +385,17 @@ export default function SapAssistantPage() {
                   </option>
                 ))}
               </select>
+              <button
+                type="button"
+                className={`inline-flex h-10 items-center gap-1.5 rounded-2xl px-3 text-xs font-bold transition ${
+                  enableReasoning ? 'bg-[#edeaff] text-[#5b4be8]' : 'bg-white/70 text-[#85889f] hover:bg-white'
+                }`}
+                onClick={() => setEnableReasoning((value) => !value)}
+                title={enableReasoning ? '已开启思考模式' : '已关闭思考模式'}
+              >
+                <Brain className="h-3.5 w-3.5" />
+                {enableReasoning ? '思考开' : '思考关'}
+              </button>
               <button
                 type="button"
                 className="inline-flex h-10 items-center gap-1.5 rounded-2xl bg-[#f1f3ff] px-3 text-xs font-bold text-[#665cf0]"
