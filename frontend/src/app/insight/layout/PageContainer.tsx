@@ -7,5 +7,5 @@ interface PageContainerProps extends PropsWithChildren {
 }
 
 export function PageContainer({ children, className }: PageContainerProps) {
-    return <main className={cn("insight-page space-y-5", className)}>{children}</main>;
+    return <main className={cn("insight-page", className ?? "flex flex-col gap-4 overflow-y-auto pr-1")}>{children}</main>;
 }

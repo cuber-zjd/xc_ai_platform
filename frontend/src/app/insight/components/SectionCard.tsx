@@ -11,14 +11,14 @@ interface SectionCardProps extends PropsWithChildren {
 
 export function SectionCard({ title, description, action, children, className }: SectionCardProps) {
     return (
-        <section className={cn("insight-card p-5", className)}>
+        <section className={cn("insight-card min-w-0 p-4 sm:p-5", className)}>
             {(title || description || action) && (
-                <div className="mb-4 flex items-start justify-between gap-4">
-                    <div>
+                <div className="mb-4 flex flex-col justify-between gap-3 md:flex-row md:items-start">
+                    <div className="min-w-0">
                         {title && <h2 className="text-base font-bold text-foreground">{title}</h2>}
                         {description && <p className="mt-1 text-sm leading-6 text-muted-foreground">{description}</p>}
                     </div>
-                    {action}
+                    {action ? <div className="insight-actions">{action}</div> : null}
                 </div>
             )}
             {children}

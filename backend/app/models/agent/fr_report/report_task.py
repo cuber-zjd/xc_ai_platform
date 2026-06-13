@@ -75,3 +75,85 @@ class FrAiReportFeedback(BaseDBModel, table=True):
     content: str
     payload: dict[str, Any] | None = Field(default=None, sa_type=JSONB)
     is_positive: bool | None = Field(default=None, index=True)
+
+
+class FrReportSnapshot(BaseDBModel, table=True):
+    __tablename__ = "fr_report_snapshot"
+
+    snapshot_id: str = Field(index=True, unique=True)
+    object_path: str = Field(index=True)
+    report_path: str | None = Field(default=None, index=True)
+    file_name: str | None = None
+    file_type: str | None = None
+    user_id: int = Field(index=True)
+    parent_snapshot_id: str | None = Field(default=None, index=True)
+    source_etag: str | None = Field(default=None, index=True)
+    source_last_modified: str | None = None
+    snapshot_no: int = Field(default=1, index=True)
+    status: str = Field(default="source_imported", index=True)
+    title: str | None = None
+    summary: dict[str, Any] | None = Field(default=None, sa_type=JSONB)
+    document_snapshot: dict[str, Any] = Field(default_factory=dict, sa_type=JSONB)
+    applied_patch: dict[str, Any] | None = Field(default=None, sa_type=JSONB)
+    source_hash: str | None = Field(default=None, index=True)
+    cpt_object_path: str | None = None
+    meta_object_path: str | None = None
+    preview_url: str | None = None
+    generation_errors: list[str] = Field(default_factory=list, sa_type=JSONB)
+    generation_warnings: list[str] = Field(default_factory=list, sa_type=JSONB)
+
+
+class FrReportOperationDraft(BaseDBModel, table=True):
+    __tablename__ = "fr_report_operation_draft"
+
+    draft_id: str = Field(index=True, unique=True)
+    object_path: str = Field(index=True)
+    user_id: int = Field(index=True)
+    base_snapshot_id: str | None = Field(default=None, index=True)
+    target_snapshot_id: str | None = Field(default=None, index=True)
+    prompt: str | None = None
+    selected_cell: str | None = Field(default=None, index=True)
+    selected_dataset: str | None = Field(default=None, index=True)
+    status: str = Field(default="draft", index=True)
+    assistant_message: str | None = None
+    operations: list[dict[str, Any]] = Field(default_factory=list, sa_type=JSONB)
+    preview_patch: dict[str, Any] = Field(default_factory=dict, sa_type=JSONB)
+    safety: dict[str, Any] = Field(default_factory=dict, sa_type=JSONB)
+    warnings: list[str] = Field(default_factory=list, sa_type=JSONB)
+
+
+class FrReportVisibilityPreference(BaseDBModel, table=True):
+    __tablename__ = "fr_report_visibility_preference"
+
+    user_id: int = Field(index=True, unique=True)
+    visible_paths: list[str] = Field(default_factory=list, sa_type=JSONB)
+    status: str = Field(default="active", index=True)
+
+
+class FrReportDatabaseConnection(BaseDBModel, table=True):
+    __tablename__ = "fr_report_database_connection"
+
+    user_id: int = Field(index=True)
+    connection_name: str = Field(index=True)
+    driver_key: str = Field(default="sqlserver", index=True)
+    db_type: str = Field(default="sqlserver", index=True)
+    host: str
+    port: int = Field(default=1433)
+    database: str
+    username: str
+    password: str
+    odbc_driver: str | None = None
+    status: str = Field(default="active", index=True)
+
+
+class FrReportDatabaseDriver(BaseDBModel, table=True):
+    __tablename__ = "fr_report_database_driver"
+
+    driver_key: str = Field(index=True, unique=True)
+    display_name: str
+    db_type: str = Field(index=True)
+    python_driver: str
+    odbc_driver: str | None = None
+    default_port: int
+    description: str | None = None
+    status: str = Field(default="active", index=True)

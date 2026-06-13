@@ -32,6 +32,8 @@
 - 平台侧会把 `ET_JSON_LINES-LINE` 拼接成 `JSON_TEXT` 再解析或展示。
 - 函数内部局部变量可以用 `string` 拼 JSON；RFC Importing/Exporting/Tables 接口尽量使用 DDIC 基本类型、`CHAR` 和扁平结构。
 - 如果手工拼接 JSON，所有来自 SAP 文本字段或业务值的字符串必须先转义反斜杠、双引号、换行和制表符；否则字段描述里出现特殊字符时，平台会得到 `JSON_PARSE_ERROR`，该工具结果不能作为可用证据。
+- `ddic_meta` 返回 `Expecting ',' delimiter` 一类错误时，优先检查 `ZFM_AI_GET_DDIC_META` 是否已经部署了 `escape_json`，以及 `DFIES-LENG`、`DFIES-DECIMALS` 等 NUMC 字段是否先转为整数再拼入 JSON，避免输出 `000003` 这类非法 JSON 数字。修复后重新激活函数模块并重试；不要把失败结果解释为表或字段不存在。
+- 如果现场 ECC 已有 `/UI2/CL_JSON` 或企业标准 JSON 序列化工具，优先用结构化序列化生成 JSON，少用手工字符串拼接；继续手工拼接时，必须把字符串转义逻辑做成共用 FORM，并覆盖每一个字符串字段。
 
 ## 需要先建的 SE11 结构
 

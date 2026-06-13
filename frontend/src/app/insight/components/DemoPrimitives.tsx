@@ -44,37 +44,48 @@ const iconToneClass = {
 export interface StatCardProps {
     title: string;
     value: string;
-    compare: string;
-    delta: string;
+    compare?: string;
+    delta?: string;
+    loading?: boolean;
     tone?: keyof typeof iconToneClass;
     icon: ReactNode;
 }
 
 export function DemoCard({ children, className }: { children: ReactNode; className?: string }) {
-    return <section className={cn("insight-demo-card", className)}>{children}</section>;
+    return <section className={cn("insight-demo-card min-w-0", className)}>{children}</section>;
 }
 
 export function DemoTag({ children, tone = "blue", className }: { children: ReactNode; tone?: TagTone; className?: string }) {
-    return <span className={cn("inline-flex items-center rounded-md border px-2 py-1 text-xs font-semibold", tagToneClass[tone], className)}>{children}</span>;
+    return <span className={cn("inline-flex max-w-full items-center whitespace-nowrap rounded-md border px-2 py-1 text-xs font-semibold leading-none", tagToneClass[tone], className)}>{children}</span>;
 }
 
-export function StatCard({ title, value, compare, delta, tone = "blue", icon }: StatCardProps) {
+export function StatCard({ title, value, compare, delta, loading = false, tone = "blue", icon }: StatCardProps) {
     return (
-        <DemoCard className="relative overflow-hidden p-6">
-            <div className="flex items-start gap-4">
-                <div className={cn("flex size-14 items-center justify-center rounded-full bg-linear-to-br text-white shadow-[0_12px_28px_rgba(37,99,235,0.22)]", iconToneClass[tone])}>
+        <DemoCard className="relative flex min-h-24 items-center gap-3 overflow-hidden p-3 sm:min-h-28 sm:p-4">
+            <div className={cn("flex size-10 shrink-0 items-center justify-center rounded-xl bg-linear-to-br text-white shadow-[0_10px_22px_rgba(37,99,235,0.18)] sm:size-11", iconToneClass[tone])}>
+                <span className="[&_svg]:size-5">
                     {icon}
-                </div>
-                <div>
-                    <div className="text-base font-semibold text-slate-700">{title}</div>
-                    <div className="mt-2 text-5xl font-black tracking-tight text-slate-950">{value}</div>
+                </span>
+            </div>
+            <div className="min-w-0 flex-1">
+                <div className="truncate text-sm font-semibold text-slate-600">{title}</div>
+                <div className="mt-1 flex flex-wrap items-end gap-x-3 gap-y-1">
+                    {loading ? (
+                        <div className="h-8 w-20 animate-pulse rounded-lg bg-slate-200/80 sm:h-10" />
+                    ) : (
+                        <div className="text-3xl font-black leading-none text-slate-950 sm:text-4xl">{value}</div>
+                    )}
+                    {loading ? (
+                        <div className="pb-1 text-xs font-bold text-slate-400 sm:text-sm">读取中</div>
+                    ) : compare || delta ? (
+                        <div className="flex items-center gap-2 pb-1 text-xs font-bold sm:text-sm">
+                            {compare ? <span className="text-slate-500">{compare}</span> : null}
+                            {delta ? <span className={cn(delta.startsWith("+") ? "text-teal-600" : "text-slate-500")}>{delta}</span> : null}
+                        </div>
+                    ) : null}
                 </div>
             </div>
-            <div className="mt-6 flex items-center gap-3 text-base">
-                <span className="text-slate-500">{compare}</span>
-                <span className={cn("font-bold", delta.startsWith("+") ? "text-teal-600" : "text-slate-500")}>{delta}</span>
-            </div>
-            <div className="pointer-events-none absolute bottom-4 right-5 text-blue-100/80 [&_svg]:size-24">{icon}</div>
+            <div className="pointer-events-none absolute -bottom-4 -right-2 text-blue-100/70 [&_svg]:size-20">{icon}</div>
         </DemoCard>
     );
 }
@@ -90,7 +101,7 @@ export function SearchField({ placeholder = "搜索企业、情报、报告、�
 
 export function FilterInput({ label, placeholder, wide }: { label: string; placeholder: string; wide?: boolean }) {
     return (
-        <label className={cn("grid gap-2", wide ? "min-w-72 flex-1" : "min-w-44")}>
+        <label className={cn("grid min-w-0 gap-2", wide ? "sm:min-w-72 sm:flex-1" : "sm:min-w-44")}>
             <span className="text-sm font-bold text-slate-700">{label}</span>
             <Input className="h-11 rounded-xl border-slate-200 bg-white shadow-none" placeholder={placeholder} />
         </label>
@@ -99,7 +110,7 @@ export function FilterInput({ label, placeholder, wide }: { label: string; place
 
 export function FilterSelect({ label, value, wide }: { label: string; value: string; wide?: boolean }) {
     return (
-        <label className={cn("grid gap-2", wide ? "min-w-72 flex-1" : "min-w-44")}>
+        <label className={cn("grid min-w-0 gap-2", wide ? "sm:min-w-72 sm:flex-1" : "sm:min-w-44")}>
             <span className="text-sm font-bold text-slate-700">{label}</span>
             <button type="button" className="flex h-11 items-center justify-between rounded-xl border border-slate-200 bg-white px-4 text-sm text-slate-600">
                 {value}
@@ -159,7 +170,7 @@ export function DonutChart({ total = "1,256", label = "条", compact }: { total?
     ];
 
     return (
-        <div className={cn("flex items-center justify-center gap-8", compact && "gap-5")}>
+        <div className={cn("flex flex-col items-center justify-center gap-5 sm:flex-row sm:gap-8", compact && "sm:gap-5")}>
             <div className={cn("relative rounded-full", compact ? "size-36" : "size-48")}>
                 <div
                     className="absolute inset-0 rounded-full"
@@ -173,7 +184,7 @@ export function DonutChart({ total = "1,256", label = "条", compact }: { total?
                     <span className="text-sm text-slate-600">{label}</span>
                 </div>
             </div>
-            <div className="space-y-3 text-sm">
+            <div className="w-full space-y-3 text-sm sm:w-auto">
                 {segments.map(([color, value], index) => (
                     <div key={color} className="flex items-center gap-3">
                         <span className="size-2.5 rounded-sm" style={{ backgroundColor: color }} />
@@ -215,8 +226,8 @@ export function RankList({ items, showViews }: { items: string[]; showViews?: bo
 
 export function SectionHeader({ title, action = "查看更多" }: { title: string; action?: string }) {
     return (
-        <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-xl font-black text-slate-900">{title}</h2>
+        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <h2 className="text-lg font-black leading-tight text-slate-900 sm:text-xl">{title}</h2>
             <button type="button" className="inline-flex items-center gap-1 text-sm font-bold text-blue-600">
                 {action}
                 <ChevronRight className="size-4" />
@@ -254,7 +265,7 @@ export function HeaderMeta() {
 
 export function PrimaryAction({ children, icon = <Sparkles className="size-4" /> }: { children: ReactNode; icon?: ReactNode }) {
     return (
-        <Button className="h-11 rounded-xl bg-blue-600 px-5 text-white shadow-[0_12px_24px_rgba(29,116,255,0.24)] hover:bg-blue-700">
+        <Button className="h-11 rounded-xl px-5">
             {icon}
             {children}
         </Button>
@@ -283,7 +294,7 @@ export function SuggestionList() {
     return (
         <div className="space-y-3">
             {["关注植物基蛋白在乳制品与休闲食品中的替代机会", "跟踪头部茶饮品牌夏季新品对原料需求的拉动", "留意企业在精准营养与功能复合方向的布局"].map((item) => (
-                <div key={item} className="flex items-center gap-2 text-sm text-slate-700">
+                <div key={item} className="flex items-start gap-2 text-sm text-slate-700">
                     <span className="flex size-5 items-center justify-center rounded-full bg-emerald-500 text-white">
                         <Check className="size-3" />
                     </span>
@@ -315,7 +326,7 @@ export function LinkButton({ children }: { children: ReactNode }) {
 
 export function ExternalButton({ children }: { children: ReactNode }) {
     return (
-        <Button variant="outline" className="h-10 rounded-xl border-blue-100 bg-white text-blue-600 shadow-none hover:bg-blue-50">
+        <Button variant="outline" className="h-10 rounded-xl">
             {children}
             <ExternalLink className="size-4" />
         </Button>

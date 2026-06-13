@@ -103,15 +103,19 @@ uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - 列表入口：`GET /api/v1/fr/ai-reports/tasks` 返回分页历史任务；反馈入口：`POST /api/v1/fr/ai-reports/tasks/{task_id}/feedback` 记录正向样本或待优化样本。
 - 自驱进化第一版只做经验数据沉淀，不允许自动改写全局 Prompt、业务规则或确定性 CPT 生成逻辑。
 - 接口入口：`backend/app/api/v1/endpoints/agent/fr_report.py`，统一挂载到 `/api/v1/fr/ai-reports`。
-- 当前需要同时维护“第一步 SQL 生成”“第二步 DSL 生成”“第三步 CPT 生成”与“全流程生成”四类接口，其中第一步接口为 `POST /api/v1/fr/ai-reports/steps/sql/generate`，用于只生成 SQL、执行只读校验并返回样例数据；第二步接口为 `POST /api/v1/fr/ai-reports/steps/dsl/generate`，基于同一任务的 SQL、需求摘要、Excel 分析和表结构生成 ReportDSL，不生成 CPT/XML，不调用 FineReport 预览；第三步接口为 `POST /api/v1/fr/ai-reports/steps/cpt/generate`，基于同一任务的 ReportDSL 确定性生成 CPT、上传 MinIO staging 并返回 FineReport 预览地址。
-- 任务模型：`backend/app/models/agent/fr_report/report_task.py`，保存 Excel 分析、需求摘要、ReportDSL、SQL、建表 SQL、生成日志、MinIO staging 路径和预览校验结果。
+- 真实报表文件读取第一版入口：`GET /api/v1/fr/ai-reports/files`，只读列出 MinIO 允许目录下的 `.cpt`、`.frm` 文件，返回对象路径、报表相对路径、文件大小、ETag 和修改时间；扫描范围由 `FR_AI_REPORT_FILE_PREFIXES` 控制。
+- 真实报表结构读取入口：`GET /api/v1/fr/ai-reports/files/structure`，按当前登录用户和显示范围校验 `object_path`，只在线内存读取 MinIO 对象，不落盘；当前解析 UTF-8/XML CPT 的根节点、版本、数据集、连接名、参数、截断 SQL，并返回 `document.sheets` 中的行列、单元格、合并区域、基础样式、字段绑定和原始节点路径引用；只返回结构化结果和 warnings，不返回完整 CPT 原文。
+- 报表文件用户可见范围入口：`GET/PUT /api/v1/fr/ai-reports/files/visibility-preference`，按当前登录用户保存显示的文件夹或报表路径；`GET /files` 默认按偏好过滤，配置弹窗需要传 `include_all=true` 拉取全量目录。
+- 帆软报表文件存储必须走专用 `FR_AI_MINIO_*` 配置和 `FrMinIOService`，不得复用平台通用 `MINIO_*`，避免影响合同、知识库、图标等平台文件。
+- 当前需要同时维护“第一步 SQL 生成”“第二步 DSL 生成”“第三步 CPT 生成”与“全流程生成”四类接口，其中第一步接口为 `POST /api/v1/fr/ai-reports/steps/sql/generate`，用于只生成 SQL、执行只读校验并返回样例数据；第二步接口为 `POST /api/v1/fr/ai-reports/steps/dsl/generate`，基于同一任务的 SQL、需求摘要、Excel 分析和表结构生成 ReportDSL，不生成 CPT/XML，不调用 FineReport 预览；第三步接口为 `POST /api/v1/fr/ai-reports/steps/cpt/generate`，基于同一任务的 ReportDSL 确定性生成 CPT、上传 MinIO `reportlets/AI生成报表/` 专用预览目录并返回 FineReport 预览地址。
+- 任务模型：`backend/app/models/agent/fr_report/report_task.py`，保存 Excel 分析、需求摘要、ReportDSL、SQL、建表 SQL、生成日志、MinIO 专用预览目录路径和预览校验结果。
 - Schema：`backend/app/schemas/agent/fr_report/report_dsl.py` 定义第一版 ReportDSL 和 JSON Schema，当前阶段只落地 `detail_table`、`group_table`、`pivot_table` 三类表格报表。
 - ReportDSL 需要通过 `reportMeta` 承载模板级语义，包括标题、单位、更新时间、均价、备注和筛选条件；这些信息不能只停留在 Excel `templateAnalysis` 或 `layout.designHints`。
 - 服务分层：`backend/app/services/agent/fr_report/` 内按 `ExcelAnalyzer -> RequirementAgent -> DataModelAgent -> SqlAgent -> ReportDesignerAgent -> DslValidator -> CptGenerator -> MinIOStagingService -> PreviewValidator` 串联。
 - 分步骤改造时，优先把阶段产物持久化到同一个任务表中，至少保留 `requirement_text`、`source_table_name`、Excel 分析、需求摘要、SQL、SQL 校验结果与日志，方便人工回看和后续步骤接力。
 - 第二步生成的 ReportDSL 继续写回同一条 `fr_ai_report_task.report_dsl`，前端预览直接基于 DSL 布局和 SQL 样例数据渲染，用于人工确认版式，不代表 FineReport 运行时预览结果。
 - 第二步接口可接收 `dsl_feedback` 做 DSL 版式重生成，只更新需求摘要中的 DSL 修订提示、ReportDSL 和日志，不重复生成 SQL；非标准表格结构优先落入 `layout.designHints.specialRows`，例如最新一天涨跌单行使用 `latest_change_row`。
-- 第三步当前只允许从已确认的 `report_dsl` 确定性生成 CPT、写入 MinIO staging 并返回 FineReport 预览地址；不做正式 reportlets 复制、审批发布或覆盖。
+- 第三步当前只允许从已确认的 `report_dsl` 确定性生成 CPT、写入 MinIO `reportlets/AI生成报表/` 专用预览目录并返回 FineReport 预览地址；不做正式 reportlets 复制、审批发布或覆盖。
 - 第三步对接细节见 `docs/fr-ai-report-third-step.md`。CPT XML 按 FineReport 11.5.0 样例生成，数据库连接名来自 `FR_AI_FINEREPORT_DB_NAME`，当前默认 `XcTest`。
 - Agent 实现：`RequirementAgent`、`DataModelAgent`、`SqlAgent`、`ReportDesignerAgent` 必须优先通过 `app.core.llm_factory.LLMFactory` 调用已配置大模型生成结构化 JSON；模型不可用或 JSON 校验失败时才使用规则兜底。
 - 表结构与 SQL 校验：用户只提供单表或多表表名时，`SqlServerQueryService` 可查询 SQL Server `INFORMATION_SCHEMA.COLUMNS` 获取字段结构并推断字段类型/角色；多表会生成 `tables`、字段来源和 `joinHints` 供 `SqlAgent` 生成 JOIN SQL。`SqlAgent` 生成 SQL 后由同一服务做只读预执行校验，只允许 `SELECT/WITH` 查询，禁止 DDL/DML/存储过程/多语句，参数使用安全默认值绑定，失败时允许 `SqlAgent` 基于错误修复一次。
@@ -119,7 +123,7 @@ uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - Excel 模板分析：`ExcelAnalyzer` 需要保留标题、单位、筛选区、更新时间、备注说明、年份/月日格式、涨跌规则和横向扩展候选信息，供 SQL Agent 与 ReportDesignerAgent 共同判断“数据集长表 + 设计器横向扩展”的方案。
 - Excel 标题识别不能简单默认第一行，应结合表格区域上方文本、合并单元格、标题关键词和全报表语义打分判断；筛选条件、单位、更新时间、备注等辅助文本不能误判为标题。
 - 关键边界：AI/Agent 只能输出结构化 ReportDSL、需求摘要、逻辑表结构和 SQL；FineReport `.cpt`/XML 必须由 `CptGenerator` 确定性生成。
-- 存储边界：生成产物只能写入 MinIO `webroot/APP/reportlets_ai_staging/{task_id}/`，不得直接写正式 reportlets。
+- 存储边界：生成产物只能写入 MinIO `webroot/APP/reportlets/AI生成报表/{task_id}/` 或 `webroot/APP/reportlets/AI生成报表/快照/{snapshot_id}/`，不得覆盖其他正式 reportlets。
 
 ## 10. SAP 助手
 
@@ -134,6 +138,17 @@ uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - SAP 助手系统提示词内维护极短 mini-shot，示例化 DDIC -> `safe_table_read`、前导零、日期范围和源码后补证路径；示例必须短小，不得演变成固定流程。
 - SAP 助手聊天请求支持 `enable_reasoning`，用于本轮开启或关闭模型思考模式；本地 LM Studio 等模型不需要思考时可传 `false`。
 - 回答必须尽量包含 SAP 系统上下文、使用的工具、证据来源和不确定性说明。
+
+## 11. Insight 研发营销市场洞察平台
+
+- 后端接口统一挂载到 `/api/v1/insight`，入口目录为 `backend/app/api/v1/endpoints/agent/insight/`。
+- 后端业务服务放在 `backend/app/services/agent/insight/`，按 `crawler`、`intelligence`、`visibility`、`report` 等子域逐步拆分。
+- 数据模型放在 `backend/app/models/agent/insight/`，Schema 放在 `backend/app/schemas/agent/insight/`。
+- 第一阶段开发顺序以通用联网采集为先：本地 Firecrawl 通用网页抓取、百度搜索发现、Bocha/博查 API 多源查询、采集清洗、候选情报入库，再进入情报权限、情报池和报告模块。
+- Insight 情报不固定绑定企业，必须支持 `company`、`industry`、`market`、`product`、`policy`、`technology`、`custom` 等主题类型。
+- 情报列表接口必须在后端执行可见性过滤，不能返回全量情报后只靠前端隐藏。
+- 质量运营基础接口为 `GET /api/v1/insight/quality/overview`，服务层位于 `backend/app/services/agent/insight/quality_service.py`，只能聚合真实任务、采集、候选审核和质量规则数据，不得返回样例指标。
+- Firecrawl、Bocha/博查等外部服务地址和密钥不得硬编码在业务代码中，应进入配置或环境变量。
 ## SAP 助手 Agent 状态约束补充
 
 - SAP 助手聊天入口固定走 `backend/app/services/agent/sap_assistant/deep_agent_service.py`，并复用 `SapToolService -> SapRfcClient` 调用 SAP 侧 `ZFM_AI_*` RFC；该入口按 deepagents 源码思路组装 SAP 专用 Agent，保留摘要压缩、工具调用修复和提示缓存中间件，但禁用 deepagents 默认 todo、文件、shell 和 subagent 工具；历史 LangGraph 和自定义 ReAct 实现已移除。
@@ -142,3 +157,16 @@ uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - SAP 助手调查状态需要维护 `evidence_ledger`、源码对象索引和工具预算；接近预算或递归限制时先压缩状态，再决定继续读取关键源码包、请求 `source_full_text`、跳过可选补强或调用 `finish_investigation`。
 - 字段取值、金额计算、字段血缘类问题只有在存在可执行代码证据时才能下确定结论；注释、标题和字段定义不得被改写成事实结论。
 - 当调查状态已经满足回答条件时，后端应强制进入总结阶段，避免模型继续重复搜索；当证据不足时，后端应自动选择未执行过的补查工具，而不是把“下一步建议调用工具”交给用户。
+
+## 12. FineReport 数据集预览连接
+
+- 数据库驱动是平台级资源，使用 `fr_report_database_driver` 保存，不按用户隔离；当前默认种子包含 `sqlserver` 和 `mysql8`。
+- 报表数据库连接是用户级资源，使用 `fr_report_database_connection` 保存，并通过 `driver_key` 引用平台级驱动。
+- 数据集预览入口为 `POST /api/v1/fr/ai-reports/datasets/preview`，当前支持 SQL Server 与 MySQL 8，只允许 `SELECT/WITH` 查询并限制预览行数。
+ 
+## 泛微流程AI助手补充
+
+- 后端接口入口为 `backend/app/api/v1/endpoints/agent/weaver_ai_assistant.py`，统一挂载到 `/api/v1/weaver/ai-assistant`。
+- Schema 位于 `backend/app/schemas/agent/weaver_ai_assistant.py`，服务层位于 `backend/app/services/agent/weaver_ai_assistant/`。
+- ecode 或泛微页面调用该接口时使用 `ai-sign` 请求头，校验逻辑复用 `deps.verify_external_ai_sign`。
+- AI 只能返回 `set_field`、`add_detail_row`、`show_message` 等结构化动作，不得返回任意 JavaScript，不得触发保存、提交、审批或删除流程。

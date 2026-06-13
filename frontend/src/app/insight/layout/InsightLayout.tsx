@@ -2,7 +2,7 @@ import { Outlet } from "react-router-dom";
 
 import { InsightThemeScope } from "../theme/InsightThemeScope";
 import { InsightHeader } from "./InsightHeader";
-import { InsightSidebar } from "./InsightSidebar";
+import { InsightMobileNav, InsightSidebar } from "./InsightSidebar";
 
 export function InsightLayout() {
     return (
@@ -14,6 +14,7 @@ export function InsightLayout() {
                     <div className="insight-content">
                         <Outlet />
                     </div>
+                    <InsightMobileNav />
                 </div>
             </div>
         </InsightThemeScope>

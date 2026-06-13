@@ -62,6 +62,13 @@ class Settings(BaseSettings):
     # FineReport
     FINEREPORT_PREVIEW_BASE_URL: str = ""
     FR_AI_FINEREPORT_DB_NAME: str = "XcTest"
+    FR_AI_MINIO_ENDPOINT: str = "192.168.14.41:9000"
+    FR_AI_MINIO_ACCESS_KEY: str = "minioadmin"
+    FR_AI_MINIO_SECRET_KEY: str = ""
+    FR_AI_MINIO_BUCKET_NAME: str = "fanruan"
+    FR_AI_MINIO_SECURE: bool = False
+    FR_AI_REPORT_FILE_PREFIXES: str = "webroot/APP/reportlets"
+    FR_AI_REPORT_FILE_EXTENSIONS: str = ".cpt,.frm"
     FR_AI_SQLSERVER_ENABLED: bool = False
     FR_AI_SQLSERVER_HOST: str = ""
     FR_AI_SQLSERVER_PORT: int = 1433
@@ -71,6 +78,29 @@ class Settings(BaseSettings):
     FR_AI_SQLSERVER_ODBC_DRIVER: str = "SQL Server"
     FR_AI_SQLSERVER_QUERY_TIMEOUT_SECONDS: int = 10
     FR_AI_SQLSERVER_MAX_ROWS: int = 20
+
+    # Insight crawler
+    INSIGHT_FIRECRAWL_BASE_URL: str = ""
+    INSIGHT_FIRECRAWL_API_KEY: str = ""
+    INSIGHT_FIRECRAWL_TIMEOUT_SECONDS: int = 30
+    INSIGHT_BOCHA_API_KEY: str = ""
+    INSIGHT_BOCHA_BASE_URL: str = "https://api.bocha.cn"
+    INSIGHT_SEARCH_TIMEOUT_SECONDS: int = 30
+    INSIGHT_SCHEDULER_ENABLED: bool = False
+    INSIGHT_SCHEDULER_INTERVAL_SECONDS: int = 300
+    INSIGHT_SCHEDULER_BATCH_LIMIT: int = 5
+    INSIGHT_SCHEDULER_STARTUP_DELAY_SECONDS: int = 15
+    INSIGHT_SCHEDULER_ADVISORY_LOCK_ID: int = 2026060601
+    INSIGHT_SCHEDULER_USER_ID: int = 1
+    INSIGHT_SCHEDULER_FAILURE_PAUSE_THRESHOLD: int = 3
+    INSIGHT_WECOM_SEND_ENABLED: bool = False
+    INSIGHT_WECOM_CORP_ID: str = ""
+    INSIGHT_WECOM_AGENT_ID: str = ""
+    INSIGHT_WECOM_SECRET: str = ""
+    INSIGHT_WECOM_BASE_URL: str = "https://qyapi.weixin.qq.com"
+    INSIGHT_WECOM_TIMEOUT_SECONDS: int = 10
+    INSIGHT_WECOM_RETRY_MAX_ATTEMPTS: int = 3
+    INSIGHT_PUBLIC_BASE_URL: str = ""
 
     # Security
     SECRET_KEY: str = "change_this_to_a_secure_random_string_in_production"

@@ -20,12 +20,12 @@ const toneClass = {
 
 export function KPIStatCard({ label, value, trend, tone = "blue", icon, className }: KPIStatCardProps) {
     return (
-        <div className={cn("insight-card p-5", className)}>
-            <div className="flex items-start justify-between gap-3">
-                <div className="text-sm font-medium text-muted-foreground">{label}</div>
-                {icon && <div className={cn("flex size-9 items-center justify-center rounded-2xl", toneClass[tone])}>{icon}</div>}
+        <div className={cn("insight-card p-4 sm:p-5", className)}>
+            <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0 text-sm font-medium text-muted-foreground">{label}</div>
+                {icon && <div className={cn("flex size-9 shrink-0 items-center justify-center rounded-2xl", toneClass[tone])}>{icon}</div>}
             </div>
-            <div className="mt-4 text-3xl font-black tracking-tight text-foreground">{value}</div>
+            <div className="mt-4 text-2xl font-black leading-none tracking-tight text-foreground sm:text-3xl">{value}</div>
             {trend && <div className="mt-2 text-xs font-semibold text-muted-foreground">{trend}</div>}
         </div>
     );

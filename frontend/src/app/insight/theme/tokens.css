@@ -49,10 +49,10 @@
   --insight-shadow-card: 0 10px 28px rgba(30, 74, 120, 0.06);
   --insight-shadow-floating: 0 18px 46px rgba(22, 66, 112, 0.1);
   --insight-shadow-subtle: 0 1px 2px rgba(22, 66, 112, 0.08);
-  --insight-space-page-x: clamp(1rem, 2vw, 1.75rem);
-  --insight-space-page-y: clamp(1rem, 2vw, 1.5rem);
+  --insight-space-page-x: clamp(0.875rem, 1.25vw, 1.75rem);
+  --insight-space-page-y: clamp(0.875rem, 1.25vw, 1.5rem);
   --insight-header-height: 5.5rem;
-  --insight-sidebar-width: 17.5rem;
+  --insight-sidebar-width: 15.75rem;
 
   min-height: 100vh;
   color: var(--foreground);
@@ -109,38 +109,210 @@
 
 .insight-shell {
   display: grid;
-  min-height: 100vh;
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
   grid-template-columns: var(--insight-sidebar-width) minmax(0, 1fr);
 }
 
 .insight-main {
+  display: flex;
+  height: 100vh;
   min-width: 0;
+  min-height: 0;
+  flex-direction: column;
   background: transparent;
 }
 
 .insight-content {
-  min-height: calc(100vh - var(--insight-header-height));
-  padding: 1.5rem 1.5rem 1.75rem;
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+  overscroll-behavior: contain;
+  padding: var(--insight-space-page-y) var(--insight-space-page-x) calc(var(--insight-space-page-y) + 0.25rem);
 }
 
 .insight-page {
-  margin-inline: auto;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
   width: 100%;
-  max-width: 1480px;
+  max-width: none;
+}
+
+.insight-page.insight-page-locked {
+  overflow: hidden;
+}
+
+.insight-page-scroll {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding-right: 0.25rem;
+}
+
+.insight-theme :where(h1, h2, h3, h4, p, span, a, button, label, input, textarea, th, td) {
+  min-width: 0;
+}
+
+.insight-theme :where(input, textarea, button, a) {
+  max-width: 100%;
+}
+
+.insight-theme :where(button, a, th) {
+  word-break: keep-all;
 }
 
 .insight-card {
+  min-width: 0;
   border: 1px solid var(--border);
   border-radius: var(--insight-radius-xl);
   background: var(--card);
   box-shadow: var(--insight-shadow-card);
 }
 
+.insight-page-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.insight-page-heading > * {
+  min-width: 0;
+}
+
+.insight-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.625rem;
+  max-width: 100%;
+}
+
+.insight-actions > * {
+  flex: 0 0 auto;
+  max-width: 100%;
+  white-space: nowrap;
+}
+
+.insight-action-cluster {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  max-width: 100%;
+}
+
+.insight-action-cluster > * {
+  flex: 0 0 auto;
+  max-width: 100%;
+  white-space: nowrap;
+}
+
+.insight-toolbar-panel {
+  border: 1px solid color-mix(in oklab, var(--border) 86%, transparent);
+  border-radius: var(--insight-radius-lg);
+  background: color-mix(in oklab, var(--card) 92%, var(--muted) 8%);
+  padding: 0.875rem;
+}
+
+.insight-row-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.insight-icon-button {
+  height: 2.25rem;
+  width: 2.25rem;
+  border-radius: 0.75rem;
+}
+
 .insight-demo-card {
+  min-width: 0;
   border: 1px solid #dce6f2;
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.96);
   box-shadow: var(--insight-shadow-card);
+}
+
+.insight-metric-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.insight-sticky-table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.insight-sticky-table th,
+.insight-sticky-table td {
+  background-clip: padding-box;
+}
+
+.insight-sticky-left {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: white;
+  box-shadow: 10px 0 18px -18px rgba(15, 23, 42, 0.42);
+}
+
+.insight-sticky-right {
+  position: sticky;
+  right: 0;
+  z-index: 2;
+  background: white;
+  box-shadow: -10px 0 18px -18px rgba(15, 23, 42, 0.42);
+}
+
+.insight-sticky-table thead .insight-sticky-left,
+.insight-sticky-table thead .insight-sticky-right {
+  z-index: 3;
+  background: #f8fafc;
+}
+
+.insight-work-table {
+  height: clamp(24rem, calc(100dvh - 22rem), 46rem);
+  min-height: 22rem;
+  overflow: auto;
+}
+
+.insight-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(15, 23, 42, 0.2);
+  backdrop-filter: blur(2px);
+}
+
+.insight-drawer-panel {
+  position: fixed;
+  inset-block: 0;
+  right: 0;
+  z-index: 61;
+  display: flex;
+  width: min(42rem, calc(100vw - 1.25rem));
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: var(--insight-shadow-floating);
 }
 
 .insight-card-soft {
@@ -153,6 +325,7 @@
 .insight-table-wrap [data-slot="table"] {
   border-collapse: separate;
   border-spacing: 0;
+  min-width: 52rem;
 }
 
 .insight-table-wrap [data-slot="table-header"] tr {
@@ -185,5 +358,81 @@
 @media (max-width: 1024px) {
   .insight-shell {
     grid-template-columns: 1fr;
+  }
+
+  .insight-page-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .insight-actions {
+    justify-content: flex-start;
+  }
+}
+
+@media (max-width: 1535px) {
+  .insight-theme[data-app="insight"] {
+    --insight-space-page-x: 1rem;
+    --insight-space-page-y: 1rem;
+  }
+}
+
+@media (max-width: 767px) {
+  .insight-theme[data-app="insight"] {
+    --insight-space-page-x: 0.75rem;
+    --insight-space-page-y: 0.75rem;
+    --insight-header-height: auto;
+  }
+
+  .insight-content {
+    padding-bottom: calc(var(--insight-space-page-y) + 4.25rem);
+  }
+
+  .insight-metric-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .insight-work-table {
+    height: clamp(22rem, calc(100dvh - 25rem), 38rem);
+  }
+
+  .insight-page-heading {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 0.875rem;
+  }
+
+  .insight-actions,
+  .insight-action-cluster {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .insight-actions > *,
+  .insight-action-cluster > * {
+    min-width: max-content;
+  }
+
+  .insight-card {
+    border-radius: var(--insight-radius-lg);
+  }
+}
+
+@media (max-width: 640px) {
+  .insight-metric-strip {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 480px) {
+  .insight-actions > *,
+  .insight-action-cluster > * {
+    flex: 1 1 calc(50% - 0.375rem);
+    min-width: 8.25rem;
+  }
+
+  .insight-actions > :only-child,
+  .insight-action-cluster > :only-child {
+    flex-basis: auto;
   }
 }

@@ -33,6 +33,8 @@ class ExcelAnalyzer:
             )
             table_region = self._detect_table_region(rows)
             if table_region is None:
+                table_region = self._detect_template_region(rows)
+            if table_region is None:
                 continue
 
             header_index = table_region["headerIndex"]
@@ -41,6 +43,8 @@ class ExcelAnalyzer:
             header_meta = self._build_header_meta(header_matrix)
             headers = [item["label"] for item in header_meta]
             data_rows_raw = self._data_rows_until_gap(rows, data_start_index)
+            if not data_rows_raw:
+                data_rows_raw = self._sample_rows_after_header(rows, data_start_index)
             sample_rows_raw = data_rows_raw[:30]
             fields = self._analyze_fields(header_meta, sample_rows_raw)
             sample_rows = self._build_sample_rows(headers, sample_rows_raw[:10], fields)
@@ -92,6 +96,28 @@ class ExcelAnalyzer:
             "headerIndex": header_index,
             "dataStartIndex": data_row_index,
         }
+
+    def _detect_template_region(self, rows: list[tuple[Any, ...]]) -> dict[str, int] | None:
+        for index, row in enumerate(rows[:40]):
+            non_empty = [cell for cell in row if cell not in (None, "")]
+            if len(non_empty) < 3:
+                continue
+            textual = sum(1 for cell in non_empty if self._is_textual_header_cell(cell))
+            if textual < max(2, len(non_empty) // 2):
+                continue
+            joined = " ".join(str(cell) for cell in non_empty)
+            if "需求" in joined or len(joined) > 120:
+                continue
+            header_index = index
+            next_index = index + 1
+            if next_index < len(rows) and self._looks_like_header_support_row(rows[next_index]):
+                header_index = next_index
+            return {
+                "headerStartIndex": index,
+                "headerIndex": header_index,
+                "dataStartIndex": min(header_index + 1, len(rows) - 1),
+            }
+        return None
 
     def _find_header_row(self, rows: list[tuple[Any, ...]], data_row_index: int) -> int | None:
         best_index: int | None = None
@@ -196,10 +222,23 @@ class ExcelAnalyzer:
             data_rows.append(row)
         return data_rows
 
+    def _sample_rows_after_header(self, rows: list[tuple[Any, ...]], data_start_index: int) -> list[tuple[Any, ...]]:
+        samples: list[tuple[Any, ...]] = []
+        for row in rows[data_start_index : data_start_index + 5]:
+            if all(value in (None, "") for value in row):
+                break
+            joined = " ".join(str(value) for value in row if value not in (None, ""))
+            if "需求" in joined:
+                break
+            samples.append(row)
+        return samples
+
     def _infer_type(self, values: list[Any], header_meta: dict[str, Any] | None = None) -> FieldType:
         if not values:
             return FieldType.STRING
         header_text = " ".join(str(part) for part in (header_meta or {}).get("parts", []))
+        if any(keyword in header_text for keyword in ["账户", "合约", "代码", "品种", "策略", "方向", "单位"]):
+            return FieldType.STRING
         if self._is_date_like_header(header_text) and self._date_like_ratio(values) >= 0.8:
             return FieldType.DATE
         if self._excel_serial_date_ratio(values) >= 0.8 and self._looks_like_row_date_column(header_text, values):
@@ -237,6 +276,8 @@ class ExcelAnalyzer:
         text_keywords = ["备注", "说明", "描述", "地址", "内容", "comment", "desc"]
         if field_type in {FieldType.DATE, FieldType.DATETIME} or any(key in lowered for key in date_keywords):
             return FieldRole.DATE
+        if any(key in lowered for key in measure_keywords):
+            return FieldRole.MEASURE
         if header_meta and header_meta.get("isMetricColumn") and field_type in {FieldType.INTEGER, FieldType.DECIMAL}:
             return FieldRole.MEASURE
         if field_type in {FieldType.INTEGER, FieldType.DECIMAL} and any(key in lowered for key in measure_keywords):
@@ -293,6 +334,7 @@ class ExcelAnalyzer:
         unit = self._detect_unit(non_empty_rows)
         update_text = self._detect_update_text(non_empty_rows)
         note_texts = self._detect_note_texts(non_empty_rows)
+        requirement_lines = self._detect_requirement_lines(non_empty_rows)
         average_label = self._detect_average_label(header_meta, note_texts)
         filters = self._detect_filter_cells(rows[: min(len(rows), table_region["headerStartIndex"] + 1)])
         header_rows = self._header_rows(rows, table_region["headerStartIndex"], table_region["headerIndex"])
@@ -309,6 +351,7 @@ class ExcelAnalyzer:
             "updateText": update_text,
             "averageLabel": average_label,
             "notes": note_texts,
+            "requirementLines": requirement_lines,
             "filters": filters,
             "headerRows": header_rows,
             "headerMatrix": header_matrix,
@@ -379,12 +422,30 @@ class ExcelAnalyzer:
 
     def _detect_note_texts(self, non_empty_rows: list[dict[str, Any]]) -> list[str]:
         notes: list[str] = []
-        note_keywords = ["显示数据关联", "涨跌", "自动计算", "显示颜色", "价格显示", "备注", "说明"]
+        note_keywords = ["显示数据关联", "涨跌", "自动计算", "显示颜色", "价格显示", "备注", "说明", "维护", "下拉框", "平仓", "持仓", "合约"]
         for row in non_empty_rows:
             joined = "\n".join(str(value).strip() for value in row["values"] if str(value).strip())
             if joined and any(keyword in joined for keyword in note_keywords):
                 notes.append(joined)
         return notes[:8]
+
+    def _detect_requirement_lines(self, non_empty_rows: list[dict[str, Any]]) -> list[str]:
+        lines: list[str] = []
+        in_requirement_block = False
+        for row in non_empty_rows:
+            joined = " ".join(str(value).strip() for value in row["values"] if str(value).strip())
+            if not joined:
+                continue
+            if "需求" in joined:
+                in_requirement_block = True
+                lines.append(joined)
+                continue
+            if in_requirement_block and (
+                re.match(r"^\d+[、.．]", joined)
+                or any(keyword in joined for keyword in ["查询", "录入", "平仓", "持仓", "维护", "自动计算", "换算率"])
+            ):
+                lines.append(joined)
+        return lines[:20]
 
     def _detect_average_label(self, header_meta: list[dict[str, Any]], note_texts: list[str]) -> str | None:
         for item in header_meta:
@@ -523,6 +584,14 @@ class ExcelAnalyzer:
             "备注",
             "说明",
             "市场",
+            "账户",
+            "合约",
+            "策略",
+            "开仓",
+            "平仓",
+            "持仓",
+            "方向",
+            "操作单位",
             "日期",
             "年份",
             "涨跌",
@@ -535,7 +604,7 @@ class ExcelAnalyzer:
 
     def _title_score(self, text: str, row_index: int, header_start_index: int) -> int:
         score = min(len(text), 40)
-        if any(keyword in text for keyword in ["报", "表", "汇总", "价格", "行情", "统计", "分析"]):
+        if any(keyword in text for keyword in ["报", "表", "汇总", "价格", "行情", "统计", "分析", "台账"]):
             score += 20
         if row_index <= 3:
             score += 10

@@ -13,7 +13,7 @@ const rows = [
 export function DataTableCard() {
     return (
         <SectionCard title="重点情报列表" description="按热度、来源可信度和业务相关性综合排序。">
-            <div className="insight-table-wrap overflow-hidden rounded-[var(--insight-radius-lg)] border border-border">
+            <div className="insight-table-wrap overflow-x-auto rounded-[var(--insight-radius-lg)] border border-border">
                 <Table>
                     <TableHeader>
                         <TableRow>

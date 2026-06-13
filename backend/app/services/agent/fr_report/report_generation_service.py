@@ -19,6 +19,7 @@ from app.schemas.agent.fr_report.ai_report import (
     ExcelAnalysisResult,
     FrAiReportFeedbackCreate,
     FrAiReportFeedbackRead,
+    FrAiReportRequirementReviewResponse,
     GenerateDslStepResponse,
     GenerateCptStepResponse,
     GenerateReportResponse,
@@ -40,11 +41,30 @@ from app.services.agent.fr_report.dsl_validator import DslValidationError, dsl_v
 from app.services.agent.fr_report.excel_analyzer import excel_analyzer
 from app.services.agent.fr_report.minio_staging_service import minio_staging_service
 from app.services.agent.fr_report.preview_validator import preview_validator
+from app.services.agent.fr_report.requirement_planner import fr_report_requirement_planner
 from app.services.agent.fr_report.sql_react_agent import sql_react_agent
 from app.services.agent.fr_report.sqlserver_query_service import sqlserver_query_service
 
 
 class FrAiReportService:
+    async def review_requirement(
+        self,
+        requirement: str | None,
+        file: UploadFile | None,
+        table_schema: dict[str, Any] | None,
+        source_table_name: str | None = None,
+    ) -> FrAiReportRequirementReviewResponse:
+        file_content = await file.read() if file else None
+        if file:
+            await file.seek(0)
+        analysis = excel_analyzer.analyze(file_content, file.filename) if file_content else None
+        return fr_report_requirement_planner.review(
+            requirement=requirement,
+            analysis=analysis,
+            source_table_name=source_table_name,
+            table_schema=table_schema,
+        )
+
     async def generate_sql_step(
         self,
         session: AsyncSession,
@@ -87,6 +107,17 @@ class FrAiReportService:
             logs.append(self._log("Excel 分析完成" if analysis else "未提供 Excel，跳过 Excel 分析"))
 
             requirement_summary = await requirement_agent.summarize(requirement, analysis)
+            business_review = fr_report_requirement_planner.review(
+                requirement=requirement,
+                analysis=analysis,
+                source_table_name=source_table_name,
+                table_schema=table_schema,
+            )
+            requirement_summary["businessPlan"] = business_review.model_dump(
+                mode="json",
+                exclude={"excelAnalysis"},
+            )
+            logs.append(self._log("需求预检完成，已识别维护表、追问和质量门禁"))
             logs.append(self._log("需求摘要生成完成"))
 
             final_report_name = report_name or self._default_report_name(
@@ -111,12 +142,18 @@ class FrAiReportService:
                     else "SQL 已生成，但数据预览未完全通过"
                 )
             )
+            supervisor_warnings, supervisor_errors = self._supervise_generation(
+                requirement_summary,
+                data_model.model_dump(mode="json"),
+                sql_react_result.sql,
+            )
+            logs.extend(self._log(message) for message in supervisor_warnings + supervisor_errors)
 
             task.report_name = final_report_name
             task.report_type = requirement_summary["reportType"]
             task.status = (
                 FrAiReportTaskStatus.GENERATED
-                if not sql_react_result.validation.errors
+                if not sql_react_result.validation.errors and not supervisor_errors
                 else FrAiReportTaskStatus.VALIDATION_FAILED
             )
             task.data_source_status = data_model.dataSourceStatus
@@ -129,8 +166,8 @@ class FrAiReportService:
             task.sql_validation = sql_react_result.validation.model_dump(mode="json")
             task.create_table_sql = data_model.createTableSql
             task.generation_log = logs
-            task.warnings = sql_react_result.validation.warnings
-            task.errors = sql_react_result.validation.errors
+            task.warnings = business_review.warnings + sql_react_result.validation.warnings + supervisor_warnings
+            task.errors = sql_react_result.validation.errors + supervisor_errors
             task.update_time = datetime.now()
             session.add(task)
             await self._touch_conversation(session, conversation, task)
@@ -279,6 +316,17 @@ class FrAiReportService:
             logs.append(self._log("Excel 分析完成" if analysis else "未提供 Excel，跳过 Excel 分析"))
 
             requirement_summary = await requirement_agent.summarize(requirement, analysis)
+            business_review = fr_report_requirement_planner.review(
+                requirement=requirement,
+                analysis=analysis,
+                source_table_name=source_table_name,
+                table_schema=table_schema,
+            )
+            requirement_summary["businessPlan"] = business_review.model_dump(
+                mode="json",
+                exclude={"excelAnalysis"},
+            )
+            logs.append(self._log("需求预检完成，已识别维护表、追问和质量门禁"))
             logs.append(self._log("需求摘要生成完成"))
 
             final_report_name = report_name or self._default_report_name(requirement_summary, file.filename if file else None)
@@ -302,6 +350,12 @@ class FrAiReportService:
                     else "SQL Server 数据校验跳过或未通过"
                 )
             )
+            supervisor_warnings, supervisor_errors = self._supervise_generation(
+                requirement_summary,
+                data_model.model_dump(mode="json"),
+                query_sql,
+            )
+            logs.extend(self._log(message) for message in supervisor_warnings + supervisor_errors)
             dsl = await report_designer_agent.design(final_report_name, requirement_summary, data_model, query_sql)
             logs.append(self._log("ReportDSL 生成完成，未生成 CPT/XML"))
 
@@ -319,14 +373,14 @@ class FrAiReportService:
                 create_table_sql=data_model.createTableSql,
                 generation_log=logs,
             )
-            reportlet_path = f"reportlets_ai_staging/{task_id}/report.cpt"
+            reportlet_path = f"AI生成报表/{task_id}/report.cpt"
             preview_result = await preview_validator.validate(reportlet_path)
 
             task.report_name = final_report_name
             task.report_type = dsl.reportType.value
             task.status = (
                 FrAiReportTaskStatus.GENERATED
-                if not sql_validation.errors and not preview_result.errors
+                if not sql_validation.errors and not preview_result.errors and not supervisor_errors
                 else FrAiReportTaskStatus.VALIDATION_FAILED
             )
             task.data_source_status = data_model.dataSourceStatus
@@ -345,8 +399,8 @@ class FrAiReportService:
             task.create_sql_object_path = artifacts["createSqlObjectPath"]
             task.log_object_path = artifacts["logObjectPath"]
             task.preview_url = preview_result.previewUrl
-            task.warnings = validation_warnings + sql_validation.warnings + preview_result.warnings
-            task.errors = sql_validation.errors + preview_result.errors
+            task.warnings = business_review.warnings + validation_warnings + sql_validation.warnings + supervisor_warnings + preview_result.warnings
+            task.errors = sql_validation.errors + supervisor_errors + preview_result.errors
             task.update_time = datetime.now()
             session.add(task)
             await self._touch_conversation(session, conversation, task)
@@ -409,7 +463,7 @@ class FrAiReportService:
             raise ValueError("任务缺少 SQL，无法生成 CPT")
 
         logs = list(task.generation_log or [])
-        logs.append(self._log("开始执行 FineReport AI 报表第三步：生成 CPT 并上传 MinIO staging"))
+        logs.append(self._log("开始执行 FineReport AI 报表第三步：生成 CPT 并上传 reportlets 专用目录"))
         task.status = FrAiReportTaskStatus.GENERATING
         task.generation_log = logs
         task.update_time = datetime.now()
@@ -433,9 +487,9 @@ class FrAiReportService:
                 create_table_sql=task.create_table_sql,
                 generation_log=logs,
             )
-            logs.append(self._log("CPT、DSL、SQL 和生成日志已写入 MinIO staging"))
+            logs.append(self._log("CPT、DSL、SQL 和生成日志已写入 reportlets/AI生成报表 专用目录"))
 
-            reportlet_path = f"reportlets_ai_staging/{task.task_id}/report.cpt"
+            reportlet_path = f"AI生成报表/{task.task_id}/report.cpt"
             preview_result = await preview_validator.validate(reportlet_path)
             if preview_result.errors:
                 logs.append(self._log("FineReport 预览校验未通过"))
@@ -592,7 +646,7 @@ class FrAiReportService:
         session.add(task)
         await session.commit()
 
-        reportlet_path = f"reportlets_ai_staging/{task_id}/report.cpt"
+        reportlet_path = f"AI生成报表/{task_id}/report.cpt"
         result = await preview_validator.validate(reportlet_path)
         sql_validation = task.sql_validation or {}
         task.preview_url = result.previewUrl
@@ -609,7 +663,7 @@ class FrAiReportService:
         if task is None:
             raise ValueError("任务不存在")
         warnings = list(task.warnings or [])
-        warnings.append("安全策略：publish 仅标记任务已发布，CPT 仍保留在 MinIO staging，不直接写正式 reportlets")
+        warnings.append("安全策略：publish 仅标记任务已发布，CPT 仍保留在 reportlets/AI生成报表 专用目录，不覆盖正式报表")
         task.status = FrAiReportTaskStatus.PUBLISHED
         task.warnings = warnings
         task.update_time = datetime.now()
@@ -858,6 +912,52 @@ class FrAiReportService:
 
         summary["templateDesign"] = template_design
         return summary
+
+    def _supervise_generation(
+        self,
+        requirement_summary: dict[str, Any],
+        data_model: dict[str, Any],
+        query_sql: str | None,
+    ) -> tuple[list[str], list[str]]:
+        business_plan = requirement_summary.get("businessPlan") or {}
+        if business_plan.get("scenario") != "futures_operation_ledger":
+            return [], []
+
+        warnings: list[str] = []
+        errors: list[str] = []
+        sql_text = query_sql or ""
+        model_text = f"{data_model} {sql_text}".lower()
+        required_tables = [
+            "fr_future_contract_base",
+            "fr_future_trade_ledger",
+            "fr_future_settlement_price",
+        ]
+        missing_tables = [table for table in required_tables if table.lower() not in model_text]
+        if missing_tables:
+            errors.append(f"监工校验失败：期货台账缺少关键候选表 {', '.join(missing_tables)}。")
+
+        required_terms = {
+            "contract_variety": "合约品种组合主键",
+            "tons_per_lot": "吨数/手换算率",
+            "close_quantity_lot": "平仓数量",
+            "remaining_quantity_lot": "剩余持仓",
+            "settlement_price": "查询截止日收盘价",
+            "floating_profit": "持仓浮动盈亏",
+            "realized_profit": "平仓盈亏",
+        }
+        for term, label in required_terms.items():
+            if term not in model_text:
+                errors.append(f"监工校验失败：期货台账缺少 {label} 规则或字段。")
+
+        if "${end_date}" not in sql_text:
+            warnings.append("监工提示：SQL 未显式使用查询截止日期 ${end_date}，浮动盈亏可能无法按截止日计算。")
+        if "${start_date}" not in sql_text:
+            warnings.append("监工提示：SQL 未显式使用查询开始日期 ${start_date}，台账区间查询可能不完整。")
+        if "close_quantity_lot" in sql_text and "<= t.open_quantity_lot" not in sql_text and "<= open_quantity_lot" not in sql_text:
+            errors.append("监工校验失败：同一行开平仓模式下，SQL 或表约束必须校验平仓数量不超过开仓数量。")
+        if data_model.get("dataSourceStatus") == "designed_not_verified":
+            warnings.append("监工提示：当前使用的是 AI 设计的候选表结构，正式生成前需要用户确认真实数据库表和字段。")
+        return warnings, errors
 
     def _requires_latest_change_row(self, feedback_text: str) -> bool:
         normalized = feedback_text.replace(" ", "")

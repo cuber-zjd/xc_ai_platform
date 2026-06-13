@@ -54,10 +54,12 @@ pnpm dev
 
 - PostgreSQL：`POSTGRES_SERVER`、`POSTGRES_PORT`、`POSTGRES_DB`、`POSTGRES_USER`、`POSTGRES_PASSWORD`
 - Redis：`REDIS_HOST`、`REDIS_PORT`
-- MinIO：`MINIO_ENDPOINT`、`MINIO_ACCESS_KEY`、`MINIO_SECRET_KEY`、`MINIO_BUCKET_NAME`
+- 平台通用 MinIO：`MINIO_ENDPOINT`、`MINIO_ACCESS_KEY`、`MINIO_SECRET_KEY`、`MINIO_BUCKET_NAME`
 - Milvus：`MILVUS_HOST`、`MILVUS_PORT`
 - LangFuse：`LANGFUSE_PUBLIC_KEY`、`LANGFUSE_SECRET_KEY`、`LANGFUSE_HOST`
 - OnlyOffice：`ONLYOFFICE_SERVER_URL`、`ONLYOFFICE_JWT_SECRET`
+- Insight 通用采集：`INSIGHT_FIRECRAWL_BASE_URL`、`INSIGHT_FIRECRAWL_API_KEY`、`INSIGHT_FIRECRAWL_TIMEOUT_SECONDS`、`INSIGHT_BOCHA_API_KEY`、`INSIGHT_BOCHA_BASE_URL`、`INSIGHT_SEARCH_TIMEOUT_SECONDS`
+- Insight 周期调度：`INSIGHT_SCHEDULER_ENABLED`、`INSIGHT_SCHEDULER_INTERVAL_SECONDS`、`INSIGHT_SCHEDULER_BATCH_LIMIT`、`INSIGHT_SCHEDULER_STARTUP_DELAY_SECONDS`、`INSIGHT_SCHEDULER_ADVISORY_LOCK_ID`、`INSIGHT_SCHEDULER_USER_ID`、`INSIGHT_SCHEDULER_FAILURE_PAUSE_THRESHOLD`
 - 安全：`SECRET_KEY`、`MCP_API_KEY`、`EXTERNAL_API_KEYS`
 
 ## 4. 测试与检查
@@ -113,6 +115,8 @@ uv sync
 - 新增环境变量：`FINEREPORT_PREVIEW_BASE_URL`。
 - FineReport AI 第三步配置详见 `docs/fr-ai-report-third-step.md`；当前已确认 MinIO S3 API endpoint 为 `192.168.14.41:9000`，bucket 为 `fanruan`，FineReport 访问根地址为 `http://192.168.14.41:1080`。
 - CPT 数据连接名环境变量：`FR_AI_FINEREPORT_DB_NAME`，当前默认 `XcTest`。
+- 帆软专用 MinIO 环境变量：`FR_AI_MINIO_ENDPOINT`、`FR_AI_MINIO_ACCESS_KEY`、`FR_AI_MINIO_SECRET_KEY`、`FR_AI_MINIO_BUCKET_NAME`、`FR_AI_MINIO_SECURE`。这些配置只用于读取现有 `.cpt` / `.frm` 和写入 `webroot/APP/reportlets/AI生成报表/` 专用预览目录，不影响平台通用文件存储。
+- 报表文件读取环境变量：`FR_AI_REPORT_FILE_PREFIXES` 控制允许扫描的 MinIO 目录，默认 `webroot/APP/reportlets`；`FR_AI_REPORT_FILE_EXTENSIONS` 控制文件类型，默认 `.cpt,.frm`。
 - SQL Server 校验环境变量：`FR_AI_SQLSERVER_ENABLED`、`FR_AI_SQLSERVER_HOST`、`FR_AI_SQLSERVER_PORT`、`FR_AI_SQLSERVER_DATABASE`、`FR_AI_SQLSERVER_USER`、`FR_AI_SQLSERVER_PASSWORD`、`FR_AI_SQLSERVER_QUERY_TIMEOUT_SECONDS`、`FR_AI_SQLSERVER_MAX_ROWS`。
 - `FR_AI_SQLSERVER_ENABLED=false` 时跳过数据 SQL 校验；启用后用于 FineReport AI 报表生成链路中的只读 SQL Server 预执行校验。
 - 用途：AI 报表生成后调用 FineReport 预览 URL 校验 HTTP 状态和页面报错信息。
@@ -138,3 +142,23 @@ uv sync
 - 如果服务器使用 SOCKS 代理，必须使用 `socks5://host:port`，不要使用 `socks://host:port`；LLM 工厂会将遗留的 `socks://` 自动规范为 `socks5://`，避免 `ChatOpenAI` 初始化时报 `Unknown scheme for proxy URL`。
 - 后端依赖已启用 `httpx[socks]`，用于支持 HTTPX/OpenAI 客户端通过 SOCKS 代理访问外部模型服务。
 - 推荐部署策略：本地 `.env` 保持 `LLM_PROXY_MODE=auto` 且不配置 `LLM_PROXY_URL`；服务器如果必须走代理，配置 `LLM_PROXY_MODE=url` 和 `LLM_PROXY_URL=socks5://127.0.0.1:7897`；服务器如果全局代理会干扰模型服务，配置 `LLM_PROXY_MODE=off`。
+
+## 10. Insight 通用采集配置
+
+- Insight 第一阶段通用网页抓取通过本地 Firecrawl 服务完成，接口由 `INSIGHT_FIRECRAWL_BASE_URL` 指定，例如 `http://127.0.0.1:3002`。
+- 如 Firecrawl 启用 API Key，使用 `INSIGHT_FIRECRAWL_API_KEY` 配置；未启用时留空。
+- 抓取超时由 `INSIGHT_FIRECRAWL_TIMEOUT_SECONDS` 控制，默认 30 秒。
+- 手动 URL 抓取接口为 `POST /api/v1/insight/crawler/manual-url`，会创建采集任务、调用 Firecrawl、写入爬取结果和候选情报。
+- 关键词搜索发现接口为 `POST /api/v1/insight/crawler/search-discovery`，第一版支持百度发现和 Bocha/博查 API，发现候选 URL 后复用 Firecrawl 正文抽取链路。
+- 抓取结果入库前会做 URL 归一、追踪参数清理、标题/摘要清洗、发布时间解析、内容去重和候选主题/类型/标签规则识别；候选列表接口为 `GET /api/v1/insight/intelligence/candidates`。
+- 候选审核接口包括 `POST /api/v1/insight/intelligence/candidates/{candidate_id}/promote`、`/reject`、`/ignore`；通过后会写入正式情报、来源证据和审核记录。
+- 正式情报查询接口包括 `GET /api/v1/insight/intelligence` 和 `GET /api/v1/insight/intelligence/{intelligence_id}`；第一版权限策略为管理员看全部，普通用户看公开或自己审核/拥有的情报。
+- 正式情报维护接口包括 `POST /api/v1/insight/intelligence`、`PUT /api/v1/insight/intelligence/{intelligence_id}` 和 `POST /api/v1/insight/intelligence/{intelligence_id}/sources`；人工新增、编辑和补来源都会写审核记录。
+- 可见性授权接口包括 `GET/POST /api/v1/insight/intelligence/{intelligence_id}/visibility-rules`，支持 `user`、`role`、`dept`、`all` 四类主体；用户情报池接口包括 `GET /api/v1/insight/intelligence-pool`、`POST /api/v1/insight/intelligence/{intelligence_id}/pool` 和 `DELETE /api/v1/insight/intelligence/{intelligence_id}/pool/{pool_type}`。
+- Bocha/博查 API Key 通过 `INSIGHT_BOCHA_API_KEY` 配置，默认接口根地址为 `INSIGHT_BOCHA_BASE_URL=https://api.bocha.cn`，完整 Web Search 地址为 `/v1/web-search`；未配置 Key 时不要启用 `bocha` 通道。
+- 搜索发现超时由 `INSIGHT_SEARCH_TIMEOUT_SECONDS` 控制，默认 30 秒。
+- Insight 首页看板接口为 `GET /api/v1/insight/dashboard`，聚合当前用户可见的正式情报，返回 KPI、近 7 日趋势、来源分布、重点动态和最新情报；权限过滤和隐藏池过滤必须在后端完成。
+- Insight 数据源配置需要支持手动和周期采集。第一版数据源类型包括官网、通用网页、百度资讯、博查资讯和博查网页搜索；百度资讯通道需要显式走资讯搜索参数，不应复用普通网页搜索结果。
+- 数据源周期配置支持 `manual`、`15m`、`hourly`、`daily` 和自定义 cron。生产环境可通过 `INSIGHT_SCHEDULER_ENABLED=true` 启动常驻调度器；调度器只读取启用且到期的数据源创建采集任务，每轮写入 `scheduler_tick` 任务日志，并通过 PostgreSQL advisory lock 避免多实例重复执行。前端数据源配置页通过 `/api/v1/insight/scheduler/status` 查看运行状态，通过 `/scheduler/run-once` 立即扫描到期任务，通过 `/scheduler/start` 和 `/scheduler/stop` 做运行态控制。连续失败达到 `INSIGHT_SCHEDULER_FAILURE_PAUSE_THRESHOLD` 后数据源会自动暂停周期采集，人工排查后可调用 `/api/v1/insight/data-sources/{data_source_id}/schedule/retry` 加入下一轮调度。
+- 数据源筛选配置包括确定性规则和 LLM 筛选提示词。LLM 筛选必须可关闭，筛选失败时按数据源配置决定降级保留或丢弃，并记录过滤原因。
+- 御馨及健源第一批实际数据源初始化脚本为 `backend/scripts/seed_insight_data_sources.py`。执行 `uv run python scripts/seed_insight_data_sources.py` 可幂等写入 14 条 `yxjy_` 前缀数据源；追加 `--test` 会代表性测试嘉华官网、御馨大豆蛋白博查资讯和健源新茶饮百度资讯链路。

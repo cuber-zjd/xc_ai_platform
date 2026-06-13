@@ -1,0 +1,1243 @@
+import { apiClient } from "@/api/client";
+
+export const insightApiPrefix = "/insight";
+
+export const insightApi = {
+    getHealth: () => apiClient.get<InsightHealth, InsightHealth>(`${insightApiPrefix}/health`),
+    getDashboard: () => apiClient.get<InsightDashboardSummary, InsightDashboardSummary>(`${insightApiPrefix}/dashboard`),
+    getSettingsStatus: () => apiClient.get<InsightSettingsStatusRead, InsightSettingsStatusRead>(`${insightApiPrefix}/settings/status`),
+    getQualityOverview: () => apiClient.get<InsightQualityOverview, InsightQualityOverview>(`${insightApiPrefix}/quality/overview`),
+    getDictionaryOverview: () => apiClient.get<InsightDictionaryOverview, InsightDictionaryOverview>(`${insightApiPrefix}/dictionaries/overview`),
+    listDictionaryTags: (params?: { tag_type?: string; include_disabled?: boolean }) =>
+        apiClient.get<InsightTagRead[], InsightTagRead[]>(`${insightApiPrefix}/dictionaries/tags`, { params }),
+    createDictionaryTag: (payload: InsightTagCreate) =>
+        apiClient.post<InsightTagRead, InsightTagRead>(`${insightApiPrefix}/dictionaries/tags`, payload),
+    updateDictionaryTag: (tagId: number, payload: InsightTagUpdate) =>
+        apiClient.put<InsightTagRead, InsightTagRead>(`${insightApiPrefix}/dictionaries/tags/${tagId}`, payload),
+    disableDictionaryTag: (tagId: number) =>
+        apiClient.post<InsightTagRead, InsightTagRead>(`${insightApiPrefix}/dictionaries/tags/${tagId}/disable`),
+    listIntelligenceTypes: () =>
+        apiClient.get<InsightIntelligenceTypeRead[], InsightIntelligenceTypeRead[]>(`${insightApiPrefix}/dictionaries/intelligence-types`),
+    listNotifications: (params: InsightNotificationListParams) =>
+        apiClient.get<InsightPage<InsightNotificationRead>, InsightPage<InsightNotificationRead>>(`${insightApiPrefix}/notifications`, { params }),
+    createNotification: (payload: InsightNotificationCreate) =>
+        apiClient.post<InsightNotificationRead, InsightNotificationRead>(`${insightApiPrefix}/notifications`, payload),
+    retryNotification: (notificationId: number) =>
+        apiClient.post<InsightNotificationRead, InsightNotificationRead>(`${insightApiPrefix}/notifications/${notificationId}/retry`),
+    listCompanies: (params: InsightCompanyListParams) =>
+        apiClient.get<InsightPage<InsightCompanyListItem>, InsightPage<InsightCompanyListItem>>(`${insightApiPrefix}/companies`, { params }),
+    listSystemCompanies: () => apiClient.get<SystemCompanyOption[], SystemCompanyOption[]>("/companies"),
+    getCompanyDetail: (companyId: number) =>
+        apiClient.get<InsightCompanyDetail, InsightCompanyDetail>(`${insightApiPrefix}/companies/${companyId}`),
+    createCompany: (payload: InsightCompanyCreate) =>
+        apiClient.post<InsightCompanyRead, InsightCompanyRead>(`${insightApiPrefix}/companies`, payload),
+    importCompanies: (payload: FormData) =>
+        apiClient.post<InsightCompanyImportResponse, InsightCompanyImportResponse>(`${insightApiPrefix}/companies/import`, payload, {
+            timeout: 120000,
+        }),
+    downloadCompanyImportTemplate: () =>
+        apiClient.get<Blob, Blob>(`${insightApiPrefix}/companies/import-template`, {
+            responseType: "blob",
+            timeout: 120000,
+        }),
+    updateCompany: (companyId: number, payload: InsightCompanyUpdate) =>
+        apiClient.put<InsightCompanyRead, InsightCompanyRead>(`${insightApiPrefix}/companies/${companyId}`, payload),
+    listReports: (params: InsightReportListParams) =>
+        apiClient.get<InsightPage<InsightReportListItem>, InsightPage<InsightReportListItem>>(`${insightApiPrefix}/reports`, { params }),
+    listReportTemplates: () =>
+        apiClient.get<InsightReportTemplateRead[], InsightReportTemplateRead[]>(`${insightApiPrefix}/reports/templates`),
+    createReportTemplate: (payload: InsightReportTemplateCreate) =>
+        apiClient.post<InsightReportTemplateRead, InsightReportTemplateRead>(`${insightApiPrefix}/reports/templates`, payload),
+    uploadReportTemplate: (payload: FormData) =>
+        apiClient.post<InsightReportTemplateUploadResponse, InsightReportTemplateUploadResponse>(
+            `${insightApiPrefix}/reports/templates/upload`,
+            payload,
+            { timeout: 120000 },
+        ),
+    publishReportTemplate: (templateId: number, payload: InsightReportTemplatePublishRequest) =>
+        apiClient.post<InsightReportTemplateRead, InsightReportTemplateRead>(`${insightApiPrefix}/reports/templates/${templateId}/publish`, payload),
+    cloneReportTemplate: (templateCode: string, payload: InsightReportTemplateCloneRequest) =>
+        apiClient.post<InsightReportTemplateRead, InsightReportTemplateRead>(`${insightApiPrefix}/reports/templates/${templateCode}/clone`, payload),
+    updateReportTemplate: (templateId: number, payload: InsightReportTemplateUpdate) =>
+        apiClient.put<InsightReportTemplateRead, InsightReportTemplateRead>(`${insightApiPrefix}/reports/templates/${templateId}`, payload),
+    deleteReportTemplate: (templateId: number) =>
+        apiClient.delete<void, void>(`${insightApiPrefix}/reports/templates/${templateId}`),
+    getReportDetail: (reportId: number) =>
+        apiClient.get<InsightReportDetail, InsightReportDetail>(`${insightApiPrefix}/reports/${reportId}`),
+    generateReport: (payload: InsightReportGenerateRequest) =>
+        apiClient.post<InsightReportGenerateResponse, InsightReportGenerateResponse>(`${insightApiPrefix}/reports/generate`, payload, {
+            timeout: 180000,
+        }),
+    updateReport: (reportId: number, payload: InsightReportUpdateRequest) =>
+        apiClient.put<InsightReportDetail, InsightReportDetail>(`${insightApiPrefix}/reports/${reportId}`, payload),
+    listReportExports: (reportId: number) =>
+        apiClient.get<InsightReportExportRead[], InsightReportExportRead[]>(`${insightApiPrefix}/reports/${reportId}/exports`),
+    exportReport: (reportId: number, payload: InsightReportExportRequest) =>
+        apiClient.post<InsightReportExportRead, InsightReportExportRead>(`${insightApiPrefix}/reports/${reportId}/exports`, payload, {
+            timeout: 120000,
+        }),
+    downloadReportExport: (reportId: number, exportId: number) =>
+        apiClient.get<Blob, Blob>(`${insightApiPrefix}/reports/${reportId}/exports/${exportId}/download`, {
+            responseType: "blob",
+            timeout: 120000,
+        }),
+    getReportPreference: () =>
+        apiClient.get<InsightReportPreferenceRead, InsightReportPreferenceRead>(`${insightApiPrefix}/reports/preference`),
+    updateReportPreference: (payload: InsightReportPreferenceUpdate) =>
+        apiClient.put<InsightReportPreferenceRead, InsightReportPreferenceRead>(`${insightApiPrefix}/reports/preference`, payload),
+    listAccessRules: (targetType: string, targetId: number) =>
+        apiClient.get<InsightAccessRuleRead[], InsightAccessRuleRead[]>(`${insightApiPrefix}/permissions/${targetType}/${targetId}`),
+    grantAccessRule: (targetType: string, targetId: number, payload: InsightAccessRuleUpsert) =>
+        apiClient.post<InsightAccessRuleRead, InsightAccessRuleRead>(`${insightApiPrefix}/permissions/${targetType}/${targetId}`, payload),
+    revokeAccessRule: (ruleId: number) =>
+        apiClient.delete<void, void>(`${insightApiPrefix}/permissions/rules/${ruleId}`),
+    getSchedulerStatus: () =>
+        apiClient.get<InsightSchedulerStatusRead, InsightSchedulerStatusRead>(`${insightApiPrefix}/scheduler/status`),
+    runSchedulerOnce: () =>
+        apiClient.post<InsightDataSourceScheduleRunResponse, InsightDataSourceScheduleRunResponse>(`${insightApiPrefix}/scheduler/run-once`),
+    startScheduler: () =>
+        apiClient.post<InsightSchedulerStatusRead, InsightSchedulerStatusRead>(`${insightApiPrefix}/scheduler/start`),
+    stopScheduler: () =>
+        apiClient.post<InsightSchedulerStatusRead, InsightSchedulerStatusRead>(`${insightApiPrefix}/scheduler/stop`),
+    listDataSources: (params: InsightDataSourceListParams) =>
+        apiClient.get<InsightPage<InsightDataSourceRead>, InsightPage<InsightDataSourceRead>>(`${insightApiPrefix}/data-sources`, { params }),
+    listDataSourceExecutionLogs: (params: InsightDataSourceExecutionLogParams) =>
+        apiClient.get<InsightPage<InsightTaskRead>, InsightPage<InsightTaskRead>>(`${insightApiPrefix}/data-sources/execution-logs`, { params }),
+    runDueDataSources: (params?: { limit?: number }) =>
+        apiClient.post<InsightDataSourceScheduleRunResponse, InsightDataSourceScheduleRunResponse>(
+            `${insightApiPrefix}/data-sources/schedule/run-due`,
+            null,
+            { params },
+        ),
+    createDataSource: (payload: InsightDataSourceCreate) =>
+        apiClient.post<InsightDataSourceRead, InsightDataSourceRead>(`${insightApiPrefix}/data-sources`, payload),
+    updateDataSource: (dataSourceId: number, payload: InsightDataSourceUpdate) =>
+        apiClient.put<InsightDataSourceRead, InsightDataSourceRead>(`${insightApiPrefix}/data-sources/${dataSourceId}`, payload),
+    deleteDataSource: (dataSourceId: number) =>
+        apiClient.delete<void, void>(`${insightApiPrefix}/data-sources/${dataSourceId}`),
+    retryDataSourceSchedule: (dataSourceId: number) =>
+        apiClient.post<InsightDataSourceRead, InsightDataSourceRead>(`${insightApiPrefix}/data-sources/${dataSourceId}/schedule/retry`),
+    executeDataSource: (dataSourceId: number, payload: InsightDataSourceExecuteRequest) =>
+        apiClient.post<InsightDataSourceExecuteResponse, InsightDataSourceExecuteResponse>(`${insightApiPrefix}/data-sources/${dataSourceId}/execute`, payload, {
+            timeout: 180000,
+        }),
+    listIntelligences: (params: InsightIntelligenceListParams) =>
+        apiClient.get<InsightPage<InsightIntelligenceListItem>, InsightPage<InsightIntelligenceListItem>>(`${insightApiPrefix}/intelligence`, {
+            params,
+        }),
+    getIntelligenceDetail: (intelligenceId: number) =>
+        apiClient.get<InsightIntelligenceDetail, InsightIntelligenceDetail>(`${insightApiPrefix}/intelligence/${intelligenceId}`),
+    createIntelligence: (payload: InsightIntelligenceCreate) =>
+        apiClient.post<InsightIntelligenceDetail, InsightIntelligenceDetail>(`${insightApiPrefix}/intelligence`, payload),
+    updateIntelligence: (intelligenceId: number, payload: InsightIntelligenceUpdate) =>
+        apiClient.put<InsightIntelligenceDetail, InsightIntelligenceDetail>(`${insightApiPrefix}/intelligence/${intelligenceId}`, payload),
+    addIntelligenceSource: (intelligenceId: number, payload: InsightIntelligenceSourceCreate) =>
+        apiClient.post<InsightIntelligenceSourceRead, InsightIntelligenceSourceRead>(
+            `${insightApiPrefix}/intelligence/${intelligenceId}/sources`,
+            payload,
+        ),
+    listVisibilityRules: (intelligenceId: number) =>
+        apiClient.get<InsightVisibilityRuleRead[], InsightVisibilityRuleRead[]>(`${insightApiPrefix}/intelligence/${intelligenceId}/visibility-rules`),
+    grantVisibility: (intelligenceId: number, payload: InsightVisibilityRuleCreate) =>
+        apiClient.post<InsightVisibilityRuleRead, InsightVisibilityRuleRead>(
+            `${insightApiPrefix}/intelligence/${intelligenceId}/visibility-rules`,
+            payload,
+        ),
+    listMyPool: (params?: { pool_type?: string }) =>
+        apiClient.get<InsightUserIntelligencePoolRead[], InsightUserIntelligencePoolRead[]>(`${insightApiPrefix}/intelligence-pool`, { params }),
+    upsertPool: (intelligenceId: number, payload: InsightPoolUpsertRequest) =>
+        apiClient.post<InsightUserIntelligencePoolRead, InsightUserIntelligencePoolRead>(`${insightApiPrefix}/intelligence/${intelligenceId}/pool`, payload),
+    removePool: (intelligenceId: number, poolType: string) =>
+        apiClient.delete<void, void>(`${insightApiPrefix}/intelligence/${intelligenceId}/pool/${poolType}`),
+    listCandidates: (params: InsightCandidateListParams) =>
+        apiClient.get<InsightPage<InsightIntelligenceCandidateListItem>, InsightPage<InsightIntelligenceCandidateListItem>>(
+            `${insightApiPrefix}/intelligence/candidates`,
+            { params },
+        ),
+    crawlManualUrl: (payload: InsightManualUrlCrawlRequest) =>
+        apiClient.post<InsightManualUrlCrawlResponse, InsightManualUrlCrawlResponse>(`${insightApiPrefix}/crawler/manual-url`, payload, {
+            timeout: 120000,
+        }),
+    searchDiscovery: (payload: InsightSearchDiscoveryRequest) =>
+        apiClient.post<InsightSearchDiscoveryResponse, InsightSearchDiscoveryResponse>(`${insightApiPrefix}/crawler/search-discovery`, payload, {
+            timeout: 180000,
+        }),
+    promoteCandidate: (candidateId: number, payload: InsightCandidatePromoteRequest) =>
+        apiClient.post<InsightCandidateReviewResponse, InsightCandidateReviewResponse>(
+            `${insightApiPrefix}/intelligence/candidates/${candidateId}/promote`,
+            payload,
+        ),
+    rejectCandidate: (candidateId: number, payload: InsightCandidateReviewRequest) =>
+        apiClient.post<InsightCandidateReviewResponse, InsightCandidateReviewResponse>(
+            `${insightApiPrefix}/intelligence/candidates/${candidateId}/reject`,
+            payload,
+        ),
+    ignoreCandidate: (candidateId: number, payload: InsightCandidateReviewRequest) =>
+        apiClient.post<InsightCandidateReviewResponse, InsightCandidateReviewResponse>(
+            `${insightApiPrefix}/intelligence/candidates/${candidateId}/ignore`,
+            payload,
+        ),
+};
+
+export interface InsightHealth {
+    module: string;
+    status: string;
+    version: string;
+    enabled_capabilities: string[];
+}
+
+export interface InsightDashboardMetric {
+    key: string;
+    label: string;
+    value: number;
+    compare_label: string;
+    delta: number;
+}
+
+export interface InsightDashboardTrendPoint {
+    date: string;
+    label: string;
+    count: number;
+}
+
+export interface InsightDashboardSourceSlice {
+    source_type: string;
+    label: string;
+    count: number;
+    percent: number;
+}
+
+export interface InsightDashboardFocusItem {
+    id: number;
+    title: string;
+    subject_name?: string | null;
+    intelligence_type: string;
+    importance_level: string;
+    publish_time?: string | null;
+    score: number;
+}
+
+export interface InsightDashboardSummary {
+    metrics: InsightDashboardMetric[];
+    trend: InsightDashboardTrendPoint[];
+    source_distribution: InsightDashboardSourceSlice[];
+    focus_items: InsightDashboardFocusItem[];
+    latest_items: InsightIntelligenceListItem[];
+}
+
+export interface InsightQualityMetric {
+    key: string;
+    label: string;
+    value: number;
+    unit: string;
+    description?: string | null;
+}
+
+export interface InsightQualityReason {
+    reason: string;
+    count: number;
+    category?: string;
+    raw_reason?: string | null;
+    suggestion?: string | null;
+}
+
+export interface InsightQualitySourceMetric {
+    data_source_id?: number | null;
+    data_source_name: string;
+    total_tasks: number;
+    success_tasks: number;
+    failed_tasks: number;
+    success_rate: number;
+}
+
+export interface InsightQualityOverview {
+    collection_metrics: InsightQualityMetric[];
+    review_metrics: InsightQualityMetric[];
+    ai_metrics: InsightQualityMetric[];
+    failure_reasons: InsightQualityReason[];
+    source_metrics: InsightQualitySourceMetric[];
+    generated_at: string;
+}
+
+export interface InsightCompanyRead {
+    id: number;
+    company_code: string;
+    sys_company_id?: number | null;
+    name: string;
+    short_name?: string | null;
+    industry?: string | null;
+    company_type?: string | null;
+    region?: string | null;
+    website?: string | null;
+    logo_url?: string | null;
+    description?: string | null;
+    monitor_level: string;
+    owner_user_id?: number | null;
+    profile_json?: Record<string, unknown> | null;
+    status: string;
+    create_time: string;
+    update_time: string;
+}
+
+export interface InsightCompanyImportError {
+    row_no: number;
+    reason: string;
+}
+
+export interface InsightCompanyImportResponse {
+    total_rows: number;
+    created_count: number;
+    updated_count: number;
+    skipped_count: number;
+    errors: InsightCompanyImportError[];
+    companies: InsightCompanyRead[];
+}
+
+export interface InsightCompanyListItem extends InsightCompanyRead {
+    intelligence_count: number;
+    candidate_count: number;
+    data_source_count: number;
+    latest_intelligence_time?: string | null;
+}
+
+export interface InsightCompanyMetric {
+    key: string;
+    label: string;
+    value: number;
+    compare_label: string;
+    delta: number;
+}
+
+export interface InsightCompanyTypeSlice {
+    label: string;
+    count: number;
+    percent: number;
+}
+
+export interface InsightCompanyTagStat {
+    name: string;
+    count: number;
+}
+
+export interface InsightCompanyDataSourceSummary {
+    id: number;
+    source_name: string;
+    source_type: string;
+    status: string;
+    last_success_time?: string | null;
+}
+
+export interface InsightCompanyTimelineItem {
+    id: number;
+    title: string;
+    summary?: string | null;
+    intelligence_type: string;
+    importance_level: string;
+    publish_time?: string | null;
+    create_time: string;
+    primary_source_url?: string | null;
+    primary_source_title?: string | null;
+}
+
+export interface InsightCompanyDetail extends InsightCompanyRead {
+    metrics: InsightCompanyMetric[];
+    type_distribution: InsightCompanyTypeSlice[];
+    tag_stats: InsightCompanyTagStat[];
+    data_sources: InsightCompanyDataSourceSummary[];
+    timeline: InsightCompanyTimelineItem[];
+}
+
+export interface InsightCompanyCreate {
+    company_code?: string | null;
+    sys_company_id?: number | null;
+    name: string;
+    short_name?: string | null;
+    industry?: string | null;
+    company_type?: string | null;
+    region?: string | null;
+    website?: string | null;
+    logo_url?: string | null;
+    description?: string | null;
+    monitor_level?: string;
+    owner_user_id?: number | null;
+    profile_json?: Record<string, unknown> | null;
+    status?: string;
+}
+
+export type InsightCompanyUpdate = Partial<InsightCompanyCreate>;
+
+export interface SystemCompanyOption {
+    id: number;
+    name: string;
+    code?: string | null;
+    sync_id?: string | null;
+    parent_id?: string | null;
+}
+
+export interface InsightCompanyListParams {
+    page?: number;
+    size?: number;
+    keyword?: string;
+    industry?: string;
+    monitor_level?: string;
+    status?: string;
+}
+
+export interface InsightReportGenerateRequest {
+    title?: string | null;
+    report_type?: string;
+    template_code?: string | null;
+    company_ids?: number[];
+    data_source_ids?: number[];
+    intelligence_ids?: number[];
+    folder_name?: string | null;
+    period_start?: string | null;
+    period_end?: string | null;
+    max_materials?: number;
+    generation_prompt?: string | null;
+}
+
+export interface InsightReportUpdateRequest {
+    title?: string | null;
+    content_json?: InsightReportContent | null;
+    summary?: string | null;
+    status?: string | null;
+    change_summary?: string | null;
+}
+
+export interface InsightReportExportRequest {
+    export_format?: string;
+}
+
+export interface InsightReportExportRead {
+    id: number;
+    export_uid: string;
+    report_id: number;
+    report_version_no: number;
+    export_format: string;
+    status: string;
+    file_name?: string | null;
+    file_size?: number | null;
+    content_type?: string | null;
+    storage_backend: string;
+    error_message?: string | null;
+    requested_by_user_id?: number | null;
+    finished_at?: string | null;
+    create_time: string;
+    update_time: string;
+}
+
+export interface InsightReportTemplateSection {
+    section_key: string;
+    heading: string;
+    description: string;
+}
+
+export interface InsightReportTemplateRead {
+    id?: number | null;
+    template_code: string;
+    template_name: string;
+    description: string;
+    report_type: string;
+    default_prompt: string;
+    sections: InsightReportTemplateSection[];
+    structure_json?: Record<string, unknown>;
+    template_kind?: string;
+    style_code?: string | null;
+    export_formats?: string[];
+    source_file_name?: string | null;
+    source_file_type?: string | null;
+    source_file_size?: number | null;
+    scope: string;
+    market_status?: string;
+    market_category?: string | null;
+    market_description?: string | null;
+    cloned_from_template_id?: number | null;
+    published_at?: string | null;
+    published_by_user_id?: number | null;
+    owner_user_id?: number | null;
+    owner_dept_id?: number | null;
+    visibility_scope?: string;
+    editable: boolean;
+}
+
+export interface InsightReportTemplateCreate {
+    template_name: string;
+    description?: string | null;
+    report_type?: string;
+    default_prompt: string;
+    sections?: InsightReportTemplateSection[];
+    structure_json?: Record<string, unknown> | null;
+    template_kind?: string;
+    style_code?: string | null;
+    export_formats?: string[];
+    visibility_scope?: string;
+}
+
+export interface InsightReportTemplatePublishRequest {
+    market_category?: string | null;
+    market_description?: string | null;
+}
+
+export interface InsightReportTemplateCloneRequest {
+    template_name?: string | null;
+}
+
+export interface InsightReportTemplateUploadResponse {
+    template: InsightReportTemplateRead;
+    parsed_structure: Record<string, unknown>;
+    extracted_text_preview?: string | null;
+}
+
+export type InsightReportTemplateUpdate = Partial<InsightReportTemplateCreate> & {
+    status?: string;
+    market_status?: string;
+    market_category?: string | null;
+    market_description?: string | null;
+};
+
+export interface InsightAccessRuleUpsert {
+    principal_type: string;
+    principal_id?: number | null;
+    permission?: string;
+    grant_type?: string;
+    effective_from?: string | null;
+    effective_to?: string | null;
+}
+
+export interface InsightAccessRuleRead {
+    id: number;
+    target_type: string;
+    target_id: number;
+    principal_type: string;
+    principal_id?: number | null;
+    permission: string;
+    grant_type: string;
+    effective_from?: string | null;
+    effective_to?: string | null;
+    status: string;
+    create_time: string;
+    update_time: string;
+}
+
+export interface InsightNotificationRecipient {
+    recipient_type: string;
+    recipient_id?: number | null;
+    recipient_name?: string | null;
+    wecom_userid?: string | null;
+}
+
+export interface InsightNotificationCreate {
+    channel?: string;
+    target_type: string;
+    target_id: number;
+    title?: string | null;
+    content?: string | null;
+    recipient_scope?: string;
+    recipients?: InsightNotificationRecipient[];
+    scheduled_at?: string | null;
+    send_now?: boolean;
+}
+
+export interface InsightNotificationRead {
+    id: number;
+    notification_uid: string;
+    channel: string;
+    title: string;
+    content?: string | null;
+    target_type: string;
+    target_id: number;
+    target_title?: string | null;
+    recipient_scope: string;
+    recipients: InsightNotificationRecipient[];
+    payload_json: Record<string, unknown>;
+    status: string;
+    permission_status: string;
+    scheduled_at?: string | null;
+    sent_at?: string | null;
+    error_message?: string | null;
+    created_by_user_id?: number | null;
+    create_time: string;
+    update_time: string;
+}
+
+export interface InsightNotificationListParams {
+    page?: number;
+    size?: number;
+    target_type?: string;
+    target_id?: number;
+    channel?: string;
+    status?: string;
+}
+
+export interface InsightSettingsStatusItem {
+    key: string;
+    name: string;
+    status: "ok" | "warning" | "disabled";
+    description: string;
+    details: string[];
+}
+
+export interface InsightSettingsStatusSection {
+    key: string;
+    name: string;
+    description: string;
+    items: InsightSettingsStatusItem[];
+}
+
+export interface InsightSettingsStatusRead {
+    generated_at: string;
+    readonly: boolean;
+    sections: InsightSettingsStatusSection[];
+}
+
+export interface InsightTagRead {
+    id: number;
+    tag_code: string;
+    tag_name: string;
+    tag_type: string;
+    color?: string | null;
+    sort_no: number;
+    status: "active" | "disabled" | string;
+    create_time: string;
+    update_time: string;
+}
+
+export interface InsightTagCreate {
+    tag_code?: string | null;
+    tag_name: string;
+    tag_type?: string;
+    color?: string | null;
+    sort_no?: number;
+}
+
+export type InsightTagUpdate = Partial<Pick<InsightTagCreate, "tag_name" | "tag_type" | "color" | "sort_no">> & {
+    status?: "active" | "disabled";
+};
+
+export interface InsightIntelligenceTypeRead {
+    type_code: string;
+    type_name: string;
+    description: string;
+    sort_no: number;
+    status: string;
+    readonly: boolean;
+    usage_count: number;
+}
+
+export interface InsightDictionaryOverview {
+    tags: InsightTagRead[];
+    intelligence_types: InsightIntelligenceTypeRead[];
+}
+
+export interface InsightReportPreferenceRead {
+    id: number;
+    user_id: number;
+    default_template_code?: string | null;
+    default_report_type: string;
+    default_folder_name?: string | null;
+    default_max_materials: number;
+    writing_stance: string;
+    report_depth: string;
+    citation_style: string;
+    include_risks: boolean;
+    include_opportunities: boolean;
+    include_follow_up_questions: boolean;
+    custom_prompt_suffix?: string | null;
+    status: string;
+    create_time: string;
+    update_time: string;
+}
+
+export type InsightReportPreferenceUpdate = Partial<
+    Pick<
+        InsightReportPreferenceRead,
+        | "default_template_code"
+        | "default_report_type"
+        | "default_folder_name"
+        | "default_max_materials"
+        | "writing_stance"
+        | "report_depth"
+        | "citation_style"
+        | "include_risks"
+        | "include_opportunities"
+        | "include_follow_up_questions"
+        | "custom_prompt_suffix"
+    >
+>;
+
+export interface InsightReportListParams {
+    page?: number;
+    size?: number;
+    keyword?: string;
+    report_type?: string;
+    status?: string;
+}
+
+export interface InsightReportRead {
+    id: number;
+    report_uid: string;
+    title: string;
+    report_type: string;
+    period_start?: string | null;
+    period_end?: string | null;
+    company_id?: number | null;
+    company_name?: string | null;
+    content_json: InsightReportContent;
+    summary?: string | null;
+    status: string;
+    version_no: number;
+    material_count: number;
+    owner_user_id?: number | null;
+    owner_dept_id?: number | null;
+    visibility_scope?: string;
+    create_time: string;
+    update_time: string;
+}
+
+export type InsightReportListItem = InsightReportRead;
+
+export interface InsightReportMaterialRead {
+    id: number;
+    report_id: number;
+    intelligence_id: number;
+    section_key: string;
+    sort_no: number;
+    quote_text?: string | null;
+    source_url?: string | null;
+    source_title?: string | null;
+    selection_source: string;
+    selection_reason?: string | null;
+    intelligence_title?: string | null;
+    intelligence_summary?: string | null;
+    create_time: string;
+    update_time: string;
+}
+
+export interface InsightReportVersionRead {
+    id: number;
+    report_id: number;
+    version_no: number;
+    content_json: InsightReportContent;
+    change_summary?: string | null;
+    created_by_user_id?: number | null;
+    create_time: string;
+    update_time: string;
+}
+
+export interface InsightReportChartPoint {
+    label: string;
+    value: number;
+    key?: string | null;
+    percent?: number | null;
+}
+
+export interface InsightReportChartRead {
+    chart_key: string;
+    title: string;
+    description?: string | null;
+    chart_type: "bar" | "donut" | "line" | "list" | string;
+    unit: string;
+    points: InsightReportChartPoint[];
+}
+
+export interface InsightReportDetail extends InsightReportRead {
+    materials: InsightReportMaterialRead[];
+    versions: InsightReportVersionRead[];
+    charts: InsightReportChartRead[];
+}
+
+export interface InsightReportGenerateResponse {
+    report: InsightReportDetail;
+    task_id?: number | null;
+    used_material_count: number;
+    generation_mode: string;
+}
+
+export interface InsightReportContent {
+    title?: string;
+    executive_summary?: string;
+    summary?: string;
+    template_code?: string;
+    template_name?: string;
+    chapters?: InsightReportChapter[];
+    conclusion?: string;
+    research_method?: string[];
+    evidence_matrix?: InsightReportEvidence[];
+    key_findings?: InsightReportFinding[];
+    company_sections?: InsightReportCompanySection[];
+    risks?: InsightReportFinding[];
+    opportunities?: InsightReportFinding[];
+    reflection?: string[];
+    follow_up_questions?: string[];
+    source_notes?: string[];
+    stats?: {
+        material_count?: number;
+        type_counts?: Record<string, number>;
+        company_counts?: Record<string, number>;
+    };
+    [key: string]: unknown;
+}
+
+export interface InsightReportChapter {
+    heading?: string;
+    paragraphs?: string[];
+    evidence_ids?: number[];
+}
+
+export interface InsightReportFinding {
+    title?: string;
+    insight?: string;
+    summary?: string;
+    evidence_ids?: number[];
+}
+
+export interface InsightReportEvidence {
+    theme?: string;
+    material_count?: number;
+    evidence_strength?: string;
+    note?: string;
+}
+
+export interface InsightReportCompanySection {
+    company_name?: string;
+    summary?: string;
+    signals?: InsightReportFinding[];
+}
+
+export interface InsightManualUrlCrawlRequest {
+    url: string;
+    query_text?: string | null;
+    data_source_id?: number | null;
+}
+
+export interface InsightDataSourceFetchConfig {
+    keywords?: string[];
+    include_keywords?: string[];
+    exclude_keywords?: string[];
+    max_results?: number;
+    crawl_top_n?: number;
+    freshness?: string | null;
+    schedule_type?: string;
+    cron_expression?: string | null;
+    enable_llm_filter?: boolean;
+    filter_prompt?: string | null;
+    llm_min_score?: number | null;
+    llm_failure_policy?: string;
+    auto_review_mode?: string;
+    auto_review_min_confidence?: number;
+    auto_review_required_tags?: string[];
+    auto_review_intelligence_types?: string[];
+    auto_add_to_report_pool?: boolean;
+    auto_report_folder?: string | null;
+    extra?: Record<string, unknown>;
+}
+
+export interface InsightDataSourceRead {
+    id: number;
+    source_code: string;
+    source_name: string;
+    source_type: string;
+    base_url?: string | null;
+    company_id?: number | null;
+    company_name?: string | null;
+    company_short_name?: string | null;
+    fetch_frequency: string;
+    fetch_config?: InsightDataSourceFetchConfig | null;
+    auth_config_ref?: string | null;
+    last_fetch_time?: string | null;
+    last_success_time?: string | null;
+    next_run_time?: string | null;
+    schedule_enabled: boolean;
+    last_schedule_status?: string | null;
+    last_schedule_message?: string | null;
+    consecutive_failure_count: number;
+    last_failure_time?: string | null;
+    auto_paused_reason?: string | null;
+    owner_user_id?: number | null;
+    owner_dept_id?: number | null;
+    visibility_scope?: string;
+    status: string;
+    create_time: string;
+    update_time: string;
+}
+
+export interface InsightDataSourceCreate {
+    source_code?: string | null;
+    source_name: string;
+    source_type: string;
+    base_url?: string | null;
+    company_id?: number | null;
+    fetch_frequency?: string;
+    fetch_config?: InsightDataSourceFetchConfig | null;
+    auth_config_ref?: string | null;
+    schedule_enabled?: boolean | null;
+    visibility_scope?: string;
+    status?: string;
+}
+
+export type InsightDataSourceUpdate = Partial<InsightDataSourceCreate>;
+
+export interface InsightDataSourceListParams {
+    page?: number;
+    size?: number;
+    keyword?: string;
+    source_type?: string;
+    status?: string;
+}
+
+export interface InsightDataSourceExecutionLogParams {
+    page?: number;
+    size?: number;
+    data_source_id?: number;
+    status?: string;
+    task_type?: string;
+}
+
+export interface InsightDataSourceExecuteRequest {
+    keyword?: string | null;
+    crawl_top_n?: number | null;
+}
+
+export interface InsightDataSourceExecuteResponse {
+    data_source: InsightDataSourceRead;
+    manual_result?: InsightManualUrlCrawlResponse | null;
+    search_result?: InsightSearchDiscoveryResponse | null;
+    search_results?: InsightSearchDiscoveryResponse[];
+    execution_errors?: InsightDataSourceExecutionError[];
+    auto_review_summary?: InsightAutoReviewSummary | null;
+}
+
+export interface InsightAutoReviewSummary {
+    enabled: boolean;
+    mode: string;
+    checked_count: number;
+    promoted_count: number;
+    pooled_count: number;
+    skipped_count: number;
+    min_confidence?: number;
+    auto_add_to_report_pool?: boolean;
+    items?: Array<Record<string, unknown>>;
+}
+
+export interface InsightDataSourceExecutionError {
+    keyword?: string;
+    error?: string;
+    [key: string]: unknown;
+}
+
+export interface InsightDataSourceScheduleExecution {
+    data_source_id: number;
+    source_name: string;
+    status: string;
+    message?: string | null;
+    next_run_time?: string | null;
+    found_count: number;
+    candidate_count: number;
+}
+
+export interface InsightDataSourceScheduleRunResponse {
+    checked_count: number;
+    due_count: number;
+    executed_count: number;
+    failed_count: number;
+    executions: InsightDataSourceScheduleExecution[];
+}
+
+export interface InsightSchedulerStatusRead {
+    enabled: boolean;
+    running: boolean;
+    interval_seconds: number;
+    batch_limit: number;
+    startup_delay_seconds: number;
+    advisory_lock_id: number;
+    scheduler_user_id: number;
+    failure_pause_threshold: number;
+    config_health: string;
+    config_warnings: string[];
+    config_recommendations: string[];
+    last_tick_at?: string | null;
+    last_success_at?: string | null;
+    next_tick_at?: string | null;
+    last_error?: string | null;
+    last_result?: Record<string, unknown> | null;
+}
+
+export interface InsightPage<T> {
+    total: number;
+    items: T[];
+    page: number;
+    size: number;
+}
+
+export interface InsightTaskRead {
+    id: number;
+    task_uid: string;
+    task_type: string;
+    status: string;
+    progress: number;
+    data_source_id?: number | null;
+    intelligence_id?: number | null;
+    report_id?: number | null;
+    started_at?: string | null;
+    finished_at?: string | null;
+    retry_count?: number;
+    input_payload?: Record<string, unknown> | null;
+    output_payload?: Record<string, unknown> | null;
+    error_message?: string | null;
+    create_time: string;
+    update_time: string;
+}
+
+export interface InsightCrawlResultRead {
+    id: number;
+    task_id: number;
+    data_source_id?: number | null;
+    channel: string;
+    query_text?: string | null;
+    source_url: string;
+    source_title?: string | null;
+    snippet?: string | null;
+    raw_html_object_path?: string | null;
+    markdown_content?: string | null;
+    published_at?: string | null;
+    dedupe_hash?: string | null;
+    crawl_metadata?: Record<string, unknown> | null;
+    status: string;
+    error_message?: string | null;
+    create_time: string;
+    update_time: string;
+}
+
+export interface InsightIntelligenceCandidateRead {
+    id: number;
+    crawl_result_id: number;
+    candidate_title: string;
+    candidate_summary?: string | null;
+    subject_type: string;
+    subject_name?: string | null;
+    company_id?: number | null;
+    intelligence_type?: string | null;
+    suggested_tags?: Array<{ name?: string; source?: string } & Record<string, unknown>> | null;
+    quality_report?: Record<string, unknown> | null;
+    quality_score?: number | null;
+    quality_issues?: string[];
+    quality_auto_ignore?: boolean;
+    confidence?: number;
+    promoted_intelligence_id?: number | null;
+    review_status: string;
+    status: string;
+    create_time: string;
+    update_time: string;
+}
+
+export interface InsightIntelligenceCandidateListItem extends InsightIntelligenceCandidateRead {
+    source_url?: string | null;
+    source_title?: string | null;
+    source_channel?: string | null;
+    source_publish_time?: string | null;
+    query_text?: string | null;
+}
+
+export interface InsightCandidateListParams {
+    page?: number;
+    size?: number;
+    keyword?: string;
+    review_status?: string;
+    subject_type?: string;
+    intelligence_type?: string;
+    data_source_id?: number;
+}
+
+export interface InsightIntelligenceRead {
+    id: number;
+    intelligence_uid: string;
+    title: string;
+    summary?: string | null;
+    company_id?: number | null;
+    subject_type: string;
+    subject_id?: number | null;
+    subject_name?: string | null;
+    intelligence_type: string;
+    business_domain?: string | null;
+    importance_level: string;
+    sentiment: string;
+    publish_time?: string | null;
+    capture_time?: string | null;
+    review_status: string;
+    visibility_scope: string;
+    status: string;
+    create_time: string;
+    update_time: string;
+}
+
+export interface InsightIntelligenceSourceRead {
+    id: number;
+    intelligence_id: number;
+    data_source_id?: number | null;
+    source_type: string;
+    source_url?: string | null;
+    source_title?: string | null;
+    source_author?: string | null;
+    source_publish_time?: string | null;
+    content_excerpt?: string | null;
+    file_object_path?: string | null;
+    credibility_score: number;
+    source_metadata?: Record<string, unknown> | null;
+    create_time: string;
+    update_time: string;
+}
+
+export interface InsightIntelligenceSourceCreate {
+    data_source_id?: number | null;
+    source_type?: string;
+    source_url?: string | null;
+    source_title?: string | null;
+    source_author?: string | null;
+    source_publish_time?: string | null;
+    content_excerpt?: string | null;
+    file_object_path?: string | null;
+    credibility_score?: number;
+    source_metadata?: Record<string, unknown> | null;
+}
+
+export interface InsightIntelligenceListItem extends InsightIntelligenceRead {
+    primary_source_url?: string | null;
+    primary_source_title?: string | null;
+    primary_source_type?: string | null;
+    source_count: number;
+    suggested_tags?: Array<{ name?: string; source?: string } & Record<string, unknown>> | null;
+}
+
+export interface InsightIntelligenceDetail extends InsightIntelligenceRead {
+    content?: string | null;
+    raw_payload?: Record<string, unknown> | null;
+    sources: InsightIntelligenceSourceRead[];
+}
+
+export interface InsightIntelligenceListParams {
+    page?: number;
+    size?: number;
+    keyword?: string;
+    subject_type?: string;
+    intelligence_type?: string;
+    visibility_scope?: string;
+}
+
+export interface InsightIntelligenceCreate {
+    title: string;
+    summary?: string | null;
+    content?: string | null;
+    company_id?: number | null;
+    subject_type?: string;
+    subject_id?: number | null;
+    subject_name?: string | null;
+    data_source_id?: number | null;
+    intelligence_type?: string;
+    business_domain?: string | null;
+    importance_level?: string;
+    sentiment?: string;
+    publish_time?: string | null;
+    visibility_scope?: string;
+    suggested_tags?: Array<{ name?: string; source?: string } & Record<string, unknown>> | null;
+    source?: InsightIntelligenceSourceCreate | null;
+}
+
+export interface InsightIntelligenceUpdate extends Partial<Omit<InsightIntelligenceCreate, "source">> {
+    status?: string;
+}
+
+export interface InsightVisibilityRuleCreate {
+    principal_type: string;
+    principal_id?: number | null;
+    permission?: string;
+    grant_type?: string;
+    effective_from?: string | null;
+    effective_to?: string | null;
+}
+
+export interface InsightVisibilityRuleRead {
+    id: number;
+    target_type: string;
+    target_id: number;
+    principal_type: string;
+    principal_id?: number | null;
+    permission: string;
+    grant_type: string;
+    effective_from?: string | null;
+    effective_to?: string | null;
+    status: string;
+    create_time: string;
+    update_time: string;
+}
+
+export interface InsightPoolUpsertRequest {
+    pool_type?: string;
+    folder_name?: string | null;
+    note?: string | null;
+}
+
+export interface InsightUserIntelligencePoolRead {
+    id: number;
+    user_id: number;
+    intelligence_id: number;
+    pool_type: string;
+    folder_name?: string | null;
+    note?: string | null;
+    sort_no: number;
+    status: string;
+    create_time: string;
+    update_time: string;
+}
+
+export interface InsightCandidateReviewRequest {
+    review_comment?: string | null;
+}
+
+export interface InsightCandidatePromoteRequest extends InsightCandidateReviewRequest {
+    visibility_scope?: string;
+    importance_level?: string;
+    business_domain?: string | null;
+}
+
+export interface InsightCandidateReviewResponse {
+    candidate: InsightIntelligenceCandidateRead;
+    intelligence?: InsightIntelligenceRead | null;
+}
+
+export interface InsightManualUrlCrawlResponse {
+    task: InsightTaskRead;
+    crawl_result: InsightCrawlResultRead;
+    candidate: InsightIntelligenceCandidateRead;
+}
+
+export interface InsightSearchDiscoveryRequest {
+    query: string;
+    channels: string[];
+    freshness?: string | null;
+    max_results: number;
+    crawl_top_n: number;
+    data_source_id?: number | null;
+    include_keywords?: string[];
+    exclude_keywords?: string[];
+    filter_prompt?: string | null;
+    enable_llm_filter?: boolean;
+    llm_min_score?: number | null;
+}
+
+export interface InsightSearchHitRead {
+    channel: string;
+    title: string;
+    url: string;
+    snippet?: string | null;
+    published_at?: string | null;
+    raw?: Record<string, unknown> | null;
+}
+
+export interface InsightSearchDiscoveryResponse {
+    task: InsightTaskRead;
+    hits: InsightSearchHitRead[];
+    discovered_results: InsightCrawlResultRead[];
+    crawled_results: InsightCrawlResultRead[];
+    candidates: InsightIntelligenceCandidateRead[];
+}

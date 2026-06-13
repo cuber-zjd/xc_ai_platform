@@ -61,6 +61,8 @@ export interface ChatMessage {
   content: string;
   isStreaming?: boolean;
   timeline?: TimelineItem[];
+  toolResults?: ToolResult[];
+  evidence?: EvidenceItem[];
 }
 
 export interface SapAssistantSession {
@@ -81,6 +83,8 @@ export interface SapAssistantStoredMessage {
   content: string;
   message_metadata?: {
     timeline?: TimelineItem[];
+    tool_results?: ToolResult[];
+    evidence?: EvidenceItem[];
     flowchart?: string;
   } | null;
   create_time: string;

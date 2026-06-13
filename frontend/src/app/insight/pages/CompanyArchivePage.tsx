@@ -1,111 +1,714 @@
-import { BellDot, FilePieChart, Flame, Newspaper } from "lucide-react";
+import { type FormEvent, useMemo, useRef, useState } from "react";
+import { Building2, Database, Download, ExternalLink, FileSpreadsheet, FileText, Loader2, Plus, Search, ShieldCheck, Tags, Upload } from "lucide-react";
+import { Link } from "react-router-dom";
+import { toast } from "sonner";
 
-import { DemoCard, DemoTag, DonutChart, LinkButton, MiniLineChart, RankList, SectionHeader, StatCard } from "../components/DemoPrimitives";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+
+import { insightApi, type InsightCompanyCreate, type InsightCompanyImportResponse, type InsightCompanyListItem } from "../api";
+import { AccessRuleDialog } from "../components";
+import { DemoCard, DemoTag, StatCard } from "../components/DemoPrimitives";
+import { InsightSelect } from "../components/InsightSelect";
+import { useInsightCompanies, useInsightCompanyDetail, useInsightCreateCompany, useInsightImportCompanies, useInsightSystemCompanies } from "../hooks";
 import { PageContainer } from "../layout/PageContainer";
+import { formatInsightDate, formatInsightType } from "../utils/display";
+
+const monitorLevelText: Record<string, string> = {
+    normal: "普通监控",
+    key: "重点客户",
+    competitor: "重点竞对",
+    watch: "观察名单",
+};
+
+const companyTypeOptions = [
+    { value: "客户", label: "客户" },
+    { value: "竞对", label: "竞对" },
+    { value: "供应商", label: "供应商" },
+    { value: "合作伙伴", label: "合作伙伴" },
+    { value: "其他", label: "其他" },
+];
+
+const monitorLevelOptions = [
+    { value: "normal", label: "普通监控" },
+    { value: "key", label: "重点客户" },
+    { value: "competitor", label: "重点竞对" },
+    { value: "watch", label: "观察名单" },
+];
 
 export function CompanyArchivePage() {
+    const [keywordInput, setKeywordInput] = useState("");
+    const [keyword, setKeyword] = useState("");
+    const [selectedCompanyId, setSelectedCompanyId] = useState<number | null>(null);
+    const [createOpen, setCreateOpen] = useState(false);
+    const [importOpen, setImportOpen] = useState(false);
+    const [importResult, setImportResult] = useState<InsightCompanyImportResponse | null>(null);
+    const [accessOpen, setAccessOpen] = useState(false);
+    const importInputRef = useRef<HTMLInputElement | null>(null);
+    const companiesQuery = useInsightCompanies({ page: 1, size: 50, keyword: keyword || undefined });
+    const companies = useMemo(() => companiesQuery.data?.items ?? [], [companiesQuery.data?.items]);
+    const selectedCompany = companies.find((company) => company.id === selectedCompanyId) ?? companies[0] ?? null;
+    const detailQuery = useInsightCompanyDetail(selectedCompany?.id ?? null);
+    const createMutation = useInsightCreateCompany();
+    const importMutation = useInsightImportCompanies();
+    const systemCompaniesQuery = useInsightSystemCompanies();
+    const systemCompanyOptions = useMemo(
+        () =>
+            (systemCompaniesQuery.data ?? []).map((company) => ({
+                value: String(company.id),
+                label: company.code ? `${company.name}（${company.code}）` : company.name,
+            })),
+        [systemCompaniesQuery.data],
+    );
+    const systemCompanyNameById = useMemo(
+        () => new Map((systemCompaniesQuery.data ?? []).map((company) => [company.id, company.name])),
+        [systemCompaniesQuery.data],
+    );
+    const detail = detailQuery.data;
+
+    const trendPoints = useMemo(() => buildTrendPoints(detail?.timeline ?? []), [detail?.timeline]);
+
+    const handleImportFile = (file: File | null) => {
+        if (!file) {
+            return;
+        }
+        if (!/\.(xlsx|xlsm)$/i.test(file.name)) {
+            toast.error("请上传 xlsx 或 xlsm 格式的 Excel 文件");
+            return;
+        }
+        const payload = new FormData();
+        payload.append("file", file);
+        importMutation.mutate(payload, {
+            onSuccess: (result) => {
+                setImportResult(result);
+                setImportOpen(true);
+                const firstCompany = result.companies[0];
+                if (firstCompany?.id) {
+                    setSelectedCompanyId(firstCompany.id);
+                }
+                toast.success(`导入完成：新增 ${result.created_count} 家，更新 ${result.updated_count} 家`);
+            },
+            onError: () => toast.error("企业档案导入失败，请检查 Excel 表头和内容"),
+            onSettled: () => {
+                if (importInputRef.current) {
+                    importInputRef.current.value = "";
+                }
+            },
+        });
+    };
+
+    const handleDownloadTemplate = async () => {
+        try {
+            const file = await insightApi.downloadCompanyImportTemplate();
+            downloadBlob(file, "企业档案导入模板.xlsx");
+        } catch {
+            toast.error("模板下载失败，请稍后重试");
+        }
+    };
+
     return (
         <PageContainer>
-            <h1 className="text-3xl font-black tracking-tight text-slate-950">企业档案</h1>
-            <div className="text-sm font-semibold text-slate-500">首页看板 / 企业档案 / 奈雪的茶</div>
+            <div className="insight-page-heading">
+                <div>
+                    <h1 className="text-2xl font-black leading-tight tracking-tight text-slate-950 md:text-3xl">企业档案</h1>
+                    <div className="mt-2 text-sm font-semibold text-slate-500">首页看板 / 企业档案</div>
+                </div>
+                <div className="insight-actions">
+                    <input
+                        ref={importInputRef}
+                        type="file"
+                        accept=".xlsx,.xlsm"
+                        className="hidden"
+                        onChange={(event) => handleImportFile(event.target.files?.[0] ?? null)}
+                    />
+                    <Button
+                        type="button"
+                        variant="outline"
+                        className="h-10 rounded-xl border-slate-200 bg-white px-5 text-blue-700"
+                        onClick={() => {
+                            setImportResult(null);
+                            setImportOpen(true);
+                        }}
+                    >
+                        <Upload className="size-4" />
+                        Excel 导入
+                    </Button>
+                    <Button className="h-10 rounded-xl px-5" onClick={() => setCreateOpen(true)}>
+                        <Plus className="size-4" />
+                        新增企业
+                    </Button>
+                </div>
+            </div>
 
-            <DemoCard className="p-6">
-                <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_repeat(4,190px)]">
-                    <div className="flex items-center gap-7">
-                        <div className="flex size-28 items-center justify-center rounded-xl bg-lime-500 text-center text-3xl font-black leading-tight text-white">奈雪<br />的茶</div>
-                        <div>
-                            <div className="flex flex-wrap items-center gap-3">
-                                <h2 className="text-3xl font-black text-slate-950">奈雪的茶</h2>
-                                <DemoTag tone="orange">重点客户</DemoTag>
-                                <DemoTag tone="green">健康</DemoTag>
+            <div className="grid min-h-0 gap-4 2xl:grid-cols-[360px_minmax(0,1fr)]">
+                <DemoCard className="flex min-h-0 min-w-0 flex-col p-4 2xl:max-h-[calc(100dvh-12rem)]">
+                    <div className="relative mb-4">
+                        <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+                        <Input
+                            className="h-11 rounded-xl border-slate-200 bg-white pl-10 shadow-none"
+                            placeholder="搜索企业、简称、行业"
+                            value={keywordInput}
+                            onChange={(event) => setKeywordInput(event.target.value)}
+                            onKeyDown={(event) => {
+                                if (event.key === "Enter") {
+                                    setKeyword(keywordInput.trim());
+                                }
+                            }}
+                        />
+                    </div>
+                    <div className="mb-4 insight-action-cluster justify-start">
+                        <Button className="h-9 rounded-lg px-4" onClick={() => setKeyword(keywordInput.trim())}>搜索</Button>
+                        <Button
+                            variant="ghost"
+                            className="h-9 rounded-lg text-slate-600"
+                            onClick={() => {
+                                setKeyword("");
+                                setKeywordInput("");
+                            }}
+                        >
+                            重置
+                        </Button>
+                    </div>
+                    <div className="min-h-0 space-y-2 overflow-y-auto pr-1">
+                        {companies.map((company) => (
+                            <CompanyListButton
+                                key={company.id}
+                                company={company}
+                                active={company.id === selectedCompany?.id}
+                                onClick={() => setSelectedCompanyId(company.id)}
+                            />
+                        ))}
+                        {companiesQuery.isLoading ? (
+                            <div className="flex items-center justify-center gap-2 rounded-xl border border-slate-100 bg-slate-50 px-4 py-10 text-sm font-semibold text-slate-500">
+                                <Loader2 className="size-4 animate-spin" />
+                                正在加载企业档案
                             </div>
-                            <p className="mt-4 max-w-2xl text-base leading-7 text-slate-600">
-                                奈雪的茶是一家新式茶饮品牌，聚焦健康茶饮与生活方式体验，以“好茶 好果 好品牌”为核心，持续推出创新产品与场景服务。
-                            </p>
+                        ) : null}
+                        {!companiesQuery.isLoading && companies.length === 0 ? (
+                            <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-10 text-center text-sm font-semibold text-slate-500">
+                                暂无企业档案，先新增一家企业，再把数据源关联过去。
+                            </div>
+                        ) : null}
+                    </div>
+                </DemoCard>
+
+                {detail ? (
+                    <div className="space-y-4">
+                        <DemoCard className="p-4 sm:p-6">
+                            <div className="flex flex-col justify-between gap-5 lg:flex-row lg:items-start">
+                                <div className="flex min-w-0 flex-col gap-4 sm:flex-row sm:gap-5">
+                                    <div className="flex size-16 shrink-0 items-center justify-center rounded-xl bg-linear-to-br from-blue-500 to-cyan-500 text-xl font-black text-white sm:size-20 sm:text-2xl">
+                                        {(detail.short_name || detail.name).slice(0, 2)}
+                                    </div>
+                                    <div className="min-w-0">
+                                        <div className="flex flex-wrap items-center gap-3">
+                                            <h2 className="text-2xl font-black leading-tight text-slate-950 md:text-3xl">{detail.name}</h2>
+                                            <DemoTag tone={detail.monitor_level === "key" ? "orange" : "blue"}>{monitorLevelText[detail.monitor_level] ?? detail.monitor_level}</DemoTag>
+                                            {detail.industry ? <DemoTag tone="green">{detail.industry}</DemoTag> : null}
+                                        </div>
+                                        <p className="mt-3 max-w-3xl text-sm font-semibold leading-6 text-slate-600">
+                                            {detail.description || "暂无企业描述，可在后续企业档案编辑中补充业务画像、产品线和监控重点。"}
+                                        </p>
+                                        <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-xs font-semibold text-slate-500">
+                                            <span>简称：{detail.short_name || "-"}</span>
+                                            <span>所属公司：{detail.sys_company_id ? systemCompanyNameById.get(detail.sys_company_id) ?? "-" : "-"}</span>
+                                            <span>区域：{detail.region || "-"}</span>
+                                            <span>类型：{detail.company_type || "-"}</span>
+                                            {detail.website ? (
+                                                <a className="inline-flex items-center gap-1 text-blue-600 hover:underline" href={detail.website} target="_blank" rel="noreferrer">
+                                                    官网
+                                                    <ExternalLink className="size-3" />
+                                                </a>
+                                            ) : null}
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="insight-actions lg:max-w-[420px]">
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        className="h-10 rounded-xl border-slate-200 bg-white text-blue-700"
+                                        onClick={() => setAccessOpen(true)}
+                                    >
+                                        <ShieldCheck className="size-4" />
+                                        权限
+                                    </Button>
+                                    <Link
+                                        to="/insight/data-sources"
+                                        className="inline-flex h-10 items-center justify-center rounded-xl border border-blue-100 bg-blue-50 px-4 text-sm font-black text-blue-700 hover:bg-blue-100"
+                                    >
+                                        配置数据源
+                                    </Link>
+                                    <Link
+                                        to={`/insight/intelligence?subject_type=company&keyword=${encodeURIComponent(detail.short_name || detail.name)}`}
+                                        className="inline-flex h-10 items-center justify-center rounded-xl border border-slate-200 bg-white px-4 text-sm font-black text-slate-700 hover:bg-slate-50"
+                                    >
+                                        查看关联情报
+                                    </Link>
+                                </div>
+                            </div>
+                        </DemoCard>
+
+                        <div className="insight-metric-strip">
+                            {(detail.metrics.length ? detail.metrics : emptyMetrics).map((metric, index) => (
+                                <StatCard
+                                    key={metric.key}
+                                    title={metric.label}
+                                    value={String(metric.value)}
+                                    compare={metric.compare_label || "当前企业"}
+                                    delta={formatDelta(metric.delta)}
+                                    tone={index % 2 === 0 ? "blue" : "cyan"}
+                                    icon={metricIcon(metric.key)}
+                                />
+                            ))}
+                        </div>
+
+                        <div className="grid gap-4 2xl:grid-cols-[1fr_0.9fr]">
+                            <DemoCard className="p-5">
+                                <SectionTitle title="重点情报时间线" />
+                                <div className="space-y-4">
+                                    {detail.timeline.map((item) => (
+                                        <div key={item.id} className="grid gap-2 rounded-xl border border-slate-100 bg-white px-4 py-3 lg:grid-cols-[140px_minmax(0,1fr)_auto] lg:items-start">
+                                            <div className="text-xs font-bold text-slate-500">{formatInsightDate(item.publish_time, item.create_time)}</div>
+                                            <div className="min-w-0">
+                                                <Link to={`/insight/intelligence/${item.id}`} className="line-clamp-1 text-sm font-black text-slate-900 hover:text-blue-600">
+                                                    {item.title}
+                                                </Link>
+                                                <div className="mt-1 line-clamp-2 text-xs font-semibold leading-5 text-slate-500">{item.summary || item.primary_source_title || "暂无摘要"}</div>
+                                            </div>
+                                            <DemoTag tone={item.importance_level === "high" ? "orange" : "blue"}>{formatInsightType(item.intelligence_type)}</DemoTag>
+                                        </div>
+                                    ))}
+                                    {detail.timeline.length === 0 ? <EmptyPanel text="暂无已关联正式情报。新采集情报带上 company_id 后会自动进入这里。" /> : null}
+                                </div>
+                            </DemoCard>
+
+                            <div className="space-y-4">
+                                <DemoCard className="p-5">
+                                    <SectionTitle title="情报类型分布" />
+                                    <div className="space-y-3">
+                                        {(detail.type_distribution.length ? detail.type_distribution : [{ label: "暂无数据", count: 0, percent: 0 }]).map((slice) => (
+                                            <div key={slice.label}>
+                                                <div className="mb-1 flex flex-wrap items-center justify-between gap-2 text-sm font-bold text-slate-700">
+                                                    <span>{slice.label}</span>
+                                                    <span>{slice.count} 条</span>
+                                                </div>
+                                                <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+                                                    <div className="h-full rounded-full bg-blue-500" style={{ width: `${Math.max(slice.percent, slice.count > 0 ? 8 : 0)}%` }} />
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </DemoCard>
+
+                                <DemoCard className="p-5">
+                                    <SectionTitle title="高频标签" />
+                                    <div className="flex flex-wrap gap-2">
+                                        {detail.tag_stats.length > 0 ? (
+                                            detail.tag_stats.map((tag, index) => (
+                                                <DemoTag key={tag.name} tone={index % 3 === 0 ? "cyan" : index % 3 === 1 ? "green" : "orange"}>
+                                                    {tag.name} {tag.count}
+                                                </DemoTag>
+                                            ))
+                                        ) : (
+                                            <DemoTag tone="slate">暂无标签</DemoTag>
+                                        )}
+                                    </div>
+                                </DemoCard>
+                            </div>
+                        </div>
+
+                        <div className="grid gap-4 2xl:grid-cols-[0.9fr_1.1fr]">
+                            <DemoCard className="p-5">
+                                <SectionTitle title="关联数据源" />
+                                <div className="space-y-3">
+                                    {detail.data_sources.map((source) => (
+                                        <div key={source.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-100 bg-white px-4 py-3">
+                                            <div className="min-w-0">
+                                                <div className="line-clamp-1 text-sm font-black text-slate-800">{source.source_name}</div>
+                                                <div className="mt-1 text-xs font-semibold text-slate-500">{source.source_type} · {source.status}</div>
+                                            </div>
+                                            <Link className="text-xs font-black text-blue-600" to="/insight/data-sources">配置</Link>
+                                        </div>
+                                    ))}
+                                    {detail.data_sources.length === 0 ? <EmptyPanel text="暂无关联数据源，可到数据源配置页选择该企业。" /> : null}
+                                </div>
+                            </DemoCard>
+
+                            <DemoCard className="p-5">
+                                <SectionTitle title="近7天动态" />
+                                <div className="overflow-x-auto">
+                                    <div className="grid min-w-[520px] grid-cols-7 items-end gap-3 pt-6">
+                                        {trendPoints.map((point) => (
+                                            <div key={point.label} className="grid gap-2 text-center">
+                                                <div className="flex h-32 items-end justify-center rounded-lg bg-blue-50 px-2">
+                                                    <div className="w-full rounded-t-md bg-blue-500" style={{ height: `${Math.max(8, point.count * 18)}px` }} />
+                                                </div>
+                                                <div className="text-xs font-bold text-slate-500">{point.label}</div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            </DemoCard>
                         </div>
                     </div>
-                    <StatCard title="最近30天情报" value="26" compare="较上周" delta="+8" icon={<Newspaper className="size-6" />} />
-                    <StatCard title="新品动态" value="8" compare="较上周" delta="+3" tone="cyan" icon={<BellDot className="size-6" />} />
-                    <StatCard title="财报公告" value="2" compare="较上月" delta="+1" icon={<FilePieChart className="size-6" />} />
-                    <StatCard title="高关注标签" value="12" compare="较上月" delta="+5" tone="cyan" icon={<Flame className="size-6" />} />
-                </div>
-            </DemoCard>
-
-            <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr_1fr]">
-                <DemoCard className="p-5">
-                    <SectionHeader title="近30天动态趋势" action="近30天" />
-                    <div className="h-72">
-                        <MiniLineChart points={[24, 31, 21, 38, 55, 41, 26]} />
-                    </div>
-                </DemoCard>
-                <DemoCard className="p-5">
-                    <SectionHeader title="情报类型分布" action="查看详情" />
-                    <DonutChart total="26" compact />
-                </DemoCard>
-                <DemoCard className="p-5">
-                    <SectionHeader title="最新动态" />
-                    <RankList items={["奈雪的茶新品上新：推出「霸气杨梅」系列", "奈雪的茶与FENDI联合合作，推出限定周边", "奈雪的茶发布2025年第一季度报告：营收同比增长18.7%", "奈雪的茶门店新开12家，覆盖苏州、成都等城市", "奈雪的茶×喜茶联名快闪活动引发社交媒体热议"]} />
-                </DemoCard>
+                ) : (
+                    <DemoCard className="p-10 text-center text-sm font-semibold text-slate-500">
+                        请选择左侧企业查看档案。
+                    </DemoCard>
+                )}
             </div>
 
-            <div className="grid gap-4 xl:grid-cols-[0.82fr_1.3fr_1.1fr]">
-                <DemoCard className="p-5">
-                    <SectionHeader title="产品 / 应用关键词" action="" />
-                    <div className="grid grid-cols-3 gap-4 py-8 text-center">
-                        {["茶饮", "低糖", "联名", "季节限定", "果味", "健康轻负担"].map((tag, index) => (
-                            <DemoTag key={tag} tone={index % 3 === 0 ? "green" : index % 3 === 1 ? "blue" : "orange"} className="justify-center py-3 text-base">
-                                {tag}
-                            </DemoTag>
-                        ))}
-                    </div>
-                    <div className="text-right">
-                        <LinkButton>更多关键词</LinkButton>
-                    </div>
-                </DemoCard>
-
-                <DemoCard className="p-5">
-                    <SectionHeader title="重点情报时间线" action="" />
-                    <div className="space-y-5">
-                        {[
-                            ["2025-05-21 09:35", "平果杨梅系列新品上市，主打低糖清爽风味", "新品动态"],
-                            ["2025-05-20 20:15", "发布2025年第一季度报告：营收同比增长18.7%", "财报公告"],
-                            ["2025-05-19 14:30", "与FENDI联合合作正式上线，推出限定周边", "品牌合作"],
-                            ["2025-05-17 10:08", "全国新开12家门店，重点布局华东与西南", "门店拓展"],
-                            ["2025-05-15 18:22", "联名快闪活动上线，相关话题登上微博热搜", "市场活动"],
-                        ].map(([time, title, tag], index) => (
-                            <div key={title} className="grid grid-cols-[16px_150px_minmax(0,1fr)_90px] items-center gap-3">
-                                <span className="size-3 rounded-full bg-blue-500" style={{ opacity: 1 - index * 0.1 }} />
-                                <span className="text-sm text-slate-500">{time}</span>
-                                <span className="text-sm font-semibold text-slate-700">{title}</span>
-                                <DemoTag tone={index % 2 === 0 ? "blue" : "green"}>{tag}</DemoTag>
-                            </div>
-                        ))}
-                    </div>
-                    <div className="mt-5 text-center">
-                        <LinkButton>查看全部时间线</LinkButton>
-                    </div>
-                </DemoCard>
-
-                <DemoCard className="p-5">
-                    <SectionHeader title="企业关键信息" action="" />
-                    <div className="divide-y divide-slate-100">
-                        {[
-                            ["所属类别", "新式茶饮"],
-                            ["重点应用方向", "即饮茶饮、健康轻负担、季节限定、联合合作"],
-                            ["监控级别", "重点客户"],
-                            ["关联课题", "低糖茶饮创新、果味茶基研发、联名产品趋势研究"],
-                        ].map(([label, value]) => (
-                            <div key={label} className="grid grid-cols-[120px_minmax(0,1fr)] gap-4 py-4">
-                                <span className="font-bold text-slate-500">{label}</span>
-                                <span className="font-semibold leading-6 text-slate-800">{value}</span>
-                            </div>
-                        ))}
-                    </div>
-                    <div className="mt-5 text-center">
-                        <LinkButton>进入企业情报中心</LinkButton>
-                    </div>
-                </DemoCard>
-            </div>
+            <CreateCompanyDialog
+                open={createOpen}
+                pending={createMutation.isPending}
+                systemCompanyOptions={systemCompanyOptions}
+                onOpenChange={setCreateOpen}
+                onSubmit={(payload) => {
+                    createMutation.mutate(payload, {
+                        onSuccess: (company) => {
+                            toast.success("企业档案已创建");
+                            setSelectedCompanyId(company.id);
+                            setCreateOpen(false);
+                        },
+                        onError: () => toast.error("企业档案创建失败，请检查名称或编码"),
+                    });
+                }}
+            />
+            <AccessRuleDialog
+                open={accessOpen}
+                onOpenChange={setAccessOpen}
+                targetType="company"
+                targetId={detail?.id ?? selectedCompany?.id ?? null}
+                targetName={detail?.name ?? selectedCompany?.name ?? ""}
+            />
+            <CompanyImportDialog
+                open={importOpen}
+                pending={importMutation.isPending}
+                result={importResult}
+                onOpenChange={setImportOpen}
+                onDownloadTemplate={handleDownloadTemplate}
+                onSelectFile={() => importInputRef.current?.click()}
+            />
         </PageContainer>
     );
+}
+
+function CompanyListButton({ company, active, onClick }: { company: InsightCompanyListItem; active: boolean; onClick: () => void }) {
+    return (
+        <button
+            type="button"
+            onClick={onClick}
+            className={`w-full rounded-xl border px-4 py-3 text-left transition ${active ? "border-blue-200 bg-blue-50" : "border-slate-100 bg-white hover:border-blue-100 hover:bg-blue-50/40"}`}
+        >
+            <div className="flex items-start gap-3">
+                <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-blue-500 text-xs font-black text-white">
+                    {(company.short_name || company.name).slice(0, 2)}
+                </div>
+                <div className="min-w-0 flex-1">
+                    <div className="line-clamp-1 text-sm font-black text-slate-900">{company.name}</div>
+                    <div className="mt-1 flex flex-wrap gap-2 text-xs font-semibold text-slate-500">
+                        <span>{company.industry || "未分类"}</span>
+                        <span>情报 {company.intelligence_count}</span>
+                        <span>候选 {company.candidate_count}</span>
+                    </div>
+                </div>
+            </div>
+        </button>
+    );
+}
+
+function CreateCompanyDialog({
+    open,
+    pending,
+    systemCompanyOptions,
+    onOpenChange,
+    onSubmit,
+}: {
+    open: boolean;
+    pending: boolean;
+    systemCompanyOptions: Array<{ value: string; label: string }>;
+    onOpenChange: (open: boolean) => void;
+    onSubmit: (payload: InsightCompanyCreate) => void;
+}) {
+    const [form, setForm] = useState({
+        company_code: "",
+        sys_company_id: "",
+        name: "",
+        short_name: "",
+        industry: "",
+        company_type: "",
+        region: "",
+        website: "",
+        monitor_level: "normal",
+        description: "",
+    });
+    const update = (field: keyof typeof form, value: string) => setForm((current) => ({ ...current, [field]: value }));
+    const submit = (event: FormEvent<HTMLFormElement>) => {
+        event.preventDefault();
+        onSubmit({
+            company_code: form.company_code.trim() || undefined,
+            sys_company_id: parseOptionalNumber(form.sys_company_id),
+            name: form.name.trim(),
+            short_name: form.short_name.trim() || undefined,
+            industry: form.industry.trim() || undefined,
+            company_type: form.company_type.trim() || undefined,
+            region: form.region.trim() || undefined,
+            website: form.website.trim() || undefined,
+            monitor_level: form.monitor_level.trim() || "normal",
+            description: form.description.trim() || undefined,
+        });
+    };
+    return (
+        <Dialog open={open} onOpenChange={onOpenChange}>
+            <DialogContent className="max-h-[90vh] overflow-auto sm:max-w-3xl">
+                <DialogHeader>
+                    <DialogTitle>新增企业档案</DialogTitle>
+                </DialogHeader>
+                <form onSubmit={submit} className="space-y-4">
+                    <div className="grid gap-4 md:grid-cols-2">
+                        <Field label="企业名称" value={form.name} onChange={(value) => update("name", value)} required />
+                        <Field label="简称" value={form.short_name} onChange={(value) => update("short_name", value)} />
+                        <InsightSelect
+                            label="所属公司"
+                            value={form.sys_company_id}
+                            onChange={(value) => update("sys_company_id", value)}
+                            options={systemCompanyOptions}
+                            placeholder={systemCompanyOptions.length > 0 ? "选择所属公司" : "暂无可选公司"}
+                        />
+                        <Field label="行业" value={form.industry} onChange={(value) => update("industry", value)} />
+                        <InsightSelect
+                            label="企业类型"
+                            value={form.company_type}
+                            onChange={(value) => update("company_type", value)}
+                            options={companyTypeOptions}
+                            placeholder="选择企业类型"
+                        />
+                        <Field label="区域" value={form.region} onChange={(value) => update("region", value)} />
+                        <InsightSelect
+                            label="监控级别"
+                            value={form.monitor_level}
+                            onChange={(value) => update("monitor_level", value)}
+                            options={monitorLevelOptions}
+                            placeholder="选择监控级别"
+                        />
+                        <details className="rounded-2xl border border-slate-100 bg-slate-50/70 p-4 md:col-span-2">
+                            <summary className="cursor-pointer text-sm font-black text-slate-700">更多信息</summary>
+                            <div className="mt-4 grid gap-4 md:grid-cols-2">
+                                <Field label="企业编码" value={form.company_code} onChange={(value) => update("company_code", value)} placeholder="可用于主数据或 Excel 更新匹配" />
+                                <Field label="官网" value={form.website} onChange={(value) => update("website", value)} placeholder="https://example.com" />
+                                <label className="grid gap-2 md:col-span-2">
+                                    <span className="text-sm font-bold text-slate-700">描述</span>
+                                    <textarea
+                                        className="min-h-28 rounded-xl border border-slate-200 bg-white p-3 text-sm font-semibold text-slate-700 outline-none focus:border-blue-300"
+                                        value={form.description}
+                                        onChange={(event) => update("description", event.target.value)}
+                                        placeholder="可补充产品线、经营重点、关注原因等画像信息"
+                                    />
+                                </label>
+                            </div>
+                        </details>
+                    </div>
+                    <DialogFooter>
+                        <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>取消</Button>
+                        <Button type="submit" disabled={pending || !form.name.trim()}>
+                            {pending ? <Loader2 className="size-4 animate-spin" /> : null}
+                            保存企业
+                        </Button>
+                    </DialogFooter>
+                </form>
+            </DialogContent>
+        </Dialog>
+    );
+}
+
+function CompanyImportDialog({
+    open,
+    pending,
+    onOpenChange,
+    onDownloadTemplate,
+    onSelectFile,
+    result,
+}: {
+    open: boolean;
+    pending: boolean;
+    onOpenChange: (open: boolean) => void;
+    onDownloadTemplate: () => void;
+    onSelectFile: () => void;
+    result: InsightCompanyImportResponse | null;
+}) {
+    return (
+        <Dialog open={open} onOpenChange={onOpenChange}>
+            <DialogContent className="sm:max-w-2xl">
+                <DialogHeader>
+                    <DialogTitle>Excel 导入企业档案</DialogTitle>
+                    <DialogDescription>
+                        先下载模板整理企业信息，再上传 .xlsx 或 .xlsm 文件导入。企业名称必填，企业编码或同名企业已存在时会更新现有档案。
+                    </DialogDescription>
+                </DialogHeader>
+                <div className="space-y-5">
+                    <div className="grid gap-3 sm:grid-cols-2">
+                        <button
+                            type="button"
+                            className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-white p-4 text-left transition hover:border-blue-200 hover:bg-blue-50/40"
+                            onClick={onDownloadTemplate}
+                        >
+                            <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-slate-100 text-slate-700">
+                                <Download className="size-5" />
+                            </span>
+                            <span className="min-w-0">
+                                <span className="block text-sm font-black text-slate-900">下载模板</span>
+                                <span className="mt-1 block text-xs font-semibold leading-5 text-slate-500">按标准列填写企业名称、行业、区域、监控级别等信息。</span>
+                            </span>
+                        </button>
+                        <button
+                            type="button"
+                            className="flex items-start gap-3 rounded-2xl border border-blue-200 bg-blue-50 p-4 text-left transition hover:border-blue-300 hover:bg-blue-100/70 disabled:cursor-not-allowed disabled:opacity-70"
+                            disabled={pending}
+                            onClick={onSelectFile}
+                        >
+                            <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-blue-600 text-white">
+                                {pending ? <Loader2 className="size-5 animate-spin" /> : <Upload className="size-5" />}
+                            </span>
+                            <span className="min-w-0">
+                                <span className="block text-sm font-black text-slate-900">选择 Excel 导入</span>
+                                <span className="mt-1 block text-xs font-semibold leading-5 text-slate-600">{pending ? "正在导入，请稍候。" : "支持 .xlsx 和 .xlsm，导入后会刷新企业列表。"}</span>
+                            </span>
+                        </button>
+                    </div>
+                    <div className="rounded-2xl border border-blue-100 bg-blue-50 p-4">
+                        <div className="flex items-start gap-3">
+                            <div className="grid size-10 shrink-0 place-items-center rounded-xl bg-blue-600 text-white">
+                                <FileSpreadsheet className="size-5" />
+                            </div>
+                            <div className="min-w-0">
+                                <div className="text-sm font-black text-slate-900">支持的 Excel 列</div>
+                                <div className="mt-1 text-sm font-semibold leading-6 text-slate-600">
+                                    企业名称、简称、行业、企业类型、区域、官网、监控级别、描述。企业名称必填，企业编码可选；如果企业编码或同名企业已存在，会更新现有档案。
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    {result ? (
+                        <>
+                            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                                <ImportStat label="识别行数" value={result.total_rows} />
+                                <ImportStat label="新增" value={result.created_count} />
+                                <ImportStat label="更新" value={result.updated_count} />
+                                <ImportStat label="跳过" value={result.skipped_count} />
+                            </div>
+                            {result.errors.length > 0 ? (
+                                <div className="max-h-52 overflow-auto rounded-2xl border border-red-100 bg-red-50 p-3">
+                                    <div className="mb-2 text-sm font-black text-red-700">需要处理的行</div>
+                                    <div className="space-y-2">
+                                        {result.errors.slice(0, 20).map((error) => (
+                                            <div key={`${error.row_no}-${error.reason}`} className="text-sm font-semibold text-red-700">
+                                                第 {error.row_no} 行：{error.reason}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            ) : null}
+                        </>
+                    ) : null}
+                </div>
+                <DialogFooter>
+                    <Button type="button" onClick={() => onOpenChange(false)}>
+                        关闭
+                    </Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
+    );
+}
+
+function ImportStat({ label, value }: { label: string; value: number }) {
+    return (
+        <div className="rounded-2xl border border-slate-100 bg-white p-4 text-center">
+            <div className="text-2xl font-black text-slate-950">{value}</div>
+            <div className="mt-1 text-xs font-bold text-slate-500">{label}</div>
+        </div>
+    );
+}
+
+function Field({ label, value, onChange, required, placeholder }: { label: string; value: string; onChange: (value: string) => void; required?: boolean; placeholder?: string }) {
+    return (
+        <label className="grid gap-2">
+            <span className="text-sm font-bold text-slate-700">{label}</span>
+            <Input required={required} placeholder={placeholder} className="h-11 rounded-xl border-slate-200 bg-white shadow-none" value={value} onChange={(event) => onChange(event.target.value)} />
+        </label>
+    );
+}
+
+function SectionTitle({ title }: { title: string }) {
+    return <h2 className="mb-4 text-xl font-black text-slate-900">{title}</h2>;
+}
+
+function EmptyPanel({ text }: { text: string }) {
+    return <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm font-semibold text-slate-500">{text}</div>;
+}
+
+const emptyMetrics = [
+    { key: "recent_intelligence", label: "近30天情报", value: 0, compare_label: "当前企业", delta: 0 },
+    { key: "candidate_count", label: "候选情报", value: 0, compare_label: "待审核/已沉淀", delta: 0 },
+    { key: "data_sources", label: "关联数据源", value: 0, compare_label: "可采集来源", delta: 0 },
+    { key: "high_importance", label: "高关注情报", value: 0, compare_label: "正式情报", delta: 0 },
+];
+
+function metricIcon(key: string) {
+    if (key === "candidate_count") {
+        return <Tags className="size-6" />;
+    }
+    if (key === "data_sources") {
+        return <Database className="size-6" />;
+    }
+    if (key === "high_importance") {
+        return <Building2 className="size-6" />;
+    }
+    return <FileText className="size-6" />;
+}
+
+function formatDelta(value: number) {
+    if (value > 0) {
+        return `+${value}`;
+    }
+    return String(value);
+}
+
+function parseOptionalNumber(value: string) {
+    if (!value) {
+        return undefined;
+    }
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function buildTrendPoints(timeline: Array<{ publish_time?: string | null; create_time: string }>) {
+    const today = new Date();
+    const points = Array.from({ length: 7 }, (_, index) => {
+        const date = new Date(today);
+        date.setDate(today.getDate() - (6 - index));
+        const key = date.toISOString().slice(0, 10);
+        return { key, label: `${date.getMonth() + 1}-${date.getDate()}`, count: 0 };
+    });
+    for (const item of timeline) {
+        const key = new Date(item.publish_time ?? item.create_time).toISOString().slice(0, 10);
+        const target = points.find((point) => point.key === key);
+        if (target) {
+            target.count += 1;
+        }
+    }
+    return points;
+}
+
+function downloadBlob(file: Blob, fileName: string) {
+    const url = URL.createObjectURL(file);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = fileName;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
 }

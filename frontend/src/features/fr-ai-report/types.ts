@@ -294,3 +294,410 @@ export interface FrAiReportFeedbackRead {
     createTime: string;
     updateTime: string;
 }
+
+export interface FrReportFileRead {
+    objectPath: string;
+    reportPath: string;
+    fileName: string;
+    fileType: string;
+    size?: number | null;
+    etag?: string | null;
+    lastModified?: string | null;
+}
+
+export interface FrReportFileListResponse {
+    bucket: string;
+    prefix: string;
+    allowedPrefixes: string[];
+    extensions: string[];
+    total: number;
+    items: FrReportFileRead[];
+    visibleOnly: boolean;
+    selectedVisiblePaths: string[];
+}
+
+export interface FrReportVisibilityPreferenceRead {
+    visiblePaths: string[];
+}
+
+export interface FrReportVisibilityPreferencePayload {
+    visiblePaths: string[];
+}
+
+export interface FrReportDatasetParameterRead {
+    name: string;
+    defaultValue?: string | null;
+}
+
+export interface FrReportDatasetRead {
+    name: string;
+    className?: string | null;
+    databaseName?: string | null;
+    parameters: FrReportDatasetParameterRead[];
+    querySql?: string | null;
+    querySqlTruncated: boolean;
+}
+
+export interface FrReportStructureSummaryRead {
+    datasetCount: number;
+    parameterCount: number;
+    widgetCount: number;
+    queryCount: number;
+    sheetCount: number;
+    cellCount: number;
+    mergeCount: number;
+}
+
+export interface FrReportCellStyleRead {
+    styleName?: string | null;
+    fontFamily?: string | null;
+    fontSize?: number | null;
+    bold?: boolean | null;
+    italic?: boolean | null;
+    underline?: boolean | null;
+    color?: string | null;
+    backgroundColor?: string | null;
+    borderColor?: string | null;
+    borderTop?: boolean | null;
+    borderRight?: boolean | null;
+    borderBottom?: boolean | null;
+    borderLeft?: boolean | null;
+    horizontalAlign?: string | null;
+    verticalAlign?: string | null;
+}
+
+export interface FrReportFieldBindingRead {
+    dataset?: string | null;
+    field?: string | null;
+    expression: string;
+    aggregation?: string | null;
+}
+
+export interface FrReportConditionRead {
+    column?: string | null;
+    operator?: string | null;
+    value?: string | null;
+    join?: string | null;
+}
+
+export interface FrReportDataColumnRead {
+    dataset?: string | null;
+    field?: string | null;
+    parentCell?: string | null;
+    aggregation?: string | null;
+    expandDirection?: string | null;
+    customDisplay?: string | null;
+    horizontalExtendable?: boolean | null;
+    verticalExtendable?: boolean | null;
+    conditions: FrReportConditionRead[];
+}
+
+export interface FrReportCellWidgetRead {
+    widgetClass?: string | null;
+    widgetType?: string | null;
+    widgetName?: string | null;
+    description?: string | null;
+}
+
+export interface FrReportSubmitColumnRead {
+    column: string;
+    value?: string | null;
+    isKey: boolean;
+    skipUnmodified: boolean;
+    cell?: string | null;
+}
+
+export interface FrReportSubmitBindingRead {
+    name?: string | null;
+    database?: string | null;
+    schemaName?: string | null;
+    tableName?: string | null;
+    submitterClass?: string | null;
+    columns: FrReportSubmitColumnRead[];
+}
+
+export interface FrReportCellRead {
+    row: number;
+    column: number;
+    address: string;
+    text?: string | null;
+    formula?: string | null;
+    fieldBinding?: FrReportFieldBindingRead | null;
+    dataColumn?: FrReportDataColumnRead | null;
+    widget?: FrReportCellWidgetRead | null;
+    submitBindings: FrReportSubmitBindingRead[];
+    rowSpan: number;
+    colSpan: number;
+    expandDirection?: string | null;
+    style: FrReportCellStyleRead;
+    rawTag?: string | null;
+    rawPath?: string | null;
+}
+
+export interface FrReportMergeRead {
+    startRow: number;
+    startColumn: number;
+    endRow: number;
+    endColumn: number;
+}
+
+export interface FrReportDimensionRead {
+    index: number;
+    size?: number | null;
+}
+
+export interface FrReportSheetRead {
+    name: string;
+    rowCount: number;
+    columnCount: number;
+    rows: FrReportDimensionRead[];
+    columns: FrReportDimensionRead[];
+    cells: FrReportCellRead[];
+    merges: FrReportMergeRead[];
+    submitBindings: FrReportSubmitBindingRead[];
+    warnings: string[];
+}
+
+export interface FrReportDocumentRead {
+    title?: string | null;
+    sheets: FrReportSheetRead[];
+    unsupportedNodes: string[];
+    parseCoverage: Record<string, number>;
+}
+
+export interface FrReportFileStructureRead {
+    objectPath: string;
+    reportPath: string;
+    fileName: string;
+    fileType: string;
+    size?: number | null;
+    etag?: string | null;
+    lastModified?: string | null;
+    format: string;
+    encoding?: string | null;
+    xmlVersion?: string | null;
+    releaseVersion?: string | null;
+    rootTag?: string | null;
+    datasets: FrReportDatasetRead[];
+    document?: FrReportDocumentRead | null;
+    summary: FrReportStructureSummaryRead;
+    warnings: string[];
+}
+
+export interface FrReportDatabaseConnectionRead {
+    connectionName: string;
+    driverKey: string;
+    driverName?: string | null;
+    dbType: string;
+    host: string;
+    port: number;
+    database: string;
+    username: string;
+    odbcDriver?: string | null;
+    configured: boolean;
+}
+
+export interface FrReportDatabaseConnectionPayload {
+    connectionName: string;
+    driverKey: string;
+    dbType?: string;
+    host: string;
+    port: number;
+    database: string;
+    username: string;
+    password: string;
+    odbcDriver?: string | null;
+}
+
+export interface FrReportDatabaseDriverRead {
+    driverKey: string;
+    displayName: string;
+    dbType: string;
+    pythonDriver: string;
+    odbcDriver?: string | null;
+    defaultPort: number;
+    description?: string | null;
+}
+
+export interface FrReportAiOperationPayload {
+    objectPath: string;
+    prompt: string;
+    selectedCell?: string | null;
+    selectedDataset?: string | null;
+    previewColumns: string[];
+    previewRows?: Record<string, unknown>[];
+    mode?: 'modify' | 'new_report';
+}
+
+export interface FrReportAiOperationRead {
+    operationType: string;
+    target?: string | null;
+    summary: string;
+    riskLevel: 'low' | 'medium' | 'high';
+    payload: Record<string, unknown>;
+}
+
+export interface FrReportAiOperationDraftResponse {
+    draftId: string;
+    baseVersion: string;
+    targetVersion: string;
+    status: 'draft' | 'blocked';
+    assistantMessage: string;
+    operations: FrReportAiOperationRead[];
+    previewPatch: Record<string, unknown>;
+    safety: Record<string, unknown>;
+    modelName?: string | null;
+    warnings: string[];
+}
+
+export interface FrReportAiUploadedFileRead {
+    fileName: string;
+    contentType?: string | null;
+    size: number;
+    textPreview?: string | null;
+}
+
+export interface FrReportAiNewReportPlanPayload {
+    requirement: string;
+    templateObjectPath?: string | null;
+    files?: File[];
+}
+
+export interface FrReportAiNewReportPlanResponse {
+    draftId: string;
+    status: 'proposal' | 'blocked';
+    assistantMessage: string;
+    questions: string[];
+    proposal: Record<string, unknown>;
+    operations: FrReportAiOperationRead[];
+    templateSummary: Record<string, unknown>;
+    uploadedFiles: FrReportAiUploadedFileRead[];
+    safety: Record<string, unknown>;
+    warnings: string[];
+}
+
+export interface FrAiReportRequirementReviewPayload {
+    requirement?: string | null;
+    sourceTableName?: string | null;
+    tableSchemaJson?: string | null;
+    file?: File | null;
+}
+
+export interface FrAiReportMaintenanceField {
+    name: string;
+    label: string;
+    type: string;
+    required: boolean;
+    description?: string | null;
+}
+
+export interface FrAiReportMaintenanceTable {
+    tableName: string;
+    displayName: string;
+    purpose: string;
+    fields: FrAiReportMaintenanceField[];
+    keys: string[];
+    uniqueKeys: string[][];
+    dropdownTargets: string[];
+}
+
+export interface FrAiReportQualityGate {
+    code: string;
+    label: string;
+    severity: string;
+    description: string;
+    autoCheck: boolean;
+}
+
+export interface FrAiReportRequirementReviewResponse {
+    status: string;
+    scenario?: string | null;
+    summary: string;
+    reportType: string;
+    extractedRequirements: string[];
+    questions: string[];
+    assumptions: string[];
+    maintenanceTables: FrAiReportMaintenanceTable[];
+    recommendedSourceTables: string[];
+    qualityGates: FrAiReportQualityGate[];
+    warnings: string[];
+    excelAnalysis?: ExcelAnalysisResult | null;
+}
+
+export interface FrReportAiApplyDraftPayload {
+    objectPath: string;
+    draftId: string;
+    prompt?: string | null;
+    selectedCell?: string | null;
+    selectedDataset?: string | null;
+    assistantMessage: string;
+    operations: FrReportAiOperationRead[];
+    previewPatch: Record<string, unknown>;
+    safety: Record<string, unknown>;
+    warnings: string[];
+}
+
+export interface FrReportSnapshotRead {
+    snapshotId: string;
+    objectPath: string;
+    reportPath?: string | null;
+    fileName?: string | null;
+    parentSnapshotId?: string | null;
+    snapshotNo: number;
+    status: string;
+    title?: string | null;
+    summary: Record<string, unknown>;
+    appliedPatch: Record<string, unknown>;
+}
+
+export interface FrReportAiApplyDraftResponse {
+    draftId: string;
+    status: 'applied' | 'blocked';
+    baseSnapshot: FrReportSnapshotRead;
+    targetSnapshot: FrReportSnapshotRead;
+    targetVersion: string;
+    assistantMessage: string;
+    operations: FrReportAiOperationRead[];
+    previewPatch: Record<string, unknown>;
+    warnings: string[];
+}
+
+export interface FrReportAiSnapshotCptPayload {
+    snapshotId: string;
+}
+
+export interface FrReportAiSnapshotCptResponse {
+    snapshotId: string;
+    status: 'generated' | 'preview_failed';
+    cptObjectPath: string;
+    metaObjectPath?: string | null;
+    operationsObjectPath?: string | null;
+    logObjectPath?: string | null;
+    previewUrl: string;
+    warnings: string[];
+    errors: string[];
+}
+
+export interface FrReportDatasetPreviewParameter {
+    name: string;
+    value?: string | number | boolean | null;
+}
+
+export interface FrReportDatasetPreviewPayload {
+    connectionName: string;
+    querySql: string;
+    parameters: FrReportDatasetPreviewParameter[];
+    maxRows?: number;
+}
+
+export interface FrReportDatasetPreviewResponse {
+    connectionName: string;
+    needsConnection: boolean;
+    executed: boolean;
+    success: boolean;
+    columns: string[];
+    sampleRows: Record<string, unknown>[];
+    rowCount: number;
+    errors: string[];
+    warnings: string[];
+}

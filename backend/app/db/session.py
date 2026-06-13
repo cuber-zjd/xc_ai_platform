@@ -10,7 +10,13 @@ from app.core.config import settings
 # Use settings from config
 DATABASE_URL = str(settings.sqlalchemy_database_uri)
 
-engine = create_async_engine(DATABASE_URL, echo=True, future=True)
+engine = create_async_engine(
+    DATABASE_URL,
+    echo=True,
+    future=True,
+    pool_pre_ping=True,
+    pool_recycle=1800,
+)
 
 async_session = sessionmaker(
     engine, class_=AsyncSession, expire_on_commit=False

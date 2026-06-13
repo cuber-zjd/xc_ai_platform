@@ -105,4 +105,4 @@ async def extract_data_with_text(request: DataExtractRequest):
 
         logger.error(traceback.format_exc())
         Langfuse().flush()
-        return Result.fail(msg=f"数据提取失败: {str(e)}")
+        return Result.fail(msg=f"数据提取失败: {LLMFactory.describe_invocation_error(e)}")

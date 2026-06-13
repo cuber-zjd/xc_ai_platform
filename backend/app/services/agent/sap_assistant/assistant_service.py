@@ -85,7 +85,14 @@ class SapAssistantService:
                 else f"SAP 工具 Agent 执行失败：{exc}"
             )
             db.add(SapAssistantMessage(session_id=session.id or 0, role="user", content=request.message))
-            db.add(SapAssistantMessage(session_id=session.id or 0, role="assistant", content=fallback_answer, message_metadata={"timeline": [error_item]}))
+            db.add(
+                SapAssistantMessage(
+                    session_id=session.id or 0,
+                    role="assistant",
+                    content=fallback_answer,
+                    message_metadata={"timeline": [error_item], "tool_results": [], "evidence": []},
+                )
+            )
             await db.commit()
             for piece in self._split_answer(fallback_answer):
                 yield encode("text_delta", {"content": piece})
@@ -114,7 +121,12 @@ class SapAssistantService:
                 session_id=session.id or 0,
                 role="assistant",
                 content=response.answer,
-                message_metadata={"timeline": response.timeline, "flowchart": response.flowchart},
+                message_metadata={
+                    "timeline": response.timeline,
+                    "tool_results": [item.model_dump() for item in response.tool_results],
+                    "evidence": [item.model_dump() for item in response.evidence],
+                    "flowchart": response.flowchart,
+                },
             )
         )
         session.summary = self._build_session_memory(session.summary, user_message, response)

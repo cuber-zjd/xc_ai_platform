@@ -315,11 +315,23 @@ class SapDeepAgentService:
         budget_state: dict[str, Any] = {
             "tool_calls": 0,
             "seen_call_keys": set(),
+            "tool_result_cache": {},
             "evidence_ledger": [],
             "source_objects": {},
         }
 
         async def call_sap_tool(tool_name: str, params: dict[str, Any]) -> str:
+            cached_result = self._cached_tool_result(tool_name, params, budget_state)
+            if cached_result is not None:
+                return self._llm_tool_return(
+                    tool_name,
+                    cached_result.data,
+                    cached_result.status,
+                    cached_result.summary,
+                    params,
+                    request.message,
+                )
+
             guard_message = self._budget_guard(tool_name, params, budget_state)
             if guard_message:
                 node_id = f"{tool_name}_{len(executed_plan) + 1}"
@@ -392,6 +404,7 @@ class SapDeepAgentService:
                         metadata={"duration_ms": result.duration_ms, "status": result.status},
                     )
             tool_results.append(result)
+            self._cache_tool_result(tool_name, params, result, budget_state)
             evidence.extend(result.evidence)
             self._record_investigation_evidence(result, budget_state)
             done_item = self._timeline(
@@ -801,6 +814,25 @@ class SapDeepAgentService:
 
         return ""
 
+    def _tool_result_cache_key(self, tool_name: str, params: dict[str, Any]) -> str:
+        cacheable_params = {
+            key: value
+            for key, value in params.items()
+            if not key.startswith("_") and key not in {"reason"}
+        }
+        return json.dumps([tool_name, cacheable_params], ensure_ascii=False, sort_keys=True, default=str)
+
+    def _cached_tool_result(self, tool_name: str, params: dict[str, Any], budget_state: dict[str, Any]) -> Any | None:
+        cache = budget_state.get("tool_result_cache")
+        if not isinstance(cache, dict):
+            return None
+        return cache.get(self._tool_result_cache_key(tool_name, params))
+
+    def _cache_tool_result(self, tool_name: str, params: dict[str, Any], result: Any, budget_state: dict[str, Any]) -> None:
+        cache = budget_state.setdefault("tool_result_cache", {})
+        if isinstance(cache, dict):
+            cache[self._tool_result_cache_key(tool_name, params)] = result
+
     def _is_recursion_limit_error(self, exc: Exception) -> bool:
         reason = f"{type(exc).__name__}: {exc}"
         return any(token in reason for token in ("Recursion limit", "GRAPH_RECURSION_LIMIT", "GraphRecursionError"))
@@ -851,14 +883,11 @@ class SapDeepAgentService:
                     "tool": tool_name,
                     "error": summary,
                     "errorType": error_type or "tool_failed",
+                    "diagnosticHint": data.get("agentHint") if isinstance(data, dict) else None,
                     "retryable": bool(data.get("retryable")) if isinstance(data, dict) else False,
                     "target": data.get("target") if isinstance(data, dict) else None,
                     "businessConclusionAllowed": False,
-                    "nextPolicy": (
-                        "如果是 connection_failure/timeout，只说明本轮未能连接 SAP 取数，"
-                        "不能据此判断凭证或表记录不存在；如果是 read_table_buffer_exceeded/subrc=6，"
-                        "请将 safe_table_read 改成 fields<=5、max_rows<=3，并增加高选择性 EQ 条件后重试。"
-                    ),
+                    "nextPolicy": self._failed_tool_next_policy(data if isinstance(data, dict) else {}),
                 }
             )
         if tool_name in {"program_source", "function_source"} and params and params.get("_return_full_source"):
@@ -1537,6 +1566,19 @@ class SapDeepAgentService:
         if tool_name == "ddic_meta" and "未找到" in detail:
             return "没有在数据字典中找到这个对象，系统会尝试换一个更可能的表或结构继续核对。"
         return "这一步没有拿到可用结果，系统会基于已有线索调整排查方向。"
+
+    def _failed_tool_next_policy(self, data: dict[str, Any]) -> str:
+        error_type = str(data.get("errorType") or "")
+        if error_type == "json_parse_error":
+            return (
+                "这是 SAP 侧 RFC 返回格式错误，不是业务无数据。不要把本次 DDIC/数据结果作为证据；"
+                "请提示修复 ZFM_AI_* RFC 的 JSON 转义，或在已有源码证据足够时只给阶段性结论并标注 DDIC 验证缺口。"
+            )
+        if error_type in {"connection_failure", "timeout"}:
+            return "本轮未能连接 SAP 取数，不能据此判断凭证或表记录不存在；可基于已有源码证据给阶段性结论并标注数据验证缺口。"
+        if error_type == "read_table_buffer_exceeded":
+            return "请将 safe_table_read 改成 fields<=5、max_rows<=3，并增加高选择性 EQ 条件后重试；该结果不能证明业务数据不存在。"
+        return "不能把失败工具结果作为确定业务结论；请换更小范围工具调用，或基于已有证据说明不确定性。"
 
     def _tool_action_label(self, tool_name: str) -> str:
         labels = {

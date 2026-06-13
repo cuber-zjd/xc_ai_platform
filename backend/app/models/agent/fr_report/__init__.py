@@ -3,6 +3,11 @@ from app.models.agent.fr_report.report_task import (
     FrAiReportFeedback,
     FrAiReportTask,
     FrAiReportTaskStatus,
+    FrReportDatabaseConnection,
+    FrReportDatabaseDriver,
+    FrReportOperationDraft,
+    FrReportSnapshot,
+    FrReportVisibilityPreference,
 )
 
 __all__ = [
@@ -10,4 +15,9 @@ __all__ = [
     "FrAiReportFeedback",
     "FrAiReportTask",
     "FrAiReportTaskStatus",
+    "FrReportDatabaseConnection",
+    "FrReportDatabaseDriver",
+    "FrReportOperationDraft",
+    "FrReportSnapshot",
+    "FrReportVisibilityPreference",
 ]

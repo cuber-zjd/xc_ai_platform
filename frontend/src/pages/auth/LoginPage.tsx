@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, type ComponentType } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuthStore } from "@/store/useAuthStore";
 import { Button } from "@/components/ui/button";
@@ -27,7 +27,13 @@ import MistralLogo from "@/assets/models_logo/Mistral Large.svg";
 import QwenLogo from "@/assets/models_logo/Qwen-3.0 MAX.png";
 
 // 模型数据常量 - 移到组件外部避免每次渲染重新创建
-const MODELS = [
+type ModelItem = {
+    name: string;
+    icon: string | ComponentType<{ className?: string }>;
+    isImage: boolean;
+};
+
+const MODELS: ModelItem[] = [
     { name: "GPT5.1", icon: GPT5Logo, isImage: true },
     { name: "Gemini 3.0 Pro", icon: GeminiLogo, isImage: true },
     { name: "Claude 4.1 Thinking", icon: ClaudeLogo, isImage: true },
@@ -39,6 +45,7 @@ const MODELS = [
     { name: "Mistral Large", icon: MistralLogo, isImage: true },
     { name: "Qwen-3.0 MAX", icon: QwenLogo, isImage: true },
 ];
+const CURRENT_YEAR = new Date().getFullYear();
 
 // 动画常量
 const ITEM_HEIGHT = 80;
@@ -124,9 +131,9 @@ export default function LoginPage() {
         try {
             await login(username, password);
             navigate("/"); // Redirect to dashboard
-        } catch (err: any) {
+        } catch (err: unknown) {
             console.error("Login failed:", err);
-            setError(err.response?.data?.detail || "登录失败，请检查账号密码");
+            setError(getLoginErrorMessage(err));
         } finally {
             setIsLoading(false);
         }
@@ -173,8 +180,7 @@ export default function LoginPage() {
                                                     loading="eager"
                                                 />
                                             ) : (
-                                                // @ts-ignore
-                                                <model.icon className="h-5 w-5" />
+                                                <DynamicModelIcon icon={model.icon} />
                                             )}
                                         </div>
                                     </div>
@@ -185,8 +191,8 @@ export default function LoginPage() {
 
                     {/* Right Side of Panel: Enterprise Branding */}
                     <div className="flex flex-col justify-center pl-12 gap-8">
-                        <div className="flex flex-col gap-2">
-                            <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-black text-white dark:bg-white dark:text-black mb-4">
+                            <div className="flex flex-col gap-2">
+                            <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-blue-600 text-white">
                                 <InfinityIcon className="h-8 w-8 stroke-[1.5]" />
                             </div>
                             <h2 className="text-4xl font-light tracking-tight text-black dark:text-white">
@@ -294,17 +300,30 @@ export default function LoginPage() {
                         <Button
                             disabled={isLoading}
                             type="submit"
-                            className="w-full h-11 bg-black text-white hover:bg-zinc-800 dark:bg-white dark:text-black dark:hover:bg-zinc-200 text-base font-medium"
+                            className="h-11 w-full bg-blue-600 text-base font-medium text-white hover:bg-blue-700"
                         >
                             {isLoading ? "登录中..." : "登 录"}
                         </Button>
                     </form>
 
                     <div className="text-center text-xs text-muted-foreground/50 mt-auto">
-                        &copy; 2025 AI 智能平台 · 版权所有
+                        &copy; {CURRENT_YEAR} AI 智能平台 · 版权所有
                     </div>
                 </div>
             </div>
         </div>
     );
+}
+
+function DynamicModelIcon({ icon }: { icon: ModelItem["icon"] }) {
+    const Icon = icon as ComponentType<{ className?: string }>;
+    return <Icon className="h-5 w-5" />;
+}
+
+function getLoginErrorMessage(error: unknown) {
+    if (typeof error === "object" && error !== null && "response" in error) {
+        const response = (error as { response?: { data?: { detail?: string } } }).response;
+        return response?.data?.detail || "登录失败，请检查账号密码";
+    }
+    return "登录失败，请检查账号密码";
 }

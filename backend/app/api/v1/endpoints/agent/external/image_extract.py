@@ -1,5 +1,8 @@
 import base64
 import json
+import re
+from typing import Any
+
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 from loguru import logger
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -11,6 +14,86 @@ from app.schemas.agent.external.image_extract import ImageExtractResponse
 from app.schemas.result import Result
 
 router = APIRouter()
+
+
+def _strip_json_fence(text: str) -> str:
+    value = text.strip()
+    if value.startswith("```"):
+        value = re.sub(r"^```(?:json)?", "", value, flags=re.IGNORECASE).strip()
+        value = re.sub(r"```$", "", value).strip()
+    return value
+
+
+def _extract_json_array_text(text: str) -> str:
+    value = _strip_json_fence(text)
+    start = value.find("[")
+    end = value.rfind("]")
+    if start >= 0 and end > start:
+        return value[start : end + 1].strip()
+    return value
+
+
+def _repair_common_json_text(text: str) -> str:
+    value = _extract_json_array_text(text)
+    value = value.replace("\ufeff", "").replace("\u00a0", " ")
+    value = re.sub(r'\bnull"(?=\s*[,}\]])', "null", value)
+    value = re.sub(r'\btrue"(?=\s*[,}\]])', "true", value, flags=re.IGNORECASE)
+    value = re.sub(r'\bfalse"(?=\s*[,}\]])', "false", value, flags=re.IGNORECASE)
+    value = re.sub(r",\s*([\]}])", r"\1", value)
+    return value.strip()
+
+
+def _parse_table_json(content: str) -> list[list[Any]]:
+    errors: list[json.JSONDecodeError] = []
+    candidates = [
+        _extract_json_array_text(content),
+        _repair_common_json_text(content),
+    ]
+    seen: set[str] = set()
+
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            errors.append(exc)
+            continue
+
+        if not isinstance(parsed, list):
+            raise ValueError("模型返回的不是有效的数组结构")
+        if parsed and not isinstance(parsed[0], list):
+            parsed = [parsed]
+        return parsed
+
+    raise errors[-1] if errors else ValueError("模型返回为空，无法解析为二维数组")
+
+
+async def _repair_table_json_with_llm(llm: Any, content: str, error: Exception) -> str:
+    repair_messages = [
+        SystemMessage(
+            content=(
+                "你是 JSON 格式修复器。你只负责把用户给出的文本修复为合法 JSON 二维数组。\n"
+                "要求：\n"
+                "1. 不新增、删除或改写业务数据，只修复引号、逗号、null/true/false、括号等 JSON 语法问题。\n"
+                "2. 输出必须是严格 JSON，根节点必须是二维数组。\n"
+                "3. 只能输出 JSON 本身，不要输出 Markdown、代码块或解释。"
+            )
+        ),
+        HumanMessage(
+            content=(
+                f"解析错误：{error}\n\n"
+                "待修复文本：\n"
+                f"{content[:20000]}"
+            )
+        ),
+    ]
+    response = await llm.ainvoke(repair_messages)
+    repaired_content = getattr(response, "content", "")
+    if isinstance(repaired_content, list):
+        repaired_content = "".join(str(item) for item in repaired_content)
+    return str(repaired_content).strip()
 
 
 @router.post(
@@ -78,28 +161,19 @@ async def extract_data_with_image(
         response = await llm.ainvoke(messages)
         content = response.content.strip()
 
-        # 简单的 JSON 标记清洗逻辑
-        if content.startswith("```json"):
-            content = content[7:]
-        if content.startswith("```"):
-            content = content[3:]
-        if content.endswith("```"):
-            content = content[:-3]
-        content = content.strip()
-
         try:
-            extracted_data = json.loads(content)
-            if not isinstance(extracted_data, list):
-                raise ValueError("模型返回的不是有效的数组结构")
-            
-            # 确保是二维数组，如果不是，尝试修复或报错
-            if len(extracted_data) > 0 and not isinstance(extracted_data[0], list):
-                # 如果返回的是一维数组，可能是只有一行数据或者是格式误解，视情况包装
-                extracted_data = [extracted_data]
-
-        except json.JSONDecodeError as e:
-            logger.error(f"图片数据提取 JSON 解析失败: {e}\n模型返回: {content}")
-            return Result.fail(msg="模型返回格式错误，无法解析为二维数组")
+            extracted_data = _parse_table_json(content)
+        except (json.JSONDecodeError, ValueError) as exc:
+            logger.warning(f"图片数据提取 JSON 初次解析失败，尝试修复: {exc}")
+            try:
+                repaired_content = await _repair_table_json_with_llm(llm, content, exc)
+                extracted_data = _parse_table_json(repaired_content)
+            except (json.JSONDecodeError, ValueError) as repair_exc:
+                logger.error(
+                    "图片数据提取 JSON 修复后仍解析失败: "
+                    f"{repair_exc}; 原始返回前 1000 字符: {content[:1000]}"
+                )
+                return Result.fail(msg="模型返回格式错误，无法解析为二维数组")
 
         Langfuse().flush()
         return Result.success(data=ImageExtractResponse(extracted_data=extracted_data))
@@ -109,4 +183,4 @@ async def extract_data_with_image(
         import traceback
         logger.error(traceback.format_exc())
         Langfuse().flush()
-        return Result.fail(msg=f"图片数据提取系统异常: {str(e)}")
+        return Result.fail(msg=f"图片数据提取系统异常: {LLMFactory.describe_invocation_error(e)}")

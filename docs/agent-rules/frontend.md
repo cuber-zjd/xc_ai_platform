@@ -74,11 +74,12 @@ export function ExamplePanel({ className }: Props) {
 - 条件类名使用 `cn()`。
 - 优先使用语义 token，例如 `bg-background`、`text-foreground`。
 - 保持暗色模式可用。
-- 项目视觉已切换为浅色玻璃卡片、柔和紫蓝渐变点缀、超圆角布局和 App-in-App 容器。
-- 用户侧与管理后台应共享同一套品牌语言：悬浮侧边栏、轻雾面板、柔和投影、低饱和状态色。
+- 除 `/insight/*` 等明确独立设计的业务域外，项目视觉已切换为接近 ChatGPT 的极简中性产品壳：浅灰固定侧边栏、冷白主内容区、黑白灰为主、轻描边和克制阴影。
+- 默认主题点缀色采用当前 SAP 助手确认过的青绿色体系，用于选中态、轻量标签、聚焦态、状态提示、快捷入口和少量品牌强调；页面整体仍以冷白、浅灰和中性色为主。
+- 用户侧与管理后台应共享同一套中性壳语言：紧凑侧边栏、清晰分区、轻量列表项、少量青绿色状态点缀，不再使用大面积紫蓝玻璃渐变、黑底模块或偏黄旧纸感背景。
 - 新页面优先复用 `frontend/src/index.css` 中的 `app-shell`、`app-sidebar`、`app-stage`、`app-panel`、`app-panel-soft`、`app-page`、`app-page-header`、`app-kicker`、`app-subtle-text` 等全局类。
-- 除非用户明确要求，页面内不要生成黑色或近黑色的大面积卡片；强调信息优先使用浅色渐变、浅底高亮或描边卡片表达。
-- 状态色可以使用低饱和红、绿、蓝，但不能让页面变成高饱和色块。
+- 除非用户明确要求，页面内不要生成高饱和渐变或装饰性玻璃卡片；强调信息优先使用白底、浅灰底、轻描边或紧凑列表表达。
+- 状态色可以使用低饱和红、青绿、蓝，但不能让页面变成高饱和色块；青绿色是默认主点缀，不代表整页都要变成单一绿色。
 - 按钮、卡片、列表项应有清晰 hover 和 transition。
 - 路由切换、弹窗、折叠内容应保持平滑。
 - 基础组件优先使用 Shadcn/ui，不做全局样式覆盖。
@@ -108,6 +109,8 @@ pnpm dev
 - 人工反馈第一版：当前任务可提交“可用”或“需调整”反馈，统一调用 `POST /api/v1/fr/ai-reports/tasks/{task_id}/feedback`，为后续经验检索和自驱进化沉淀样本。
 - 页面入口：`frontend/src/features/fr-ai-report/pages/FrAiReportChatPage.tsx`。
 - API hooks：`frontend/src/features/fr-ai-report/hooks/useFrAiReport.ts`，统一通过 `frontend/src/api/client.ts` 调用 `/api/v1/fr/ai-reports`。
+- 真实报表目录左侧树需要支持用户级显示范围配置：默认显示全部；用户可在“显示范围”弹窗中勾选文件夹或单个报表，保存后主树只展示已选择范围，偏好通过 `GET/PUT /api/v1/fr/ai-reports/files/visibility-preference` 持久化。
+- 选择真实报表文件后，前端通过 `GET /api/v1/fr/ai-reports/files/structure` 在线读取后端解析结果，并在右侧副驾驶区域展示报表结构摘要、数据集、参数和 SQL 片段；中间画布基于 `document.sheets[0]` 渲染真实行列、单元格、合并区域和基础样式，属性面板展示当前单元格坐标、合并跨度、字段绑定、样式摘要和原始节点路径；前端不直接读取或解析 CPT/XML 原文。
 - 当前交互改为步骤工作台，第一步聚焦“生成 SQL 并预览数据”，第二步聚焦“生成 ReportDSL 并基于 DSL 预览”，使用步骤条展示阶段进度。
 - 第一步输入区集中承载报表名称、自然语言需求、人工补充修改意见、相关表名和 Excel 模板上传，允许反复调整后重新生成。
 - 第一步结果区优先展示 SQL 文本、SQL 校验摘要、样例数据表格、需求摘要和 Excel 字段识别结果，不再默认展示 FineReport iframe 预览。
@@ -116,12 +119,18 @@ pnpm dev
 - 步骤条需要支持点击切换已具备条件的前后步骤；第一步回到 SQL 和数据预览，第二步回到 DSL 设计和 DSL 预览。已有 DSL 时再次点击“重新生成 DSL 并预览”会携带人工修改意见作为 `dsl_feedback`。
 - 工作台左右两侧都应按当前步骤收拢内容：第一步只展示 SQL 输入、SQL 结果、数据预览、需求摘要和模板字段；第二步只展示 DSL 修改意见、DSL 预览和 ReportDSL，避免跨步骤内容混在同一区域。
 - DSL 预览需要识别 `layout.designHints.specialRows`。当存在 `latest_change_row` 时，预览只取最新日期的涨跌指标，作为单独一行放在横向市场列下方、价格明细行上方。
-- 第一步接口优先调用 `POST /api/v1/fr/ai-reports/steps/sql/generate`；第二步接口调用 `POST /api/v1/fr/ai-reports/steps/dsl/generate`；第三步接口调用 `POST /api/v1/fr/ai-reports/steps/cpt/generate` 生成 CPT、上传 MinIO staging 并返回 FineReport 预览地址；完整报表生成接口和后续步骤接口并存。
+- 第一步接口优先调用 `POST /api/v1/fr/ai-reports/steps/sql/generate`；第二步接口调用 `POST /api/v1/fr/ai-reports/steps/dsl/generate`；第三步接口调用 `POST /api/v1/fr/ai-reports/steps/cpt/generate` 生成 CPT、上传 MinIO `reportlets/AI生成报表/` 专用预览目录并返回 FineReport 预览地址；完整报表生成接口和后续步骤接口并存。
 - 路由：用户侧路由 `/fr-ai-reports`，在 `frontend/src/router/index.tsx` 中懒加载。
 - 交互形态：左侧聊天输入自然语言需求和上传 Excel，右侧展示 SQL、DSL 预览、ReportDSL、Excel 字段分析和校验提示；分步骤阶段不默认展示 FineReport `previewUrl` iframe。
 - 当前阶段只支持表格类报表页面，不展示图表类能力入口；需求引导要贴近周报、分组表、交叉表这类业务样式。
-- 可见文案必须使用中文；页面继续沿用浅色玻璃卡片、柔和紫蓝点缀、App-in-App 容器和暗色兼容风格。
+- 可见文案必须使用中文；页面视觉继续沿用全局 ChatGPT 式浅色产品壳和青绿色点缀，保留步骤工作台的信息分区能力，不再使用旧紫蓝玻璃风格。
 - 前端不得生成 CPT/XML，只展示后端返回的结构化 ReportDSL，并可用 DSL 与样例数据做轻量预览。
+
+### 数据集预览与连接
+
+- 数据集详情应使用弹窗承载 SQL、参数和预览结果，避免在侧栏内展开过深内容。
+- 数据库驱动下拉来自 `GET /api/v1/fr/ai-reports/database-drivers`，驱动是平台级选项；连接保存仍走当前用户的 `database-connections`。
+- 连接表单不允许手写驱动字符串，当前只从 SQL Server 与 MySQL 8 两类驱动中选择。
 
 ## 9. SAP 助手前端
 
@@ -137,7 +146,15 @@ pnpm dev
 
 - Insight 业务域目录为 `frontend/src/app/insight/`，用于“研发营销市场洞察平台”。
 - Insight 页面必须通过 `/insight/*` 路由挂载到独立 `InsightLayout`，不得复用旧系统 `UserLayout`、`AdminLayout` 或页面级 `app-*` 容器样式。
+- Insight 质量运营入口为 `/insight/quality`，页面读取 `GET /api/v1/insight/quality/overview` 展示真实质量指标；缺数据图表必须展示空状态，不得使用样例点或假指标兜底。
 - Insight 主题通过 `InsightThemeScope` 挂载 `data-app="insight"` 与 `.insight-theme`，并在 `frontend/src/app/insight/theme/tokens.css` 内局部重声明 shadcn/ui CSS variables。
 - 新增 Insight 页面优先复用 `frontend/src/app/insight/components/` 下的页面级组件，例如 `PageTitle`、`SectionCard`、`FilterBar`、`InsightTag`、`DataTableCard`、`ChartCard`。
 - Insight 风格 token、业务语义色和图表规范分别维护在 `theme/tokens.css`、`theme/semantic-colors.ts`、`theme/chart-theme.ts`，不得通过修改 `:root` 或旧系统全局样式实现换肤。
 - Insight 可复用 shadcn/ui 基础组件，但对外视觉必须由 insight 局部 token 和封装组件控制，避免旧系统紫蓝玻璃风格污染新业务域。
+ 
+## 泛微流程AI助手补充
+
+- 泛微嵌入页入口为 `/weaver/assistant/embed`，源码位于 `frontend/src/features/weaver-ai-assistant/`。
+- 该页面用于 iframe 嵌入泛微流程页，不经过 `ProtectedRoute`，通过 URL 中的 `ai_sign` 调用后端外部接口。
+- 页面与 ecode 父页面通过 `postMessage` 通讯：接收 `WEAVER_AI_CONTEXT`，发送 `WEAVER_AI_APPLY_ACTIONS` 和 `WEAVER_AI_CLOSE`。
+- 悬浮图标资源优先使用 `frontend/public/ai_logo.svg`，正式环境通过平台前端域名访问 `/ai_logo.svg`。

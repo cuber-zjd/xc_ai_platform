@@ -9,6 +9,7 @@ from app.models.agent.sap_assistant import (
     SapSystemConfig,
     SapToolCall,
 )
+from app.models.agent import insight
 
 __all__ = [
     "AgentGroup",
@@ -20,4 +21,5 @@ __all__ = [
     "SapEvidenceRecord",
     "SapSystemConfig",
     "SapToolCall",
+    "insight",
 ]

@@ -15,6 +15,7 @@ from app.schemas.agent.fr_report.report_dsl import (
     DatasetDSL,
     DatasetFieldDSL,
     FieldRole,
+    FieldType,
     HorizontalExpansionDSL,
     LayoutColumnDSL,
     LayoutDSL,
@@ -247,6 +248,7 @@ class DataModelAgent:
             system_prompt=(
                 "你是业务报表逻辑数据模型设计 Agent。"
                 "根据 Excel 分析和需求设计逻辑表结构。"
+                "如果 requirementSummary.businessPlan 中包含维护表建议，应优先把这些表作为生产候选数据表纳入 createTableSql、tables 和 joinHints。"
                 "输出严格 JSON：tableName、dataSourceStatus、fields、createTableSql。"
                 "dataSourceStatus 必须为 designed_not_verified。"
                 "fields 每项必须包含 name、label、type、role。"
@@ -303,6 +305,9 @@ class DataModelAgent:
                 joinHints=table_schema.get("joinHints", []),
             )
 
+        if (requirement_summary.get("businessPlan") or {}).get("scenario") == "futures_operation_ledger":
+            return self._future_ledger_model()
+
         sheet = RequirementAgent()._primary_sheet(analysis)
         table_name = self._table_name(
             requirement_summary.get("primarySheet") or "ai_report_source"
@@ -336,6 +341,86 @@ class DataModelAgent:
     ) -> str:
         columns = [f"    {field.name} {self._sql_type(field.type)}" for field in fields]
         return f"CREATE TABLE {table_name} (\n" + ",\n".join(columns) + "\n);"
+
+    def _future_ledger_model(self) -> DataModelDSL:
+        fields = [
+            DataModelFieldDSL(name="account_name", label="账户名称", type=FieldType.STRING, role=FieldRole.DIMENSION, sourceTable="fr_future_contract_base", tableAlias="b", sourceField="account_name"),
+            DataModelFieldDSL(name="contract_variety", label="合约品种", type=FieldType.STRING, role=FieldRole.DIMENSION, sourceTable="fr_future_contract_base", tableAlias="b", sourceField="contract_variety"),
+            DataModelFieldDSL(name="contract_code", label="合约代码", type=FieldType.STRING, role=FieldRole.DIMENSION, sourceTable="fr_future_contract_base", tableAlias="b", sourceField="contract_code"),
+            DataModelFieldDSL(name="strategy_type", label="策略类型", type=FieldType.STRING, role=FieldRole.DIMENSION, sourceTable="fr_future_trade_ledger", tableAlias="t", sourceField="strategy_type"),
+            DataModelFieldDSL(name="operation_unit", label="操作单位", type=FieldType.STRING, role=FieldRole.DIMENSION, sourceTable="fr_future_contract_base", tableAlias="b", sourceField="operation_unit"),
+            DataModelFieldDSL(name="open_trade_date", label="开仓交易日期", type=FieldType.DATE, role=FieldRole.DATE, sourceTable="fr_future_trade_ledger", tableAlias="t", sourceField="open_date"),
+            DataModelFieldDSL(name="open_direction", label="开仓方向", type=FieldType.STRING, role=FieldRole.DIMENSION, sourceTable="fr_future_trade_ledger", tableAlias="t", sourceField="open_direction"),
+            DataModelFieldDSL(name="open_quantity_lot", label="开仓数量（手）", type=FieldType.DECIMAL, role=FieldRole.MEASURE, sourceTable="fr_future_trade_ledger", tableAlias="t", sourceField="open_quantity_lot"),
+            DataModelFieldDSL(name="open_price", label="开仓价格（元/吨）", type=FieldType.DECIMAL, role=FieldRole.MEASURE, sourceTable="fr_future_trade_ledger", tableAlias="t", sourceField="open_price"),
+            DataModelFieldDSL(name="open_fee_per_lot", label="开仓手续费（元/手）", type=FieldType.DECIMAL, role=FieldRole.MEASURE, sourceTable="fr_future_trade_ledger", tableAlias="t", sourceField="open_fee_per_lot"),
+            DataModelFieldDSL(name="close_trade_date", label="平仓交易日期", type=FieldType.DATE, role=FieldRole.DATE, sourceTable="fr_future_trade_ledger", tableAlias="t", sourceField="close_date"),
+            DataModelFieldDSL(name="close_direction", label="平仓方向", type=FieldType.STRING, role=FieldRole.DIMENSION, sourceTable="fr_future_trade_ledger", tableAlias="t", sourceField="close_direction"),
+            DataModelFieldDSL(name="close_quantity_lot", label="平仓数量（手）", type=FieldType.DECIMAL, role=FieldRole.MEASURE, sourceTable="fr_future_trade_ledger", tableAlias="t", sourceField="close_quantity_lot"),
+            DataModelFieldDSL(name="close_price", label="平仓价格（元/吨）", type=FieldType.DECIMAL, role=FieldRole.MEASURE, sourceTable="fr_future_trade_ledger", tableAlias="t", sourceField="close_price"),
+            DataModelFieldDSL(name="close_fee_per_lot", label="平仓手续费（元/手）", type=FieldType.DECIMAL, role=FieldRole.MEASURE, sourceTable="fr_future_trade_ledger", tableAlias="t", sourceField="close_fee_per_lot"),
+            DataModelFieldDSL(name="realized_profit", label="平仓盈亏（元）", type=FieldType.DECIMAL, role=FieldRole.MEASURE),
+            DataModelFieldDSL(name="position_direction", label="持仓方向", type=FieldType.STRING, role=FieldRole.DIMENSION),
+            DataModelFieldDSL(name="remaining_quantity_lot", label="持仓数量（手）", type=FieldType.DECIMAL, role=FieldRole.MEASURE),
+            DataModelFieldDSL(name="settlement_price", label="收盘价（元/吨）", type=FieldType.DECIMAL, role=FieldRole.MEASURE, sourceTable="fr_future_settlement_price", tableAlias="p", sourceField="settlement_price"),
+            DataModelFieldDSL(name="floating_profit", label="浮动盈亏（元）", type=FieldType.DECIMAL, role=FieldRole.MEASURE),
+        ]
+        return DataModelDSL(
+            tableName="fr_future_trade_ledger",
+            dataSourceStatus="designed_not_verified",
+            fields=fields,
+            createTableSql=self._future_create_table_sql(),
+            tables=[
+                {"tableName": "fr_future_trade_ledger", "alias": "t", "displayName": "期货操作台账"},
+                {"tableName": "fr_future_contract_base", "alias": "b", "displayName": "期货合约基础资料"},
+                {"tableName": "fr_future_settlement_price", "alias": "p", "displayName": "期货每日收盘价维护"},
+            ],
+            joinHints=[
+                {"leftAlias": "t", "rightAlias": "b", "expression": "t.account_name = b.account_name AND t.contract_variety = b.contract_variety AND t.contract_code = b.contract_code"},
+                {"leftAlias": "t", "rightAlias": "p", "expression": "t.contract_code = p.contract_code AND p.price_date = '${end_date}'"},
+            ],
+        )
+
+    def _future_create_table_sql(self) -> str:
+        return """IF OBJECT_ID('dbo.fr_future_contract_base', 'U') IS NULL
+CREATE TABLE dbo.fr_future_contract_base (
+    account_name VARCHAR(100) NOT NULL,
+    contract_variety VARCHAR(100) NOT NULL,
+    contract_code VARCHAR(60) NOT NULL,
+    tons_per_lot DECIMAL(18, 4) NOT NULL,
+    operation_unit VARCHAR(60) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'active',
+    CONSTRAINT pk_future_contract_base PRIMARY KEY (account_name, contract_variety, contract_code)
+);
+
+IF OBJECT_ID('dbo.fr_future_trade_ledger', 'U') IS NULL
+CREATE TABLE dbo.fr_future_trade_ledger (
+    ledger_id VARCHAR(80) NOT NULL PRIMARY KEY,
+    account_name VARCHAR(100) NOT NULL,
+    contract_variety VARCHAR(100) NOT NULL,
+    contract_code VARCHAR(60) NOT NULL,
+    strategy_type VARCHAR(40) NOT NULL,
+    operation_unit VARCHAR(60) NULL,
+    open_date DATE NOT NULL,
+    open_direction VARCHAR(20) NOT NULL,
+    open_quantity_lot DECIMAL(18, 4) NOT NULL,
+    open_price DECIMAL(18, 4) NOT NULL,
+    close_date DATE NULL,
+    close_direction VARCHAR(20) NULL,
+    close_quantity_lot DECIMAL(18, 4) NOT NULL DEFAULT 0,
+    close_price DECIMAL(18, 4) NULL,
+    open_fee_per_lot DECIMAL(18, 4) NOT NULL DEFAULT 0,
+    close_fee_per_lot DECIMAL(18, 4) NOT NULL DEFAULT 0,
+    CONSTRAINT ck_future_close_qty CHECK (close_quantity_lot <= open_quantity_lot)
+);
+
+IF OBJECT_ID('dbo.fr_future_settlement_price', 'U') IS NULL
+CREATE TABLE dbo.fr_future_settlement_price (
+    price_date DATE NOT NULL,
+    contract_code VARCHAR(60) NOT NULL,
+    settlement_price DECIMAL(18, 4) NOT NULL,
+    CONSTRAINT uk_future_settlement_price UNIQUE (price_date, contract_code)
+);"""
 
     def _sql_type(self, field_type: str) -> str:
         mapping = {
@@ -425,6 +510,9 @@ class SqlAgent:
         report_type: ReportType,
         requirement_summary: dict[str, Any],
     ) -> str:
+        if (requirement_summary.get("businessPlan") or {}).get("scenario") == "futures_operation_ledger":
+            return self._future_ledger_sql()
+
         if data_model.tables:
             return self._rule_generate_join_sql(
                 data_model, parameters, report_type, requirement_summary
@@ -524,6 +612,66 @@ class SqlAgent:
             + ",\n    ".join(select_fields or ["*"])
             + f"\n{self._from_join_clause(data_model)}{where_clause}{group_clause}"
         )
+
+    def _future_ledger_sql(self) -> str:
+        return """WITH __fr_params AS (
+    SELECT
+        ISNULL(TRY_CONVERT(date, NULLIF('${start_date}', '')), CONVERT(date, '1900-01-01')) AS start_date,
+        ISNULL(TRY_CONVERT(date, NULLIF('${end_date}', '')), CONVERT(date, '2099-12-31')) AS end_date
+)
+SELECT
+    b.account_name,
+    b.contract_variety,
+    b.contract_code,
+    t.strategy_type,
+    COALESCE(t.operation_unit, b.operation_unit) AS operation_unit,
+    t.open_date AS open_trade_date,
+    t.open_direction,
+    t.open_quantity_lot,
+    t.open_price,
+    t.open_fee_per_lot,
+    t.close_date AS close_trade_date,
+    t.close_direction,
+    t.close_quantity_lot,
+    t.close_price,
+    t.close_fee_per_lot,
+    CASE
+        WHEN t.close_quantity_lot IS NULL OR t.close_quantity_lot = 0 OR t.close_price IS NULL THEN NULL
+        WHEN t.open_direction IN ('买', '多', '买入') THEN
+            (t.close_price - t.open_price) * t.close_quantity_lot * b.tons_per_lot
+            - (t.open_fee_per_lot + t.close_fee_per_lot) * t.close_quantity_lot
+        ELSE
+            (t.open_price - t.close_price) * t.close_quantity_lot * b.tons_per_lot
+            - (t.open_fee_per_lot + t.close_fee_per_lot) * t.close_quantity_lot
+    END AS realized_profit,
+    CASE WHEN t.open_direction IN ('买', '多', '买入') THEN '多' ELSE '空' END AS position_direction,
+    t.open_quantity_lot - COALESCE(t.close_quantity_lot, 0) AS remaining_quantity_lot,
+    p.settlement_price,
+    CASE
+        WHEN p.settlement_price IS NULL THEN NULL
+        WHEN t.open_direction IN ('买', '多', '买入') THEN
+            (p.settlement_price - t.open_price)
+            * (t.open_quantity_lot - COALESCE(t.close_quantity_lot, 0))
+            * b.tons_per_lot
+        ELSE
+            (t.open_price - p.settlement_price)
+            * (t.open_quantity_lot - COALESCE(t.close_quantity_lot, 0))
+            * b.tons_per_lot
+    END AS floating_profit
+FROM fr_future_trade_ledger t
+INNER JOIN fr_future_contract_base b
+    ON t.account_name = b.account_name
+    AND t.contract_variety = b.contract_variety
+    AND t.contract_code = b.contract_code
+LEFT JOIN fr_future_settlement_price p
+    ON t.contract_code = p.contract_code
+    AND p.price_date = (SELECT end_date FROM __fr_params)
+WHERE t.open_date <= (SELECT end_date FROM __fr_params)
+  AND (t.close_date IS NULL OR t.close_date >= (SELECT start_date FROM __fr_params))
+  AND (NULLIF('${account_name}', '') IS NULL OR b.account_name = '${account_name}')
+  AND (NULLIF('${contract_variety}', '') IS NULL OR b.contract_variety = '${contract_variety}')
+  AND (NULLIF('${contract_code}', '') IS NULL OR b.contract_code = '${contract_code}')
+  AND COALESCE(t.close_quantity_lot, 0) <= t.open_quantity_lot"""
 
     def _should_preserve_long_table(
         self, data_model: DataModelDSL, requirement_summary: dict[str, Any]
@@ -678,10 +826,14 @@ class ReportDesignerAgent:
         llm_result["layout"]["chartType"] = None
 
         try:
-            return ReportDSL.model_validate(llm_result)
+            return self._normalize_futures_layout(
+                ReportDSL.model_validate(llm_result),
+                requirement_summary,
+                data_model,
+            )
         except ValidationError as exc:
             logger.warning(f"ReportDesignerAgent 结果校验失败，使用规则兜底：{exc}")
-            return fallback
+            return self._normalize_futures_layout(fallback, requirement_summary, data_model)
 
     def _rule_design(
         self,
@@ -730,6 +882,7 @@ class ReportDesignerAgent:
             )
             for field in data_model.fields[:20]
         ]
+        column_limit = 20 if (requirement_summary.get("businessPlan") or {}).get("scenario") == "futures_operation_ledger" else 12
         layout_columns = [
             LayoutColumnDSL(
                 field=field.name,
@@ -751,9 +904,33 @@ class ReportDesignerAgent:
                     else "down"
                 ),
             )
-            for field in data_model.fields[:12]
+            for field in data_model.fields[:column_limit]
         ]
         design_hints = dict(requirement_summary.get("templateDesign") or {})
+        if (requirement_summary.get("businessPlan") or {}).get("scenario") == "futures_operation_ledger":
+            design_hints["headerGroups"] = [
+                {"label": "", "fields": ["account_name", "contract_variety", "contract_code", "strategy_type"]},
+                {
+                    "label": "开仓",
+                    "fields": ["open_trade_date", "open_direction", "open_quantity_lot", "open_price", "open_fee_per_lot"],
+                },
+                {
+                    "label": "平仓",
+                    "fields": [
+                        "close_trade_date",
+                        "close_direction",
+                        "close_quantity_lot",
+                        "close_price",
+                        "close_fee_per_lot",
+                        "realized_profit",
+                    ],
+                },
+                {
+                    "label": "持仓",
+                    "fields": ["position_direction", "remaining_quantity_lot", "settlement_price", "floating_profit"],
+                },
+                {"label": "", "fields": ["operation_unit"]},
+            ]
         if self._requires_latest_change_row(requirement_summary):
             special_rows = list(design_hints.get("specialRows") or [])
             if not any(item.get("id") == "latest_change_row" for item in special_rows if isinstance(item, dict)):
@@ -771,7 +948,7 @@ class ReportDesignerAgent:
                 )
             design_hints["specialRows"] = special_rows
 
-        return ReportDSL(
+        return self._normalize_futures_layout(ReportDSL(
             reportName=report_name,
             reportType=report_type,
             reportMeta=self._report_meta(report_name, requirement_summary),
@@ -789,7 +966,116 @@ class ReportDesignerAgent:
                 chartType=None,
             ),
             rules=ReportRulesDSL(),
-        )
+        ), requirement_summary, data_model)
+
+    def _normalize_futures_layout(
+        self,
+        dsl: ReportDSL,
+        requirement_summary: dict[str, Any],
+        data_model: DataModelDSL,
+    ) -> ReportDSL:
+        if (requirement_summary.get("businessPlan") or {}).get("scenario") != "futures_operation_ledger":
+            return dsl
+        field_map = {field.name: field for field in data_model.fields}
+        ordered_fields = [
+            "account_name",
+            "contract_variety",
+            "contract_code",
+            "strategy_type",
+            "open_trade_date",
+            "open_direction",
+            "open_quantity_lot",
+            "open_price",
+            "open_fee_per_lot",
+            "close_trade_date",
+            "close_direction",
+            "close_quantity_lot",
+            "close_price",
+            "close_fee_per_lot",
+            "realized_profit",
+            "position_direction",
+            "remaining_quantity_lot",
+            "settlement_price",
+            "floating_profit",
+        ]
+        columns: list[LayoutColumnDSL] = []
+        existing = {column.field: column for column in dsl.layout.columns}
+        for field_name in ordered_fields:
+            field = field_map.get(field_name)
+            if not field:
+                continue
+            source_column = existing.get(field_name)
+            columns.append(
+                source_column
+                or LayoutColumnDSL(
+                    field=field.name,
+                    title=field.label,
+                    width=self._future_column_width(field.name),
+                    type=field.type,
+                    role=field.role,
+                    format=field.format or self._default_format(field),
+                    expandDirection="down",
+                )
+            )
+        dsl.layout.columns = columns
+        dsl.layout.designHints["headerGroups"] = self._future_header_groups()
+        existing_parameters = {parameter.name for parameter in dsl.parameters}
+        for parameter in [
+            ParameterDSL(
+                name="account_name",
+                label="账户名称",
+                type=FieldType.STRING,
+                bindExpression="account_name = '${account_name}'",
+            ),
+            ParameterDSL(
+                name="contract_variety",
+                label="合约品种",
+                type=FieldType.STRING,
+                bindExpression="contract_variety = '${contract_variety}'",
+            ),
+            ParameterDSL(
+                name="contract_code",
+                label="合约代码",
+                type=FieldType.STRING,
+                bindExpression="contract_code = '${contract_code}'",
+            ),
+        ]:
+            if parameter.name not in existing_parameters:
+                dsl.parameters.append(parameter)
+        return dsl
+
+    def _future_column_width(self, field_name: str) -> int:
+        wide = {"contract_variety", "strategy_type", "realized_profit", "floating_profit"}
+        narrow = {"open_direction", "close_direction", "position_direction"}
+        if field_name in wide:
+            return 150
+        if field_name in narrow:
+            return 80
+        return 120
+
+    def _future_header_groups(self) -> list[dict[str, object]]:
+        return [
+            {"label": "", "fields": ["account_name", "contract_variety", "contract_code", "strategy_type"]},
+            {
+                "label": "开仓",
+                "fields": ["open_trade_date", "open_direction", "open_quantity_lot", "open_price", "open_fee_per_lot"],
+            },
+            {
+                "label": "平仓",
+                "fields": [
+                    "close_trade_date",
+                    "close_direction",
+                    "close_quantity_lot",
+                    "close_price",
+                    "close_fee_per_lot",
+                    "realized_profit",
+                ],
+            },
+            {
+                "label": "持仓",
+                "fields": ["position_direction", "remaining_quantity_lot", "settlement_price", "floating_profit"],
+            },
+        ]
 
     def _report_meta(self, report_name: str, requirement_summary: dict[str, Any]) -> ReportMetaDSL:
         template_design = requirement_summary.get("templateDesign") or {}

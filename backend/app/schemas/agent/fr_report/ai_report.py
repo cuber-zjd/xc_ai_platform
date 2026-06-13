@@ -106,6 +106,47 @@ class PreviewValidationResult(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class FrAiReportMaintenanceField(BaseModel):
+    name: str
+    label: str
+    type: str = "string"
+    required: bool = True
+    description: str | None = None
+
+
+class FrAiReportMaintenanceTable(BaseModel):
+    tableName: str
+    displayName: str
+    purpose: str
+    fields: list[FrAiReportMaintenanceField] = Field(default_factory=list)
+    keys: list[str] = Field(default_factory=list)
+    uniqueKeys: list[list[str]] = Field(default_factory=list)
+    dropdownTargets: list[str] = Field(default_factory=list)
+
+
+class FrAiReportQualityGate(BaseModel):
+    code: str
+    label: str
+    severity: str = "warning"
+    description: str
+    autoCheck: bool = False
+
+
+class FrAiReportRequirementReviewResponse(BaseModel):
+    status: str
+    scenario: str | None = None
+    summary: str
+    reportType: str = "detail_table"
+    extractedRequirements: list[str] = Field(default_factory=list)
+    questions: list[str] = Field(default_factory=list)
+    assumptions: list[str] = Field(default_factory=list)
+    maintenanceTables: list[FrAiReportMaintenanceTable] = Field(default_factory=list)
+    recommendedSourceTables: list[str] = Field(default_factory=list)
+    qualityGates: list[FrAiReportQualityGate] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    excelAnalysis: ExcelAnalysisResult | None = None
+
+
 class SqlValidationResult(BaseModel):
     enabled: bool = False
     configured: bool = False

@@ -199,6 +199,37 @@ class SqlServerQueryService:
                 logger.warning(f"SQL Server 样例数据查询失败 {table_name}：{exc}")
         return samples
 
+    async def preview_select_sql(
+        self,
+        sql: str,
+        parameter_values: dict[str, Any],
+        connection_config: dict[str, Any],
+        max_rows: int = 20,
+    ) -> tuple[list[dict[str, Any]], list[str], list[str], list[str]]:
+        errors = self._validate_readonly_sql(sql)
+        warnings: list[str] = []
+        if errors:
+            return [], [], warnings, errors
+
+        executable_sql = self._bind_preview_parameters(sql, parameter_values)
+        unresolved = PARAMETER_PATTERN.findall(executable_sql)
+        if unresolved:
+            errors.append(f"SQL 参数未全部赋值：{', '.join(sorted(set(unresolved)))}")
+            return [], [], warnings, errors
+
+        db_type = str(connection_config.get("db_type") or "sqlserver").lower()
+        preview_sql = self._limit_preview_sql(executable_sql, max_rows, db_type)
+        try:
+            rows, columns = await asyncio.to_thread(self._execute_sample_query_with_config, preview_sql, connection_config, max_rows)
+        except Exception as exc:
+            logger.warning(f"FineReport 数据集预览失败：{exc}")
+            errors.append(f"数据集预览失败：{exc}")
+            return [], [], warnings, errors
+
+        if len(rows) >= max_rows:
+            warnings.append(f"仅返回前 {max_rows} 行预览数据")
+        return rows, columns, warnings, errors
+
     def _build_aliases(self, schemas: list[dict[str, Any]]) -> dict[str, str]:
         aliases: dict[str, str] = {}
         used: set[str] = set()
@@ -389,6 +420,33 @@ class SqlServerQueryService:
             result.errors.append(f"SQL 参数未完全绑定：{', '.join(sorted(set(unresolved)))}")
         return executable_sql
 
+    def _bind_preview_parameters(self, sql: str, parameter_values: dict[str, Any]) -> str:
+        def literal(name: str) -> str:
+            value = parameter_values.get(name)
+            if value is None:
+                return "NULL"
+            if isinstance(value, bool):
+                return "1" if value else "0"
+            if isinstance(value, (int, float)):
+                return str(value)
+            return "'" + str(value).replace("'", "''") + "'"
+
+        executable_sql = re.sub(r"'\$\{([A-Za-z_][A-Za-z0-9_]*)\}'", lambda match: literal(match.group(1)), sql)
+        return PARAMETER_PATTERN.sub(lambda match: literal(match.group(1)), executable_sql)
+
+    def _limit_preview_sql(self, sql: str, max_rows: int, db_type: str = "sqlserver") -> str:
+        normalized = sql.strip().rstrip(";")
+        row_limit = max(1, min(max_rows, settings.FR_AI_SQLSERVER_MAX_ROWS, 100))
+        if db_type == "mysql":
+            if re.search(r"\blimit\s+\d+\s*$", normalized, re.IGNORECASE):
+                return normalized
+            return f"{normalized}\nLIMIT {row_limit}"
+        if re.match(r"^\s*select\s+top\s+\d+\b", normalized, re.IGNORECASE):
+            return normalized
+        if re.match(r"^\s*select\b", normalized, re.IGNORECASE):
+            return re.sub(r"^\s*select\b", f"SELECT TOP {row_limit}", normalized, count=1, flags=re.IGNORECASE)
+        return normalized
+
     def _default_literal(self, parameter: ParameterDSL) -> str:
         if parameter.default is not None:
             return self._literal(parameter.default, parameter.type)
@@ -425,12 +483,111 @@ class SqlServerQueryService:
         finally:
             connection.close()
 
+    def _execute_sample_query_with_config(
+        self,
+        sql: str,
+        connection_config: dict[str, Any],
+        max_rows: int,
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        connection = self._connect_with_config(connection_config)
+        try:
+            cursor = connection.cursor()
+            cursor.execute(sql)
+            columns = [item[0] for item in (cursor.description or [])]
+            rows = cursor.fetchmany(max(1, min(max_rows, 100)))
+            return [self._normalize_row(row) for row in self._rows_to_dicts(cursor, rows)], columns
+        finally:
+            connection.close()
+
     def _connect(self):
         try:
             return self._connect_pyodbc()
         except Exception as pyodbc_exc:
             logger.warning(f"pyodbc 连接 SQL Server 失败，尝试 pymssql：{pyodbc_exc}")
             return self._connect_pymssql()
+
+    def _connect_with_config(self, connection_config: dict[str, Any]):
+        db_type = str(connection_config.get("db_type") or "sqlserver").lower()
+        if db_type == "mysql":
+            return self._connect_mysql_with_config(connection_config)
+        try:
+            return self._connect_pyodbc_with_config(connection_config)
+        except Exception as pyodbc_exc:
+            logger.warning(f"pyodbc 连接 SQL Server 失败，尝试 pymssql：{pyodbc_exc}")
+            return self._connect_pymssql_with_config(connection_config)
+
+    def _connect_mysql_with_config(self, connection_config: dict[str, Any]):
+        try:
+            import pymysql
+        except ImportError as exc:
+            raise RuntimeError("未安装 pymysql，无法连接 MySQL 8") from exc
+
+        return pymysql.connect(
+            host=connection_config["host"],
+            port=connection_config.get("port") or 3306,
+            user=connection_config["username"],
+            password=connection_config["password"],
+            database=connection_config["database"],
+            connect_timeout=settings.FR_AI_SQLSERVER_QUERY_TIMEOUT_SECONDS,
+            read_timeout=settings.FR_AI_SQLSERVER_QUERY_TIMEOUT_SECONDS,
+            write_timeout=settings.FR_AI_SQLSERVER_QUERY_TIMEOUT_SECONDS,
+            charset="utf8mb4",
+            cursorclass=pymysql.cursors.DictCursor,
+        )
+
+    def _connect_pyodbc_with_config(self, connection_config: dict[str, Any]):
+        try:
+            import pyodbc
+        except ImportError as exc:
+            raise RuntimeError("未安装 pyodbc，无法使用 ODBC 连接 SQL Server") from exc
+
+        driver = self._resolve_sqlserver_odbc_driver(pyodbc, connection_config.get("odbc_driver"))
+        conn_str = (
+            f"DRIVER={{{driver}}};"
+            f"SERVER={connection_config['host']},{connection_config.get('port') or 1433};"
+            f"DATABASE={connection_config['database']};"
+            f"UID={connection_config['username']};"
+            f"PWD={connection_config['password']};"
+            "TrustServerCertificate=yes;"
+            "Encrypt=no;"
+        )
+        return pyodbc.connect(conn_str, timeout=settings.FR_AI_SQLSERVER_QUERY_TIMEOUT_SECONDS)
+
+    def _resolve_sqlserver_odbc_driver(self, pyodbc_module: Any, preferred_driver: str | None) -> str:
+        installed_drivers = set(pyodbc_module.drivers())
+        candidates = [
+            preferred_driver,
+            settings.FR_AI_SQLSERVER_ODBC_DRIVER,
+            "ODBC Driver 18 for SQL Server",
+            "ODBC Driver 17 for SQL Server",
+            "SQL Server Native Client 11.0",
+            "SQL Server",
+        ]
+        for driver in candidates:
+            if driver and driver in installed_drivers:
+                return driver
+        if preferred_driver:
+            return preferred_driver
+        if installed_drivers:
+            return sorted(installed_drivers)[0]
+        return settings.FR_AI_SQLSERVER_ODBC_DRIVER
+
+    def _connect_pymssql_with_config(self, connection_config: dict[str, Any]):
+        try:
+            import pymssql
+        except ImportError as exc:
+            raise RuntimeError("未安装 pymssql，无法连接 SQL Server") from exc
+
+        return pymssql.connect(
+            server=connection_config["host"],
+            port=connection_config.get("port") or 1433,
+            user=connection_config["username"],
+            password=connection_config["password"],
+            database=connection_config["database"],
+            login_timeout=settings.FR_AI_SQLSERVER_QUERY_TIMEOUT_SECONDS,
+            timeout=settings.FR_AI_SQLSERVER_QUERY_TIMEOUT_SECONDS,
+            as_dict=True,
+        )
 
     def _connect_pyodbc(self):
         try:

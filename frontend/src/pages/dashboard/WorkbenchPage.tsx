@@ -1,170 +1,255 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import {
-    ArrowRight,
-    Bot,
-    BrainCircuit,
-    Cpu,
-    LayoutGrid,
-    MessagesSquare,
-    Search,
-    Sparkles,
-} from 'lucide-react';
+import { ArrowRight, Bot, Pin, Search, Sparkles } from 'lucide-react';
 
-import { Input } from '@/components/ui/input';
-import { cn } from '@/lib/utils';
 import { apiClient } from '@/api/client';
+import { Input } from '@/components/ui/input';
+import {
+    flattenWorkbenchGroups,
+    getPinnedAgentIds,
+    getRecentAgentIds,
+    recordRecentAgent,
+    selectVisibleAgents,
+    togglePinnedAgent,
+    type WorkbenchAgent,
+    type WorkbenchGroup,
+} from '@/features/agent-workbench/workbenchStorage';
+import { cn } from '@/lib/utils';
 
-interface Agent {
-    id: number;
-    name: string;
-    description?: string;
-    icon?: string;
-    logo_url?: string;
-    route_path: string;
+const ALL_GROUP = '全部';
+
+function AgentIcon({ agent }: { agent: WorkbenchAgent }) {
+    if (agent.icon?.startsWith('http')) {
+        return <img src={agent.icon} alt={agent.name} className="h-9 w-9 rounded-xl object-contain" />;
+    }
+
+    return <Bot className="h-5 w-5 text-[#555555]" />;
 }
-
-interface Group {
-    id: number;
-    name: string;
-    agents: Agent[];
-}
-
-const ICON_MAP: Record<string, typeof Bot> = {
-    Bot,
-    Sparkles,
-    BrainCircuit,
-    Cpu,
-    MessagesSquare,
-};
 
 export default function WorkbenchPage() {
-    const [groups, setGroups] = useState<Group[]>([]);
+    const [groups, setGroups] = useState<WorkbenchGroup[]>([]);
     const [loading, setLoading] = useState(true);
     const [searchQuery, setSearchQuery] = useState('');
+    const [activeGroup, setActiveGroup] = useState(ALL_GROUP);
+    const [pinnedIds, setPinnedIds] = useState<number[]>(() => getPinnedAgentIds());
+    const [recentIds, setRecentIds] = useState<number[]>(() => getRecentAgentIds());
     const navigate = useNavigate();
 
     useEffect(() => {
+        let ignore = false;
+
+        async function fetchWorkbench() {
+            try {
+                setLoading(true);
+                const data = (await apiClient.get('/agents/workbench')) as unknown as WorkbenchGroup[];
+                if (!ignore) setGroups(data ?? []);
+            } finally {
+                if (!ignore) setLoading(false);
+            }
+        }
+
         void fetchWorkbench();
+        return () => {
+            ignore = true;
+        };
     }, []);
 
-    const fetchWorkbench = async () => {
-        try {
-            setLoading(true);
-            const data: Group[] = await apiClient.get('/agents/workbench');
-            setGroups(data || []);
-        } finally {
-            setLoading(false);
-        }
+    const allAgents = useMemo(() => flattenWorkbenchGroups(groups), [groups]);
+    const groupNames = useMemo(() => [ALL_GROUP, ...groups.map((group) => group.name)], [groups]);
+    const pinnedAgents = useMemo(() => selectVisibleAgents(pinnedIds, allAgents), [allAgents, pinnedIds]);
+    const recentAgents = useMemo(
+        () => selectVisibleAgents(recentIds.filter((id) => !pinnedIds.includes(id)), allAgents),
+        [allAgents, pinnedIds, recentIds],
+    );
+    const featuredAgents = useMemo(() => {
+        const selected = [...pinnedAgents, ...recentAgents];
+        return (selected.length ? selected : allAgents).slice(0, 4);
+    }, [allAgents, pinnedAgents, recentAgents]);
+
+    const filteredAgents = useMemo(() => {
+        const keyword = searchQuery.trim().toLowerCase();
+        return allAgents.filter((agent) => {
+            const matchesGroup = activeGroup === ALL_GROUP || agent.groupName === activeGroup;
+            const matchesKeyword = !keyword
+                || agent.name.toLowerCase().includes(keyword)
+                || (agent.description ?? '').toLowerCase().includes(keyword)
+                || agent.groupName.toLowerCase().includes(keyword);
+            return matchesGroup && matchesKeyword;
+        });
+    }, [activeGroup, allAgents, searchQuery]);
+
+    const handleOpenAgent = (agent: WorkbenchAgent) => {
+        setRecentIds(recordRecentAgent(agent.id));
+        navigate(agent.route_path || '/chat-home');
     };
 
-    const filteredGroups = groups
-        .map((group) => ({
-            ...group,
-            agents: group.agents.filter((agent) => {
-                const keyword = searchQuery.toLowerCase();
-                return (
-                    agent.name.toLowerCase().includes(keyword) ||
-                    (agent.description ?? '').toLowerCase().includes(keyword)
-                );
-            }),
-        }))
-        .filter((group) => group.agents.length > 0);
+    const handleTogglePinned = (agentId: number) => {
+        setPinnedIds(togglePinnedAgent(agentId));
+    };
 
     return (
         <div className="app-page">
-            <section className="app-page-header">
-                <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
-                    <div>
-                        <div className="app-kicker">智能体工作台</div>
-                        <h2 className="mt-4 text-[34px] font-black tracking-[-0.04em] text-[#24233b]">
-                            我的智能体入口
-                        </h2>
-                        <p className="mt-2 max-w-2xl app-subtle-text">
-                            所有已授权的智能体与业务应用会在这里集中呈现。你可以按分组快速进入，也可以通过搜索直接定位目标能力。
-                        </p>
-                    </div>
-                    <div className="w-full max-w-sm">
-                        <div className="relative">
-                            <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[#9699af]" />
-                            <Input
-                                value={searchQuery}
-                                onChange={(event) => setSearchQuery(event.target.value)}
-                                placeholder="搜索智能体、场景或描述"
-                                className="pl-11"
-                            />
-                        </div>
+            <section className="mx-auto flex max-w-4xl flex-col items-center px-4 pt-14 text-center">
+                <div className="mb-5 flex h-12 w-12 items-center justify-center rounded-2xl border border-[#e5e5e5] bg-white shadow-sm">
+                    <Sparkles className="h-5 w-5 text-[#171717]" />
+                </div>
+                <h1 className="text-4xl font-semibold tracking-tight text-[#171717] md:text-5xl">探索智能体</h1>
+                <p className="mt-4 max-w-2xl text-sm leading-6 text-[#6f6f6f]">
+                    从工作台选择已授权的智能体或业务应用。它们可以是对话助手，也可以是合同审查、报表生成、SAP 调查等独立工作流。
+                </p>
+                <div className="mt-8 w-full max-w-2xl">
+                    <div className="relative">
+                        <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[#8a8a8a]" />
+                        <Input
+                            value={searchQuery}
+                            onChange={(event) => setSearchQuery(event.target.value)}
+                            placeholder="搜索智能体、场景或描述"
+                            className="h-13 rounded-2xl border-[#dddddd] bg-white pl-11 text-[15px] shadow-sm"
+                        />
                     </div>
                 </div>
             </section>
 
-            {loading ? (
-                <div className="app-panel flex h-[320px] items-center justify-center">
-                    <div className="flex flex-col items-center gap-4 text-[#7c7f96]">
-                        <div className="h-12 w-12 animate-spin rounded-full border-4 border-[#d7d9ef] border-t-[#6d5df6]" />
-                        <p className="text-sm font-semibold">正在加载你的智能体工作台...</p>
-                    </div>
-                </div>
-            ) : filteredGroups.length === 0 ? (
-                <div className="app-panel flex h-[320px] flex-col items-center justify-center text-center">
-                    <Sparkles className="h-12 w-12 text-[#c2c5dc]" />
-                    <h3 className="mt-4 text-xl font-black text-[#2a2942]">没有找到匹配结果</h3>
-                    <p className="mt-2 max-w-md text-sm text-[#8a8da4]">
-                        可以试试更短的关键词，或者检查当前账号是否已经被授予对应智能体访问权限。
-                    </p>
-                </div>
-            ) : (
-                <div className="space-y-6">
-                    {filteredGroups.map((group) => (
-                        <section key={group.id} className="app-panel px-6 py-6">
-                            <div className="flex items-center gap-3">
-                                <div className="flex h-10 w-10 items-center justify-center rounded-[18px] bg-linear-to-br from-[#eef0ff] to-[#f8f4ff] text-[#6d5df6]">
-                                    <LayoutGrid className="h-5 w-5" />
-                                </div>
-                                <div className="min-w-0">
-                                    <h3 className="truncate text-[20px] font-black tracking-tight text-[#282741]">{group.name}</h3>
-                                    <p className="text-sm text-[#8a8da4]">共 {group.agents.length} 个可用入口</p>
-                                </div>
-                            </div>
-
-                            <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                                {group.agents.map((agent) => {
-                                    const IconComponent = ICON_MAP[agent.icon || 'Bot'] || Bot;
-                                    const isLogoUrl = agent.icon?.startsWith('http');
-                                    return (
-                                        <button
-                                            key={agent.id}
-                                            type="button"
-                                            onClick={() => navigate(agent.route_path)}
-                                            className={cn(
-                                                'group rounded-[26px] border border-white/80 bg-white/72 p-5 text-left shadow-[0_12px_30px_rgba(102,99,166,0.05)] transition-all duration-300 hover:-translate-y-1 hover:shadow-[0_22px_40px_rgba(102,99,166,0.10)]',
-                                            )}
-                                        >
-                                            <div className="flex items-start justify-between gap-3">
-                                                <div className="flex h-12 w-12 items-center justify-center rounded-[18px] bg-linear-to-br from-[#f3f4ff] to-[#f7fbff] text-[#6d5df6] shadow-[inset_0_1px_0_rgba(255,255,255,0.95)]">
-                                                    {isLogoUrl ? (
-                                                        <img src={agent.icon} alt={agent.name} className="h-7 w-7 object-contain" />
-                                                    ) : (
-                                                        <IconComponent className="h-6 w-6" />
-                                                    )}
-                                                </div>
-                                                <div className="flex items-center gap-1 text-xs font-bold text-[#a2a5b9] transition-colors group-hover:text-[#6d5df6]">
-                                                    立即进入
-                                                    <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
-                                                </div>
-                                            </div>
-                                            <h4 className="mt-5 text-[18px] font-black tracking-tight text-[#24233b]">{agent.name}</h4>
-                                            <p className="mt-2 line-clamp-2 text-sm leading-6 text-[#7e8196]">
-                                                {agent.description || '已接入工作台，可直接进入开始使用。'}
-                                            </p>
-                                        </button>
-                                    );
-                                })}
-                            </div>
-                        </section>
+            <section className="mx-auto mt-10 max-w-5xl px-4">
+                <div className="flex gap-2 overflow-x-auto pb-2">
+                    {groupNames.map((groupName) => (
+                        <button
+                            key={groupName}
+                            type="button"
+                            onClick={() => setActiveGroup(groupName)}
+                            className={cn(
+                                'h-9 shrink-0 rounded-full border px-4 text-sm transition-colors',
+                                activeGroup === groupName
+                                    ? 'border-[#171717] bg-[#171717] text-white'
+                                    : 'border-[#dddddd] bg-white text-[#4a4a4a] hover:bg-[#f4f4f4]',
+                            )}
+                        >
+                            {groupName}
+                        </button>
                     ))}
                 </div>
+            </section>
+
+            {loading ? (
+                <div className="mx-auto mt-10 flex h-64 max-w-5xl items-center justify-center rounded-2xl border border-[#eeeeee] bg-[#fafafa] text-sm text-[#6f6f6f]">
+                    正在加载你的智能体工作台...
+                </div>
+            ) : allAgents.length === 0 ? (
+                <div className="mx-auto mt-10 flex h-64 max-w-5xl flex-col items-center justify-center rounded-2xl border border-dashed border-[#dddddd] bg-[#fafafa] text-center">
+                    <Sparkles className="h-8 w-8 text-[#b5b5b5]" />
+                    <h2 className="mt-4 text-lg font-semibold text-[#171717]">暂无可用智能体</h2>
+                    <p className="mt-2 text-sm text-[#6f6f6f]">请联系管理员为当前账号分配智能体访问权限。</p>
+                </div>
+            ) : (
+                <div className="mx-auto mt-8 max-w-5xl space-y-10 px-4 pb-12">
+                    {featuredAgents.length > 0 && !searchQuery.trim() && activeGroup === ALL_GROUP && (
+                        <section>
+                            <div className="mb-4">
+                                <h2 className="text-xl font-semibold text-[#171717]">精选</h2>
+                                <p className="mt-1 text-sm text-[#8a8a8a]">根据置顶和最近使用优先展示。</p>
+                            </div>
+                            <div className="grid gap-3 md:grid-cols-2">
+                                {featuredAgents.map((agent) => (
+                                    <AgentCard
+                                        key={agent.id}
+                                        agent={agent}
+                                        pinned={pinnedIds.includes(agent.id)}
+                                        onOpen={handleOpenAgent}
+                                        onTogglePinned={handleTogglePinned}
+                                        featured
+                                    />
+                                ))}
+                            </div>
+                        </section>
+                    )}
+
+                    <section>
+                        <div className="mb-4 flex items-end justify-between gap-3">
+                            <div>
+                                <h2 className="text-xl font-semibold text-[#171717]">全部智能体</h2>
+                                <p className="mt-1 text-sm text-[#8a8a8a]">共 {filteredAgents.length} 个匹配入口。</p>
+                            </div>
+                        </div>
+                        {filteredAgents.length === 0 ? (
+                            <div className="flex h-48 flex-col items-center justify-center rounded-2xl border border-dashed border-[#dddddd] bg-[#fafafa] text-center">
+                                <Search className="h-7 w-7 text-[#b5b5b5]" />
+                                <p className="mt-3 text-sm text-[#6f6f6f]">没有找到匹配的智能体。</p>
+                            </div>
+                        ) : (
+                            <div className="grid gap-3 md:grid-cols-2">
+                                {filteredAgents.map((agent) => (
+                                    <AgentCard
+                                        key={agent.id}
+                                        agent={agent}
+                                        pinned={pinnedIds.includes(agent.id)}
+                                        onOpen={handleOpenAgent}
+                                        onTogglePinned={handleTogglePinned}
+                                    />
+                                ))}
+                            </div>
+                        )}
+                    </section>
+                </div>
             )}
+        </div>
+    );
+}
+
+function AgentCard({
+    agent,
+    pinned,
+    onOpen,
+    onTogglePinned,
+    featured,
+}: {
+    agent: WorkbenchAgent & { groupName?: string };
+    pinned: boolean;
+    onOpen: (agent: WorkbenchAgent) => void;
+    onTogglePinned: (agentId: number) => void;
+    featured?: boolean;
+}) {
+    return (
+        <div
+            className={cn(
+                'group flex min-h-[132px] flex-col justify-between rounded-2xl border border-[#e7e7e7] bg-white p-4 transition hover:bg-[#fafafa]',
+                featured && 'border-[#d7d7d7] shadow-sm',
+            )}
+        >
+            <div className="flex items-start gap-4">
+                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-[#e5e5e5] bg-[#f7f7f7]">
+                    <AgentIcon agent={agent} />
+                </div>
+                <div className="min-w-0 flex-1 text-left">
+                    <div className="flex items-center gap-2">
+                        <h3 className="truncate text-base font-semibold text-[#171717]">{agent.name}</h3>
+                        {agent.groupName && (
+                            <span className="shrink-0 rounded-full bg-[#f1f1f1] px-2 py-0.5 text-xs text-[#6f6f6f]">{agent.groupName}</span>
+                        )}
+                    </div>
+                    <p className="mt-2 line-clamp-2 text-sm leading-6 text-[#6f6f6f]">
+                        {agent.description || '已接入工作台，可直接进入开始使用。'}
+                    </p>
+                </div>
+                <button
+                    type="button"
+                    onClick={() => onTogglePinned(agent.id)}
+                    className={cn(
+                        'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[#8a8a8a] transition hover:bg-[#eeeeee] hover:text-[#171717]',
+                        pinned && 'text-[#171717]',
+                    )}
+                    aria-label={pinned ? '取消置顶' : '置顶智能体'}
+                >
+                    <Pin className={cn('h-4 w-4', pinned && 'fill-current')} />
+                </button>
+            </div>
+            <button
+                type="button"
+                onClick={() => onOpen(agent)}
+                className="mt-4 flex w-fit items-center gap-1 rounded-lg px-2 py-1 text-sm font-medium text-[#424242] transition hover:bg-[#eeeeee] hover:text-[#171717]"
+            >
+                进入
+                <ArrowRight className="h-4 w-4" />
+            </button>
         </div>
     );
 }

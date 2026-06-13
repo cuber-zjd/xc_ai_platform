@@ -26,6 +26,17 @@ class SqlReActAgent:
         logs: list[str] = []
         table_samples = await sqlserver_query_service.sample_data_model(data_model)
         sql = await sql_agent.generate(data_model, parameters, report_type, requirement_summary)
+        if data_model.dataSourceStatus == "designed_not_verified":
+            validation = SqlValidationResult(
+                enabled=True,
+                configured=False,
+                success=True,
+                executed=False,
+                warnings=["当前为 AI 设计的候选表结构，已跳过 SQL Server 真实执行；请确认真实表名和字段后再做数据预览。"],
+            )
+            logs.append("候选表结构未确认，跳过 SQL Server 执行校验")
+            return SqlReActResult(sql, validation, logs)
+
         validation = await sqlserver_query_service.validate_select_sql(sql, parameters)
         self._apply_template_expectation(validation, analysis)
         logs.append(self._log_iteration(1, validation))

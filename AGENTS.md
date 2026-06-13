@@ -6,8 +6,10 @@
 
 - 所有回复、思考摘要、任务清单、代码注释和文档均使用中文。
 - 前端页面可见文本必须使用中文。
+- Windows PowerShell 中执行命令前默认先设置 UTF-8 编码：`[Console]::InputEncoding=[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); $OutputEncoding=[System.Text.UTF8Encoding]::new($false); chcp 65001 > $null`；读取中文文件必须显式使用 `Get-Content -Encoding UTF8`，避免中文输出乱码。
 - 后端包管理器固定使用 `uv`，前端包管理器固定使用 `pnpm`。
 - 先读代码再行动，优先沿用项目已有目录、命名、接口和组件模式。
+- 查询项目进度、业务方案、实施计划或阶段拆解时，先检查 `docs/solution-plans/` 是否已有对应 Markdown 方案；方案按业务域目录归档，计划文件使用中文命名；如同时存在 HTML 和 Markdown，优先阅读 Markdown 版以节省上下文。
 - 非用户明确要求，不做无关重构，不回滚他人改动，不提交真实密钥。
 - 涉及架构、目录职责、启动方式、核心流程变化时，必须同步更新本文件和相关分册。
 - 设计或业务流程发生明显变化时，需要补充文档说明变更点、影响范围和验证方式。
@@ -23,6 +25,7 @@
 | 修改启动、环境变量、Docker、部署、测试 | `docs/agent-rules/operations.md` |
 | 修改认证、权限、密钥、外部接口、文件上传 | `docs/agent-rules/security.md` |
 | 梳理或新增业务流程、Agent 流程 | `docs/agent-rules/business-flows.md` |
+| 查询项目方案、开发计划、阶段进度 | 优先查看 `docs/solution-plans/index.md`，再按业务域阅读 `docs/solution-plans/<业务域>/*.md` |
 
 ## 2. 项目速览
 
@@ -83,11 +86,12 @@ pnpm build
 - MCP 服务必须接入鉴权，并保持工具输入输出 Schema 清晰。
 - 前端 API 统一通过 `frontend/src/api/client.ts` 的 Axios 封装。
 - 服务端状态使用 TanStack Query，全局认证状态使用 Zustand。
-- UI 风格遵循项目现有的浅色玻璃卡片、柔和紫蓝点缀、超圆角容器、App-in-App 分层和暗色模式兼容约定。
+- UI 风格除明确独立设计的业务域外，默认遵循当前 ChatGPT 式极简产品壳与青绿色主题点缀：浅灰侧栏、冷白主内容区、轻描边、克制阴影、适度圆角和现代留白。
 
 ## 6. 文档维护规则
 
 - 如果新增或移动顶层目录，更新 `docs/agent-rules/project-overview.md`。
+- 如果新增方案、开发计划、验收记录或阶段进度文档，放入 `docs/solution-plans/<业务域>/`，文件名使用中文，并同步更新 `docs/solution-plans/index.md`。
 - 如果新增后端分层、Agent、MCP 或接口规范，更新 `docs/agent-rules/backend.md` 和 `docs/agent-rules/business-flows.md`。
 - 如果新增前端功能模块、路由或设计规范，更新 `docs/agent-rules/frontend.md`。
 - 如果新增基础设施、端口、环境变量或部署步骤，更新 `docs/agent-rules/operations.md`。
@@ -98,7 +102,7 @@ pnpm build
 - FineReport AI 报表生成必须遵循“AI 只生成 ReportDSL，CPT/XML 只能由确定性程序生成”的边界。
 - 当前前端交互应优先按分步骤推进，第一步先收集需求、人工修改意见、Excel 和相关表名，完成 SQL 生成与数据预览，再进入后续报表设计和预览发布步骤。
 - 第二步通过 `POST /api/v1/fr/ai-reports/steps/dsl/generate` 基于第一步任务产物生成 ReportDSL，并写回同一条任务记录；该步骤不得生成 CPT/XML，也不得调用 FineReport 预览。
-- 第三步通过 `POST /api/v1/fr/ai-reports/steps/cpt/generate` 基于同一任务的 ReportDSL 确定性生成 CPT，上传 MinIO staging，并返回 FineReport 预览地址。
+- 第三步通过 `POST /api/v1/fr/ai-reports/steps/cpt/generate` 基于同一任务的 ReportDSL 确定性生成 CPT，上传 MinIO 的 `reportlets/AI生成报表/` 专用预览目录，并返回 FineReport 预览地址。
 - 第二步允许携带 `dsl_feedback` 重新生成 ReportDSL，用于只调整版式和 DSL 预览，不重复跑 SQL。
 - 第二步预览为前端基于 ReportDSL 布局和 SQL 样例数据渲染的轻量预览，尤其需要支持 `horizontalExpansion` 横向扩展，不代表 FineReport 运行时预览结果。
 - ReportDSL 必须通过 `reportMeta` 承载标题、单位、更新时间、均价、备注和筛选条件等模板级语义；Excel 标题识别应结合全报表语义、合并单元格和表格区域上方文本，不能简单把第一行当标题。
@@ -106,15 +110,17 @@ pnpm build
 - FineReport AI 报表任务需要沉淀历史任务和会话上下文；新任务应优先写入 `conversation_id`、`revision_no` 和 `parent_task_id`，便于恢复旧任务、追踪多轮人工修订和后续经验检索。
 - 人工反馈应通过结构化反馈记录沉淀为正向样本或待优化样本；第一版只做历史经验积累和后续检索基础，不允许自动改写全局提示词、业务规则或代码。
 - SQL 生成应优先服务 FineReport 设计器布局：Excel 中城市、市场、区域等横向表头可通过 ReportDSL/FineReport 横向扩展表达时，SQL 保持 `record_date/market/price/change_amt` 等长表结果，不强行用大量 `CASE WHEN`、`PIVOT` 或聚合转宽表。
-- 生成文件只能写入 MinIO `webroot/APP/reportlets_ai_staging/`，不得直接写正式 reportlets。
-- 第三步对接文档见 `docs/fr-ai-report-third-step.md`；当前只做 CPT 生成、MinIO staging 上传和 FineReport 预览，不做审批复制或正式 reportlets 发布。
-- 第三步默认 MinIO S3 endpoint 为 `192.168.14.41:9000`、bucket 为 `fanruan`，FineReport 预览根地址为 `http://192.168.14.41:1080`，CPT 数据连接名通过 `FR_AI_FINEREPORT_DB_NAME` 配置，当前默认 `XcTest`。
+- 生成文件只能写入 MinIO `webroot/APP/reportlets/AI生成报表/` 专用预览目录，不得覆盖其他正式 reportlets。
+- 第三步对接文档见 `docs/fr-ai-report-third-step.md`；当前只做 CPT 生成、MinIO 专用预览目录上传和 FineReport 预览，不做审批复制或正式 reportlets 发布。
+- 帆软报表文件读写使用专用 `FR_AI_MINIO_*` 配置，不复用平台通用 `MINIO_*`；第三步默认 `FR_AI_MINIO_ENDPOINT=192.168.14.41:9000`、`FR_AI_MINIO_BUCKET_NAME=fanruan`，FineReport 预览根地址为 `http://192.168.14.41:1080`，CPT 数据连接名通过 `FR_AI_FINEREPORT_DB_NAME` 配置，当前默认 `XcTest`。
+- 现有报表结构读取入口为 `GET /api/v1/fr/ai-reports/files/structure`，只能在线内存读取 `FR_AI_REPORT_FILE_PREFIXES` 允许范围内且当前用户可见的 CPT/FRM；第一版只返回 XML 版本、数据集、连接名、参数、截断 SQL 和 warnings，不返回完整 CPT/XML 原文，不落盘下载。
 
 ## 8. 当前前端视觉基调
 
-- 全局基调以浅色背景、雾化玻璃卡片、柔和紫蓝渐变和大圆角容器为主，不再使用偏重的纯 Zinc 单色后台感。
-- 用户侧与管理后台应共用一致的品牌节奏：悬浮侧边栏、柔和阴影、信息卡片分组、低饱和状态色。
-- 新页面优先复用 `app-shell`、`app-stage`、`app-panel`、`app-page`、`app-page-header` 等全局样式类，避免重复手写大段散装容器样式。
+- 除 `/insight/*` 市场洞察专 app 或用户明确要求的独立视觉外，登录后用户侧与管理后台统一采用接近 ChatGPT 的极简产品壳：浅灰固定侧边栏、冷白主内容区、黑白中性色、轻描边和克制阴影。
+- 默认主题点缀色采用当前 SAP 助手确认过的青绿色体系，用于选中态、轻量标签、聚焦态、状态提示和少量品牌强调；不要回退到大面积紫蓝渐变、黑底模块或偏黄旧纸感背景。
+- 智能体入口优先通过工作台集中展示，侧边栏可展示常用和最近使用智能体；智能体不强制做成聊天形态，点击后按 `route_path` 跳转到对应页面。
+- 新页面优先复用 `app-shell`、`app-sidebar`、`app-stage`、`app-panel`、`app-page`、`app-page-header` 等全局样式类，但视觉应保持中性、简洁、低装饰。
 
 ## 9. SAP 助手约束
 
@@ -134,3 +140,29 @@ pnpm build
 - SAP 助手支持本轮模型思考模式开关；本地 LM Studio 等模型不需要思考时可关闭，后端会以 `enable_reasoning=false` 调用模型。
 - 通用知识库能力位于 `/api/v1/knowledge-bases`，设计目标是被 SAP 助手和后续其他智能体复用，不允许写成 SAP 专属 RAG。
 - SAP 助手流式协议会推送文本、执行时间线、工具结果、证据片段、系统上下文和流程图，前端必须让用户能看到 AI 当前正在做什么。
+
+## 10. Insight 研发营销市场洞察平台约束
+
+- Insight 前端入口固定为 `/insight/*`，源码位于 `frontend/src/app/insight/`，保持独立 `InsightLayout` 和 `InsightThemeScope`。
+- Insight 后端接口统一挂载到 `/api/v1/insight`，入口位于 `backend/app/api/v1/endpoints/agent/insight/`。
+- Insight 后端服务位于 `backend/app/services/agent/insight/`，按 `crawler`、`intelligence`、`visibility`、`report` 等子域拆分。
+- Insight 数据模型位于 `backend/app/models/agent/insight/`，Schema 位于 `backend/app/schemas/agent/insight/`。
+- 第一阶段优先实现“通用联网采集”：本地 Firecrawl 通用网页抓取、百度搜索发现、Bocha/博查 API 多源查询、采集清洗、候选情报入库，再做情报权限、情报池和报告。
+- Insight 周期采集必须按生产级调度系统建设：优先使用 `backend/app/services/agent/insight/scheduler_service.py`，通过 `INSIGHT_SCHEDULER_ENABLED`、扫描间隔、单批上限、连续失败暂停阈值和 advisory lock 控制常驻调度，前端主入口使用 `/api/v1/insight/scheduler/*` 状态、单次扫描、启停接口，并保留最近调度批次、单源失败次数、自动暂停原因和单源重试能力。
+- Insight 情报不固定绑定企业，必须支持企业、行业、市场、产品、政策、技术和自定义主题。
+- Insight 权限必须在后端完成过滤，不能返回全量情报后仅由前端隐藏。
+- Insight 数据源、报告和报告模板都需要保留 `owner_user_id`、`owner_dept_id`、`visibility_scope` 和显式授权规则入口；列表接口必须先按当前用户权限过滤再分页或聚合。
+- Insight 报告模板分为个人模板和模板市场：个人模板默认仅本人可见，可发布到市场；市场模板可被复制为个人模板后调整章节、Prompt、数据范围和导出格式。HTML 风格模板优先支持 PDF 导出，Word/Excel 上传模板优先服务 docx/xlsx 套版导出。
+- Insight 企业微信推送必须先写入 `insight_notification`，并在创建推送前复用目标报告或情报的后端权限校验；当前阶段只允许 `sent_mock` 模拟发送，接入真实企业微信 API 时不得绕过推送记录、账号映射、回执和失败重试。
+- Insight 前端视觉统一通过 `InsightLayout`、`InsightHeader`、`InsightSidebar` 和 `InsightThemeScope` 控制；头部和侧边栏保持固定，页面内容区独立滚动，侧边栏下半部分使用品牌插画背景而不是临时色块。
+- Firecrawl、Bocha/博查等外部服务地址、密钥和鉴权信息不得硬编码在业务代码中。
+- Insight 企业档案支持通过登录态接口导入 Excel，仅允许 `.xlsx/.xlsm`，后端解析表头并按企业编码或当前用户同名企业做新增/更新，不允许前端绕过权限直接写入。
+- Insight 企业档案的“所属公司”必须从系统组织 `sys_company` 选择并保存 `sys_company_id`，不得做成前端自由文本。
+ 
+## 泛微流程AI助手约束
+
+- 泛微流程 AI 助手用于 ecode 嵌入泛微流程发起/处理页面，平台前端入口为 `/weaver/assistant/embed`，源码位于 `frontend/src/features/weaver-ai-assistant/`。
+- 后端接口统一挂载到 `/api/v1/weaver/ai-assistant`，入口位于 `backend/app/api/v1/endpoints/agent/weaver_ai_assistant.py`，服务层位于 `backend/app/services/agent/weaver_ai_assistant/`。
+- ecode 侧只保留悬浮图标、iframe 打开、`WfForm` 上下文采集和结构化动作执行；聊天面板、样式、AI 调用和业务逻辑由平台承载。
+- 该嵌入页不走平台登录态，接口必须通过 `ai-sign` 校验，生产环境必须配置非默认 `EXTERNAL_API_KEYS`。
+- AI 只允许返回 `set_field`、`add_detail_row`、`show_message` 等结构化动作；不得返回任意 JavaScript，不得自动保存、提交、审批或删除流程。

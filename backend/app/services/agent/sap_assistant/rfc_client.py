@@ -190,52 +190,106 @@ class SapRfcClient:
                         try:
                             normalized["JSON_PARSED"] = json.loads(repaired_text)
                             normalized["JSON_TEXT_REPAIRED"] = repaired_text
-                            normalized["JSON_REPAIR_NOTE"] = "RFC JSON_TEXT 包含未转义控制字符，平台侧已做容错修复。"
+                            normalized["JSON_REPAIR_NOTE"] = (
+                                "RFC JSON_TEXT 包含常见格式问题，平台侧已做容错修复。"
+                            )
                             return normalized
                         except json.JSONDecodeError:
                             parse_error = sys.exception()
                     normalized["JSON_PARSE_ERROR"] = "RFC JSON_TEXT 解析失败，保留原始文本。"
                     if isinstance(parse_error, json.JSONDecodeError):
+                        context = self._json_error_context(json_text, parse_error.pos)
                         normalized["JSON_PARSE_ERROR_DETAIL"] = (
                             f"{parse_error.msg} at line {parse_error.lineno} column {parse_error.colno} char {parse_error.pos}"
                         )
-                        normalized["JSON_TEXT_PREVIEW"] = json_text[max(0, parse_error.pos - 160) : parse_error.pos + 160]
+                        normalized["JSON_PARSE_ERROR_CONTEXT"] = context
+                        normalized["JSON_PARSE_ERROR_HINT"] = self._json_error_hint(parse_error)
+                        normalized["JSON_TEXT_PREVIEW"] = context["snippet"]
                 return normalized
         return result
 
     def _repair_json_text(self, text: str) -> str:
-        """修复常见 RFC 手工拼 JSON 问题：字符串中的裸控制字符。"""
+        """修复常见 RFC 手工拼 JSON 问题。"""
         repaired: list[str] = []
         in_string = False
         escaped = False
-        for char in text:
+        index = 0
+        while index < len(text):
+            char = text[index]
             if escaped:
                 repaired.append(char)
                 escaped = False
+                index += 1
                 continue
             if char == "\\":
                 repaired.append(char)
                 escaped = True
+                index += 1
                 continue
             if char == '"':
                 repaired.append(char)
                 in_string = not in_string
+                index += 1
                 continue
             if in_string:
                 if char == "\n":
                     repaired.append("\\n")
+                    index += 1
                     continue
                 if char == "\r":
                     repaired.append("\\r")
+                    index += 1
                     continue
                 if char == "\t":
                     repaired.append("\\t")
+                    index += 1
                     continue
                 if ord(char) < 32:
                     repaired.append(f"\\u{ord(char):04x}")
+                    index += 1
                     continue
+            elif char == "0" and self._is_leading_zero_number(text, index, repaired):
+                end = index + 1
+                while end < len(text) and text[end].isdigit():
+                    end += 1
+                repaired.append(str(int(text[index:end])))
+                index = end
+                continue
             repaired.append(char)
+            index += 1
         return "".join(repaired)
+
+    def _is_leading_zero_number(self, text: str, index: int, repaired: list[str]) -> bool:
+        if index + 1 >= len(text) or not text[index + 1].isdigit():
+            return False
+        previous = next((char for char in reversed(repaired) if not char.isspace()), "")
+        if previous not in {":", ",", "["}:
+            return False
+        end = index + 1
+        while end < len(text) and text[end].isdigit():
+            end += 1
+        next_char = text[end] if end < len(text) else ""
+        return not next_char or next_char.isspace() or next_char in {",", "}", "]"}
+
+    def _json_error_context(self, text: str, pos: int) -> dict[str, Any]:
+        begin = max(0, pos - 160)
+        end = min(len(text), pos + 160)
+        snippet = text[begin:end]
+        return {
+            "position": pos,
+            "snippet": snippet,
+            "markerOffset": pos - begin,
+            "marker": " " * max(0, pos - begin) + "^",
+        }
+
+    def _json_error_hint(self, error: json.JSONDecodeError) -> str:
+        if error.msg in {"Expecting ',' delimiter", "Expecting property name enclosed in double quotes"}:
+            return "多半是 SAP 侧手工拼 JSON 时，字段文本或业务值里的双引号没有转义。请修复对应 ZFM_AI_* RFC 的 JSON 字符串转义后重试。"
+        if "Invalid control character" in error.msg:
+            return "多半是 SAP 侧返回文本中包含未转义的换行、回车、制表符或其他控制字符。请修复对应 ZFM_AI_* RFC 的 JSON 字符串转义后重试。"
+        if "Invalid \\escape" in error.msg:
+            return "多半是 SAP 侧返回文本中包含未转义的反斜杠。请先把反斜杠转为两个反斜杠，再拼入 JSON 字符串。"
+        return "请检查 SAP 侧 ET_JSON_LINES 拼接出的 JSON_TEXT，优先修复字符串字段的引号、反斜杠和控制字符转义。"
 
     def _configure_nwrfc_dll_path(self) -> None:
         if os.name != "nt":

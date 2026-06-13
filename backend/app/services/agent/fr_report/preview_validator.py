@@ -17,7 +17,7 @@ class PreviewValidator:
             return PreviewValidationResult(previewUrl=preview_url, warnings=warnings)
 
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
+            async with httpx.AsyncClient(timeout=15, trust_env=False) as client:
                 response = await client.get(preview_url)
         except httpx.HTTPError as exc:
             errors.append(f"FineReport 预览请求失败：{exc}")
@@ -27,7 +27,17 @@ class PreviewValidator:
             errors.append(f"FineReport 预览 HTTP 状态异常：{response.status_code}")
 
         lowered = response.text.lower()
-        error_keywords = ["exception", "error", "错误", "报错", "stacktrace"]
+        error_keywords = [
+            "stacktrace",
+            "exception:",
+            "java.lang.",
+            "模板不存在",
+            "报表不存在",
+            "无法找到",
+            "错误代码",
+            "error code",
+            "server error",
+        ]
         if any(keyword in lowered for keyword in error_keywords):
             errors.append("FineReport 预览页面包含疑似报错信息")
 

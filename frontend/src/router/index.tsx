@@ -4,6 +4,7 @@ import {
     isRouteErrorResponse,
     Navigate,
     RouterProvider,
+    useLocation,
     useRouteError,
 } from "react-router-dom";
 
@@ -33,9 +34,11 @@ const ToolboxPage = lazy(() => import("@/pages/user-home/ToolboxPage"));
 const AgentTestPage = lazy(() => import("@/pages/agent-test/AgentTestPage"));
 const SapAssistantPage = lazy(() => import("@/features/sap-assistant/pages/SapAssistantPage"));
 const SapSystemManagerPage = lazy(() => import("@/pages/system/sap/SapSystemManagerPage"));
+const WeaverAssistantEmbedPage = lazy(() => import("@/features/weaver-ai-assistant/pages/WeaverAssistantEmbedPage"));
 const FrAiReportChatPage = lazy(() =>
     import("@/features/fr-ai-report/pages/FrAiReportChatPage").then((module) => ({ default: module.FrAiReportChatPage })),
 );
+const InsightLoginPage = lazy(() => import("@/app/insight").then((module) => ({ default: module.InsightLoginPage })));
 const InsightLayout = lazy(() => import("@/app/insight").then((module) => ({ default: module.InsightLayout })));
 const InsightDashboardPage = lazy(() => import("@/app/insight").then((module) => ({ default: module.DashboardPage })));
 const IntelligenceCenterPage = lazy(() => import("@/app/insight").then((module) => ({ default: module.IntelligenceCenterPage })));
@@ -43,6 +46,7 @@ const IntelligenceDetailPage = lazy(() => import("@/app/insight").then((module) 
 const CompanyArchivePage = lazy(() => import("@/app/insight").then((module) => ({ default: module.CompanyArchivePage })));
 const ReportCenterPage = lazy(() => import("@/app/insight").then((module) => ({ default: module.ReportCenterPage })));
 const DataSourceConfigPage = lazy(() => import("@/app/insight").then((module) => ({ default: module.DataSourceConfigPage })));
+const QualityOverviewPage = lazy(() => import("@/app/insight").then((module) => ({ default: module.QualityOverviewPage })));
 const SettingsPage = lazy(() => import("@/app/insight").then((module) => ({ default: module.SettingsPage })));
 
 const PageLoader = () => (
@@ -96,9 +100,10 @@ const RouteErrorPage = () => {
     );
 };
 
-const ProtectedRoute = ({ children }: { children: JSX.Element }) => {
+const ProtectedRoute = ({ children, redirectTo = "/login" }: { children: JSX.Element; redirectTo?: string }) => {
     const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
-    if (!isAuthenticated) return <Navigate to="/login" replace />;
+    const location = useLocation();
+    if (!isAuthenticated) return <Navigate to={redirectTo} replace state={{ from: location }} />;
     return children;
 };
 
@@ -120,6 +125,15 @@ const router = createBrowserRouter([
     {
         path: "/login",
         element: <LoginPage />,
+        errorElement: <RouteErrorPage />,
+    },
+    {
+        path: "/insight/login",
+        element: (
+            <Suspense fallback={<PageLoader />}>
+                <InsightLoginPage />
+            </Suspense>
+        ),
         errorElement: <RouteErrorPage />,
     },
     {
@@ -294,7 +308,7 @@ const router = createBrowserRouter([
     {
         path: "/insight",
         element: (
-            <ProtectedRoute>
+            <ProtectedRoute redirectTo="/insight/login">
                 <Suspense fallback={<PageLoader />}>
                     <InsightLayout />
                 </Suspense>
@@ -319,7 +333,7 @@ const router = createBrowserRouter([
                 ),
             },
             {
-                path: "intelligence/detail",
+                path: "intelligence/:id",
                 element: (
                     <Suspense fallback={<PageLoader />}>
                         <IntelligenceDetailPage />
@@ -342,16 +356,24 @@ const router = createBrowserRouter([
                     </Suspense>
                 ),
             },
-            {
-                path: "data-sources",
-                element: (
-                    <Suspense fallback={<PageLoader />}>
-                        <DataSourceConfigPage />
-                    </Suspense>
-                ),
-            },
-            {
-                path: "settings",
+                {
+                    path: "data-sources",
+                    element: (
+                        <Suspense fallback={<PageLoader />}>
+                            <DataSourceConfigPage />
+                        </Suspense>
+                    ),
+                },
+                {
+                    path: "quality",
+                    element: (
+                        <Suspense fallback={<PageLoader />}>
+                            <QualityOverviewPage />
+                        </Suspense>
+                    ),
+                },
+                {
+                    path: "settings",
                 element: (
                     <Suspense fallback={<PageLoader />}>
                         <SettingsPage />
@@ -374,6 +396,15 @@ const router = createBrowserRouter([
         element: (
             <Suspense fallback={<PageLoader />}>
                 <ContractSidecarPage />
+            </Suspense>
+        ),
+        errorElement: <RouteErrorPage />,
+    },
+    {
+        path: "/weaver/assistant/embed",
+        element: (
+            <Suspense fallback={<PageLoader />}>
+                <WeaverAssistantEmbedPage />
             </Suspense>
         ),
         errorElement: <RouteErrorPage />,

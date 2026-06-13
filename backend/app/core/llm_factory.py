@@ -269,6 +269,115 @@ class LLMFactory:
         return str(url)
 
     @classmethod
+    def describe_invocation_error(cls, error: Exception) -> str:
+        """把模型调用异常转换为可给业务接口返回的安全提示。"""
+        if cls._is_database_connection_error(error):
+            return "模型配置读取失败：数据库连接已断开，请稍后重试；如持续出现，请检查 PostgreSQL 服务状态并重启后端服务。"
+        if cls._is_connection_error(error):
+            return cls._describe_connection_error()
+
+        reason = str(error) or error.__class__.__name__
+        if "LLM_PROXY_MODE" in reason:
+            return f"模型服务代理配置不可用：{reason}"
+        if "Unknown scheme for proxy URL" in reason or "socks://" in reason:
+            return (
+                "模型服务代理配置不可用：请将代理地址从 socks:// 改为 socks5://，"
+                "或配置 LLM_PROXY_MODE=off 让模型调用忽略系统代理。"
+            )
+        return reason
+
+    @classmethod
+    def _is_database_connection_error(cls, error: Exception) -> bool:
+        for current in cls._iter_exception_chain(error):
+            name = current.__class__.__name__.lower()
+            module = current.__class__.__module__.lower()
+            reason = str(current).lower()
+            is_db_error = (
+                "sqlalchemy" in module
+                or "asyncpg" in module
+                or name in {"interfaceerror", "operationalerror", "dbapierror"}
+            )
+            if not is_db_error:
+                continue
+            if any(
+                token in reason
+                for token in (
+                    "connection is closed",
+                    "connection was closed",
+                    "server closed the connection",
+                    "connection reset",
+                    "connection terminated",
+                )
+            ):
+                return True
+        return False
+
+    @classmethod
+    def _is_connection_error(cls, error: Exception) -> bool:
+        for current in cls._iter_exception_chain(error):
+            name = current.__class__.__name__
+            module = current.__class__.__module__
+            if name in {"APIConnectionError", "ConnectError", "ConnectTimeout"}:
+                return True
+            if module.startswith(("httpx", "httpcore")) and "Connect" in name:
+                return True
+            if str(current).strip().lower() == "connection error.":
+                return True
+        return False
+
+    @staticmethod
+    def _iter_exception_chain(error: Exception):
+        seen: set[int] = set()
+        current: BaseException | None = error
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            yield current
+            current = current.__cause__ or current.__context__
+
+    @classmethod
+    def _describe_connection_error(cls) -> str:
+        mode = (settings.LLM_PROXY_MODE or "auto").strip().lower()
+        proxy_url = cls._active_proxy_url_for_message()
+        if proxy_url:
+            proxy_text = cls._redact_proxy_url(proxy_url)
+            local_note = ""
+            try:
+                host = httpx.URL(proxy_url).host
+            except Exception:
+                host = None
+            if host in {"127.0.0.1", "localhost", "::1"}:
+                local_note = (
+                    " 当前代理指向本机地址，如果后端运行在服务器或容器内，"
+                    "请确认该环境本身正在监听这个代理端口，或改成可从后端访问的代理地址。"
+                )
+            return (
+                f"模型服务网络连接失败。当前代理模式为 {mode}，代理地址为 {proxy_text}。"
+                f"{local_note}请检查 LLM_PROXY_MODE/LLM_PROXY_URL、系统代理环境变量和模型服务地址。"
+            )
+        return (
+            f"模型服务网络连接失败。当前代理模式为 {mode}，未检测到显式代理地址。"
+            "请检查模型服务 base_url、服务器出口网络，或按需配置 LLM_PROXY_URL。"
+        )
+
+    @classmethod
+    def _active_proxy_url_for_message(cls) -> str:
+        proxy_url = settings.LLM_PROXY_URL.strip() if settings.LLM_PROXY_URL else ""
+        if proxy_url:
+            return cls._normalize_proxy_url(proxy_url)
+        for key in (
+            "HTTPS_PROXY",
+            "HTTP_PROXY",
+            "ALL_PROXY",
+            "https_proxy",
+            "http_proxy",
+            "all_proxy",
+        ):
+            value = os.getenv(key)
+            if value:
+                return cls._normalize_proxy_url(value)
+        return ""
+
+    @classmethod
     def _get_circuit_breaker(cls, model_name: str) -> CircuitBreaker:
         """获取或创建模型的熔断器"""
         if model_name not in cls._circuit_breakers:

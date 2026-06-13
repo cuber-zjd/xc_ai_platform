@@ -518,7 +518,7 @@ function UserAssignmentDialog({ role, open, onOpenChange }: { role: Role, open: 
                                                 </div>
                                                 <div className={cn(
                                                     "w-4 h-4 rounded border flex items-center justify-center",
-                                                    isSelected ? "bg-zinc-900 border-zinc-900" : "border-zinc-300"
+                                                    isSelected ? "border-blue-600 bg-blue-600" : "border-zinc-300"
                                                 )}>
                                                     {isSelected && <Check size={12} className="text-white" />}
                                                 </div>
@@ -662,23 +662,23 @@ function AgentAssignmentDialog({ role, open, onOpenChange }: { role: Role, open:
                                         <div
                                             key={app.id}
                                             onClick={() => toggleAgent(app.id)}
-                                            className={cn(
-                                                "flex items-center justify-between p-4 rounded-xl border cursor-pointer transition-all duration-200",
-                                                selectedIds.includes(app.id)
-                                                    ? "bg-zinc-900 text-white border-zinc-900 shadow-lg shadow-zinc-200"
-                                                    : "bg-white border-zinc-100 hover:border-zinc-300 hover:bg-zinc-50"
-                                            )}
-                                        >
+                                                className={cn(
+                                                    "flex items-center justify-between p-4 rounded-xl border cursor-pointer transition-all duration-200",
+                                                    selectedIds.includes(app.id)
+                                                        ? "border-blue-200 bg-blue-50 text-blue-900 shadow-lg shadow-blue-100"
+                                                        : "bg-white border-zinc-100 hover:border-blue-200 hover:bg-blue-50/50"
+                                                )}
+                                            >
                                             <div className="flex items-center gap-3">
                                                 <div className={cn(
                                                     "w-10 h-10 rounded-lg flex items-center justify-center",
-                                                    selectedIds.includes(app.id) ? "bg-white/20" : "bg-zinc-100"
+                                                    selectedIds.includes(app.id) ? "bg-blue-600 text-white" : "bg-zinc-100"
                                                 )}>
                                                     <Shield size={20} />
                                                 </div>
                                                 <span className="font-semibold text-sm tracking-tight">{app.name}</span>
                                             </div>
-                                            {selectedIds.includes(app.id) && <Check size={18} className="text-white" />}
+                                            {selectedIds.includes(app.id) && <Check size={18} className="text-blue-600" />}
                                         </div>
                                     ))}
                                 </div>
@@ -692,7 +692,7 @@ function AgentAssignmentDialog({ role, open, onOpenChange }: { role: Role, open:
                     </div>
                     <Button variant="outline" onClick={() => onOpenChange(false)}>取消</Button>
                     <Button
-                        className="bg-zinc-900 hover:bg-zinc-800 rounded-xl px-8"
+                        className="rounded-xl bg-blue-600 px-8 hover:bg-blue-700"
                         onClick={() => assignMutation.mutate(selectedIds)}
                         disabled={assignMutation.isPending}
                     >

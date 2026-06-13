@@ -69,7 +69,7 @@ export function ChatInputArea({
             size="icon"
             onClick={handleSend}
             disabled={disabled || !text.trim()}
-            className="h-9 w-9 rounded-xl bg-zinc-900 text-zinc-50 hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200 transition-all active:scale-95"
+            className="h-9 w-9 rounded-xl bg-blue-600 text-white hover:bg-blue-700 transition-all active:scale-95"
           >
             <Send size={18} />
           </Button>

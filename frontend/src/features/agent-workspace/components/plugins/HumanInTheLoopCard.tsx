@@ -40,7 +40,7 @@ export function HumanInTheLoopCard({ data, onAction }: HumanInTheLoopCardProps) 
         <div className="flex flex-col gap-3">
           <div className="flex gap-3">
             <Button 
-              className="flex-1 h-12 rounded-2xl bg-zinc-900 text-zinc-50 hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-200 gap-2 font-semibold"
+              className="flex-1 h-12 rounded-2xl bg-blue-600 text-white hover:bg-blue-700 gap-2 font-semibold"
               onClick={() => onAction?.('approve')}
             >
               <Check size={18} />

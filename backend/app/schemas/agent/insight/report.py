@@ -1,0 +1,229 @@
+from datetime import datetime
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+from app.schemas.agent.insight.common import InsightBaseRead
+
+
+class InsightReportGenerateRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=300)
+    report_type: str = Field(default="专题报告", max_length=50)
+    template_code: str | None = Field(default=None, max_length=80)
+    company_ids: list[int] = Field(default_factory=list)
+    data_source_ids: list[int] = Field(default_factory=list)
+    intelligence_ids: list[int] = Field(default_factory=list)
+    folder_name: str | None = Field(default="P1企业档案测试素材", max_length=100)
+    period_start: datetime | None = None
+    period_end: datetime | None = None
+    max_materials: int = Field(default=60, ge=5, le=120)
+    generation_prompt: str | None = Field(default=None, max_length=3000)
+
+
+class InsightReportUpdateRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=300)
+    content_json: dict[str, Any] | None = None
+    summary: str | None = None
+    status: str | None = Field(default=None, max_length=30)
+    change_summary: str | None = Field(default=None, max_length=300)
+
+
+class InsightReportTemplateSection(BaseModel):
+    section_key: str
+    heading: str
+    description: str
+
+
+class InsightReportTemplateRead(BaseModel):
+    template_code: str
+    template_name: str
+    description: str
+    report_type: str
+    default_prompt: str
+    sections: list[InsightReportTemplateSection] = Field(default_factory=list)
+    structure_json: dict[str, Any] = Field(default_factory=dict)
+    template_kind: str = "document"
+    style_code: str | None = None
+    export_formats: list[str] = Field(default_factory=list)
+    source_file_name: str | None = None
+    source_file_type: str | None = None
+    source_file_size: int | None = None
+    scope: str = "system"
+    market_status: str = "not_listed"
+    market_category: str | None = None
+    market_description: str | None = None
+    cloned_from_template_id: int | None = None
+    published_at: datetime | None = None
+    published_by_user_id: int | None = None
+    owner_user_id: int | None = None
+    owner_dept_id: int | None = None
+    visibility_scope: str = "private"
+    editable: bool = False
+    id: int | None = None
+
+
+class InsightReportTemplateCreate(BaseModel):
+    template_name: str = Field(max_length=120)
+    description: str | None = Field(default=None, max_length=500)
+    report_type: str = Field(default="专题报告", max_length=50)
+    default_prompt: str = Field(max_length=3000)
+    sections: list[InsightReportTemplateSection] = Field(default_factory=list)
+    structure_json: dict[str, Any] | None = None
+    template_kind: str = Field(default="document", max_length=30)
+    style_code: str | None = Field(default=None, max_length=80)
+    export_formats: list[str] = Field(default_factory=list)
+    visibility_scope: str = Field(default="private", max_length=30)
+
+
+class InsightReportTemplateUpdate(BaseModel):
+    template_name: str | None = Field(default=None, max_length=120)
+    description: str | None = Field(default=None, max_length=500)
+    report_type: str | None = Field(default=None, max_length=50)
+    default_prompt: str | None = Field(default=None, max_length=3000)
+    sections: list[InsightReportTemplateSection] | None = None
+    structure_json: dict[str, Any] | None = None
+    template_kind: str | None = Field(default=None, max_length=30)
+    style_code: str | None = Field(default=None, max_length=80)
+    export_formats: list[str] | None = None
+    visibility_scope: str | None = Field(default=None, max_length=30)
+    market_status: str | None = Field(default=None, max_length=30)
+    market_category: str | None = Field(default=None, max_length=80)
+    market_description: str | None = Field(default=None, max_length=1000)
+    status: str | None = Field(default=None, max_length=30)
+
+
+class InsightReportTemplatePublishRequest(BaseModel):
+    market_category: str | None = Field(default=None, max_length=80)
+    market_description: str | None = Field(default=None, max_length=1000)
+
+
+class InsightReportTemplateCloneRequest(BaseModel):
+    template_name: str | None = Field(default=None, max_length=120)
+
+
+class InsightReportTemplateUploadResponse(BaseModel):
+    template: InsightReportTemplateRead
+    parsed_structure: dict[str, Any] = Field(default_factory=dict)
+    extracted_text_preview: str | None = None
+
+
+class InsightReportPreferenceRead(InsightBaseRead):
+    user_id: int
+    default_template_code: str | None = None
+    default_report_type: str
+    default_folder_name: str | None = None
+    default_max_materials: int
+    writing_stance: str
+    report_depth: str
+    citation_style: str
+    include_risks: bool
+    include_opportunities: bool
+    include_follow_up_questions: bool
+    custom_prompt_suffix: str | None = None
+    status: str
+
+
+class InsightReportPreferenceUpdate(BaseModel):
+    default_template_code: str | None = Field(default=None, max_length=80)
+    default_report_type: str | None = Field(default=None, max_length=50)
+    default_folder_name: str | None = Field(default=None, max_length=100)
+    default_max_materials: int | None = Field(default=None, ge=5, le=120)
+    writing_stance: str | None = Field(default=None, max_length=80)
+    report_depth: str | None = Field(default=None, max_length=50)
+    citation_style: str | None = Field(default=None, max_length=50)
+    include_risks: bool | None = None
+    include_opportunities: bool | None = None
+    include_follow_up_questions: bool | None = None
+    custom_prompt_suffix: str | None = Field(default=None, max_length=1500)
+
+
+class InsightReportMaterialRead(InsightBaseRead):
+    report_id: int
+    intelligence_id: int
+    section_key: str
+    sort_no: int
+    quote_text: str | None = None
+    source_url: str | None = None
+    source_title: str | None = None
+    selection_source: str
+    selection_reason: str | None = None
+    intelligence_title: str | None = None
+    intelligence_summary: str | None = None
+
+
+class InsightReportChartPoint(BaseModel):
+    label: str
+    value: int | float
+    key: str | None = None
+    percent: float | None = None
+
+
+class InsightReportChartRead(BaseModel):
+    chart_key: str
+    title: str
+    description: str | None = None
+    chart_type: str = Field(default="bar", max_length=30)
+    unit: str = Field(default="条", max_length=20)
+    points: list[InsightReportChartPoint] = Field(default_factory=list)
+
+
+class InsightReportVersionRead(InsightBaseRead):
+    report_id: int
+    version_no: int
+    content_json: dict[str, Any]
+    change_summary: str | None = None
+    created_by_user_id: int | None = None
+
+
+class InsightReportExportRequest(BaseModel):
+    export_format: str = Field(default="html", max_length=30)
+
+
+class InsightReportExportRead(InsightBaseRead):
+    export_uid: str
+    report_id: int
+    report_version_no: int
+    export_format: str
+    status: str
+    file_name: str | None = None
+    file_size: int | None = None
+    content_type: str | None = None
+    storage_backend: str
+    error_message: str | None = None
+    requested_by_user_id: int | None = None
+    finished_at: datetime | None = None
+
+
+class InsightReportRead(InsightBaseRead):
+    report_uid: str
+    title: str
+    report_type: str
+    period_start: datetime | None = None
+    period_end: datetime | None = None
+    company_id: int | None = None
+    company_name: str | None = None
+    content_json: dict[str, Any]
+    summary: str | None = None
+    status: str
+    version_no: int
+    material_count: int
+    owner_user_id: int | None = None
+    owner_dept_id: int | None = None
+    visibility_scope: str = "private"
+
+
+class InsightReportListItem(InsightReportRead):
+    pass
+
+
+class InsightReportDetail(InsightReportRead):
+    materials: list[InsightReportMaterialRead] = Field(default_factory=list)
+    versions: list[InsightReportVersionRead] = Field(default_factory=list)
+    charts: list[InsightReportChartRead] = Field(default_factory=list)
+
+
+class InsightReportGenerateResponse(BaseModel):
+    report: InsightReportDetail
+    task_id: int | None = None
+    used_material_count: int
+    generation_mode: str

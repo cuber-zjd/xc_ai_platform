@@ -10,10 +10,16 @@
 DATA: lt_dfies TYPE STANDARD TABLE OF dfies,
       ls_dfies TYPE dfies,
       lv_json  TYPE string,
+      lv_object_name TYPE string,
       lv_fieldtext TYPE string,
       lv_rollname TYPE string,
+      lv_leng TYPE i,
+      lv_decimals TYPE i,
       ls_json_line TYPE zsai_json_line.
 
+" 所有写入 JSON 字符串值的 SAP 文本都必须先调用本 FORM。
+" 否则字段描述里出现英文双引号、反斜杠、换行或制表符时，
+" Python 侧 json.loads 会报 JSON_PARSE_ERROR，本次 DDIC 结果不能作为证据。
 FORM escape_json CHANGING cv_text TYPE string.
   REPLACE ALL OCCURRENCES OF '\' IN cv_text WITH '\\'.
   REPLACE ALL OCCURRENCES OF '"' IN cv_text WITH '\"'.
@@ -42,22 +48,29 @@ CALL FUNCTION 'DDIF_FIELDINFO_GET'
     OTHERS         = 3.
 
 IF sy-subrc <> 0.
-  ls_json_line-line = |\{"success":false,"message":"未找到 DDIC 对象","object":"{ iv_object_name }"\}|.
+  lv_object_name = iv_object_name.
+  PERFORM escape_json CHANGING lv_object_name.
+  ls_json_line-line = |\{"success":false,"message":"未找到 DDIC 对象","object":"{ lv_object_name }"\}|.
   APPEND ls_json_line TO et_json_lines.
   RETURN.
 ENDIF.
 
-lv_json = |\{"success":true,"object":"{ iv_object_name }","fields":[|.
+lv_object_name = iv_object_name.
+PERFORM escape_json CHANGING lv_object_name.
+
+lv_json = |\{"success":true,"object":"{ lv_object_name }","fields":[|.
 LOOP AT lt_dfies INTO ls_dfies.
   IF sy-tabix > 1.
     lv_json = lv_json && ','.
   ENDIF.
   lv_rollname = ls_dfies-rollname.
   lv_fieldtext = ls_dfies-fieldtext.
+  lv_leng = ls_dfies-leng.
+  lv_decimals = ls_dfies-decimals.
   PERFORM escape_json CHANGING lv_rollname.
   PERFORM escape_json CHANGING lv_fieldtext.
   lv_json = lv_json &&
-    |\{"fieldname":"{ ls_dfies-fieldname }","rollname":"{ lv_rollname }","datatype":"{ ls_dfies-datatype }","leng":{ ls_dfies-leng },"decimals":{ ls_dfies-decimals },"ddtext":"{ lv_fieldtext }"\}|.
+    |\{"fieldname":"{ ls_dfies-fieldname }","rollname":"{ lv_rollname }","datatype":"{ ls_dfies-datatype }","leng":{ lv_leng },"decimals":{ lv_decimals },"ddtext":"{ lv_fieldtext }"\}|.
 ENDLOOP.
 lv_json = lv_json && ']}'.
 

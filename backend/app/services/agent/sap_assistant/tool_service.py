@@ -848,10 +848,11 @@ class SapToolService:
         if isinstance(data, dict):
             if data.get("JSON_PARSE_ERROR"):
                 detail = data.get("JSON_PARSE_ERROR_DETAIL") or data.get("JSON_PARSE_ERROR")
+                hint = data.get("JSON_PARSE_ERROR_HINT") or "请修复 SAP 侧 RFC JSON 字符串转义后重试。"
                 return (
                     f"{self._tool_label(tool_name)}返回的 JSON 无法解析：{detail}。"
                     "这通常是 SAP 侧 RFC 手工拼接 JSON 时未转义字段文本中的引号、反斜杠或控制字符导致；"
-                    "本次结果不能作为可用 DDIC/业务证据。"
+                    f"{hint}本次结果不能作为可用 DDIC/业务证据。"
                 )
             parsed = data.get("JSON_PARSED")
             if isinstance(parsed, dict) and parsed.get("success") is False:
@@ -913,7 +914,11 @@ class SapToolService:
         if not isinstance(data, dict):
             return {}
         if data.get("JSON_PARSE_ERROR"):
-            return {"errorType": "json_parse_error", "detail": data.get("JSON_PARSE_ERROR_DETAIL")}
+            return {
+                "errorType": "json_parse_error",
+                "detail": data.get("JSON_PARSE_ERROR_DETAIL"),
+                "hint": data.get("JSON_PARSE_ERROR_HINT"),
+            }
         parsed = data.get("JSON_PARSED")
         if not isinstance(parsed, dict) or parsed.get("success") is not False:
             return {}
