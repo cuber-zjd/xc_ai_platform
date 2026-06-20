@@ -49,6 +49,7 @@ class InsightSearchDiscoveryRequest(BaseModel):
     filter_prompt: str | None = Field(default=None, max_length=2000)
     enable_llm_filter: bool = False
     llm_min_score: float | None = Field(default=0.6, ge=0, le=1)
+    create_candidate_from_hits: bool = False
 
 
 class InsightSearchHitRead(BaseModel):

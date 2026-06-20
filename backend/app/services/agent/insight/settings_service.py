@@ -124,8 +124,22 @@ class InsightSettingsService:
                     name="HTML 导出",
                     status="ok",
                     description="已支持 HTML 导出记录、下载、失败落库和人工重试。",
-                    details=["HTML 为当前承诺交付格式", "PDF/DOCX/XLSX 套版导出仍在后续优化清单中"],
-                )
+                    details=["HTML 为当前基础交付格式", "PDF/DOCX 已支持通用报告导出", "XLSX 套版导出仍在后续优化清单中"],
+                ),
+                InsightSettingsStatusItem(
+                    key="pdf_export",
+                    name="PDF 导出",
+                    status="ok",
+                    description="已支持基于报告内容生成 PDF 文件，并写入导出记录供下载。",
+                    details=["PDF 导出复用报告查看权限", "当前为通用报告 PDF，不等同于 Word/Excel 上传模板套版"],
+                ),
+                InsightSettingsStatusItem(
+                    key="docx_export",
+                    name="DOCX 导出",
+                    status="ok",
+                    description="已支持基于报告内容生成可编辑 Word 文件，并写入导出记录供下载。",
+                    details=["DOCX 导出复用报告查看权限", "当前为通用 Word 报告，不等同于上传 DOCX 官方模板套版"],
+                ),
             ],
         )
 

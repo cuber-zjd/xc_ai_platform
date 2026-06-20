@@ -466,16 +466,15 @@ class LLMFactory:
             else:
                 model_kwargs["response_format"] = {"type": "json_object"}
 
-        # 思考模式处理 (兼容 DeepSeek 和 火山引擎)
-        if "extra_body" not in model_kwargs:
-            model_kwargs["extra_body"] = {}
+        # 思考模式处理 (兼容 DeepSeek 和火山引擎)
+        extra_body: dict[str, Any] = {}
 
         if enable_reasoning:
-            model_kwargs["extra_body"]["include_reasoning"] = True
-            model_kwargs["extra_body"]["thinking"] = {"type": "enabled"}
+            extra_body["include_reasoning"] = True
+            extra_body["thinking"] = {"type": "enabled"}
         else:
             # 显式关闭思考，提高响应速度 (火山引擎特有)
-            model_kwargs["extra_body"]["thinking"] = {"type": "disabled"}
+            extra_body["thinking"] = {"type": "disabled"}
 
         llm = ChatOpenAI(
             model=model_code,
@@ -487,6 +486,7 @@ class LLMFactory:
             stream_usage=True, # 确保流式输出时返回 token 统计
             callbacks=callbacks if callbacks else None,
             model_kwargs=model_kwargs,
+            extra_body=extra_body,
             **http_client_options,
         )
         return llm

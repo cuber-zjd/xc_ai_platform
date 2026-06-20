@@ -194,3 +194,86 @@ class InsightCandidatePromoteRequest(InsightCandidateReviewRequest):
 class InsightCandidateReviewResponse(BaseModel):
     candidate: InsightIntelligenceCandidateRead
     intelligence: InsightIntelligenceRead | None = None
+
+
+class InsightIntelligenceBulkActionRequest(BaseModel):
+    target_type: str = Field(default="intelligence", max_length=30)
+    candidate_ids: list[int] = Field(default_factory=list)
+    intelligence_ids: list[int] = Field(default_factory=list)
+    action: str = Field(..., min_length=1, max_length=50)
+    review_comment: str | None = Field(default=None, max_length=1000)
+    visibility_scope: str | None = Field(default=None, max_length=30)
+    importance_level: str | None = Field(default=None, max_length=20)
+    business_domain: str | None = Field(default=None, max_length=100)
+    pool_type: str | None = Field(default=None, max_length=30)
+    folder_name: str | None = Field(default=None, max_length=100)
+    tags: list[dict[str, Any]] | None = None
+    sentiment: str | None = Field(default=None, max_length=20)
+    status: str | None = Field(default=None, max_length=20)
+
+
+class InsightIntelligenceBulkActionResponse(BaseModel):
+    action: str
+    target_type: str
+    requested_count: int
+    success_count: int = 0
+    failed_count: int = 0
+    items: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class InsightAssistantChatRequest(BaseModel):
+    question: str = Field(..., min_length=1, max_length=4000)
+    keyword: str | None = Field(default=None, max_length=500)
+    company_id: int | None = None
+    sys_company_id: int | None = None
+    project_name: str | None = Field(default=None, max_length=200)
+    sentiment: str | None = Field(default=None, max_length=20)
+    tag: str | None = Field(default=None, max_length=100)
+    intelligence_type: str | None = Field(default=None, max_length=50)
+    data_source_id: int | None = None
+    date_from: datetime | None = None
+    date_to: datetime | None = None
+    limit: int = Field(default=12, ge=1, le=30)
+
+
+class InsightAssistantCitation(BaseModel):
+    intelligence_id: int
+    title: str
+    source_url: str | None = None
+    source_title: str | None = None
+    publish_time: datetime | None = None
+    summary: str | None = None
+
+
+class InsightAssistantChatResponse(BaseModel):
+    answer: str
+    citations: list[InsightAssistantCitation] = Field(default_factory=list)
+    evidence_count: int = 0
+    no_evidence: bool = False
+    generation_mode: str = "llm"
+
+
+class InsightDeepResearchRequest(InsightAssistantChatRequest):
+    save_report: bool = False
+    report_title: str | None = Field(default=None, max_length=200)
+
+
+class InsightEvidenceMatrixItem(BaseModel):
+    intelligence_id: int
+    title: str
+    evidence: str
+    source_url: str | None = None
+    publish_time: datetime | None = None
+
+
+class InsightDeepResearchResponse(BaseModel):
+    title: str
+    conclusion: str
+    findings: list[str] = Field(default_factory=list)
+    opportunities: list[str] = Field(default_factory=list)
+    risks: list[str] = Field(default_factory=list)
+    evidence_matrix: list[InsightEvidenceMatrixItem] = Field(default_factory=list)
+    follow_up_questions: list[str] = Field(default_factory=list)
+    citations: list[InsightAssistantCitation] = Field(default_factory=list)
+    report_id: int | None = None
+    generation_mode: str = "llm"

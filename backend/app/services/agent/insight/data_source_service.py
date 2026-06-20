@@ -1,7 +1,8 @@
+import asyncio
 from datetime import datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import func, or_
+from sqlalchemy import and_, exists, func, or_
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -9,10 +10,16 @@ from app.core.config import settings
 from app.models.agent.insight import InsightCompany, InsightDataSource, InsightTask, InsightTaskStatus
 from app.schemas.agent.insight.crawl import InsightManualUrlCrawlRequest, InsightSearchDiscoveryRequest
 from app.schemas.agent.insight.data_source import (
+    InsightDataSourceBatchCreateItem,
+    InsightDataSourceBatchCreateRequest,
+    InsightDataSourceBatchCreateResponse,
+    InsightDataSourceBulkActionRequest,
+    InsightDataSourceBulkActionResponse,
     InsightDataSourceCreate,
     InsightDataSourceExecuteRequest,
     InsightDataSourceExecuteResponse,
     InsightDataSourceFetchConfig,
+    InsightDataSourceGroupRead,
     InsightDataSourceRead,
     InsightDataSourceScheduleExecution,
     InsightDataSourceScheduleRunResponse,
@@ -28,7 +35,21 @@ from app.services.agent.insight.permission_service import insight_permission_ser
 
 
 class InsightDataSourceService:
-    allowed_source_types = {"baidu_news", "baidu_search", "bocha_news", "bocha_web", "multi_news", "official_site", "web_page"}
+    allowed_source_types = {
+        "baidu_news",
+        "baidu_search",
+        "bocha_news",
+        "bocha_web",
+        "multi_news",
+        "official_site",
+        "web_page",
+        "wechat_public_account",
+        "ecommerce_search",
+        "government_policy",
+        "finance_news",
+        "patent_search",
+        "industry_media",
+    }
     web_source_types = {"official_site", "web_page"}
     allowed_fetch_frequencies = {"manual", "15m", "hourly", "daily", "weekly", "cron"}
     allowed_statuses = {"enabled", "disabled"}
@@ -81,12 +102,15 @@ class InsightDataSourceService:
             row.update_time = datetime.now()
             await db.commit()
             try:
-                result = await self.execute_data_source(
-                    db,
-                    row.id or 0,
-                    InsightDataSourceExecuteRequest(),
-                    user_id,
-                    is_admin=True,
+                result = await asyncio.wait_for(
+                    self.execute_data_source(
+                        db,
+                        row.id or 0,
+                        InsightDataSourceExecuteRequest(),
+                        user_id,
+                        is_admin=True,
+                    ),
+                    timeout=self._schedule_source_timeout_seconds(row.fetch_config),
                 )
                 search_results = result.search_results or ([result.search_result] if result.search_result else [])
                 found_count = sum(len(item.hits) for item in search_results) or (1 if result.manual_result else 0)
@@ -285,6 +309,7 @@ class InsightDataSourceService:
                 is_admin=is_admin,
             )
         )
+        filters.append(await self._data_source_company_scope_filter(db, user_id=user_id, is_admin=is_admin))
 
         total = (await db.exec(select(func.count()).select_from(InsightDataSource).where(*filters))).one()
         statement = (
@@ -296,6 +321,188 @@ class InsightDataSourceService:
         )
         rows = list((await db.exec(statement)).all())
         return Page.create(items=[await self._to_read_with_company(db, row) for row in rows], total=total, page=page, size=size)
+
+    async def bulk_action(
+        self,
+        db: AsyncSession,
+        payload: InsightDataSourceBulkActionRequest,
+        *,
+        user_id: int | None,
+        is_admin: bool,
+    ) -> InsightDataSourceBulkActionResponse:
+        action = payload.action.strip()
+        allowed_actions = {"enable", "disable", "delete", "set_schedule", "set_visibility", "patch_config", "execute"}
+        if action not in allowed_actions:
+            raise ValueError(f"批量动作不支持：{action}")
+        response = InsightDataSourceBulkActionResponse(
+            action=action,
+            requested_count=len(payload.data_source_ids),
+        )
+        for data_source_id in payload.data_source_ids:
+            try:
+                if action == "execute":
+                    result = await self.execute_data_source(
+                        db,
+                        data_source_id,
+                        InsightDataSourceExecuteRequest(crawl_top_n=payload.execute_crawl_top_n),
+                        user_id,
+                        is_admin=is_admin,
+                    )
+                    candidate_count = sum(len(item.candidates) for item in result.search_results)
+                    response.items.append(
+                        {
+                            "data_source_id": data_source_id,
+                            "status": "success",
+                            "candidate_count": candidate_count,
+                            "execution_errors": result.execution_errors,
+                        }
+                    )
+                    response.success_count += 1
+                    continue
+
+                row = await self._get_data_source(db, data_source_id, user_id=user_id, is_admin=is_admin, permission="edit")
+                if action == "enable":
+                    row.status = "enabled"
+                    row.schedule_enabled = self._resolve_schedule_enabled(row.fetch_frequency, row.schedule_enabled)
+                elif action == "disable":
+                    row.status = "disabled"
+                    row.schedule_enabled = False
+                    row.next_run_time = None
+                elif action == "delete":
+                    row.is_deleted = 1
+                    row.status = "deleted"
+                    row.schedule_enabled = False
+                    row.next_run_time = None
+                elif action == "set_schedule":
+                    if payload.fetch_frequency:
+                        row.fetch_frequency = payload.fetch_frequency
+                    if payload.schedule_enabled is not None:
+                        row.schedule_enabled = self._resolve_schedule_enabled(row.fetch_frequency, payload.schedule_enabled)
+                    row.next_run_time = self._calculate_next_run_time(row.fetch_frequency, row.fetch_config, datetime.now()) if row.schedule_enabled else None
+                elif action == "set_visibility":
+                    if not payload.visibility_scope:
+                        raise ValueError("批量设置权限范围时必须提供 visibility_scope")
+                    row.visibility_scope = payload.visibility_scope
+                elif action == "patch_config":
+                    config = self._normalize_fetch_config(row.fetch_config)
+                    config.update(payload.fetch_config_patch or {})
+                    row.fetch_config = self._normalize_fetch_config(config)
+                    if payload.fetch_frequency:
+                        row.fetch_frequency = payload.fetch_frequency
+                    if payload.schedule_enabled is not None:
+                        row.schedule_enabled = self._resolve_schedule_enabled(row.fetch_frequency, payload.schedule_enabled)
+                    if payload.visibility_scope:
+                        row.visibility_scope = payload.visibility_scope
+                    row.next_run_time = self._calculate_next_run_time(row.fetch_frequency, row.fetch_config, datetime.now()) if row.schedule_enabled else None
+                self._validate_data_source_config(
+                    source_type=row.source_type,
+                    base_url=row.base_url,
+                    fetch_frequency=row.fetch_frequency,
+                    fetch_config=row.fetch_config,
+                    schedule_enabled=row.schedule_enabled,
+                    status=row.status if row.status != "deleted" else "disabled",
+                    visibility_scope=row.visibility_scope,
+                )
+                row.update_by = str(user_id) if user_id else None
+                row.update_time = datetime.now()
+                await db.commit()
+                response.items.append({"data_source_id": data_source_id, "status": "success"})
+                response.success_count += 1
+            except Exception as exc:
+                await db.rollback()
+                response.items.append({"data_source_id": data_source_id, "status": "failed", "message": str(exc)})
+                response.failed_count += 1
+        return response
+
+    async def list_data_source_groups(
+        self,
+        db: AsyncSession,
+        *,
+        keyword: str | None,
+        source_type: str | None,
+        status: str | None,
+        user_id: int,
+        is_admin: bool,
+    ) -> list[InsightDataSourceGroupRead]:
+        filters = [InsightDataSource.is_deleted == 0]
+        if keyword:
+            like_keyword = f"%{keyword.strip()}%"
+            filters.append(
+                or_(
+                    InsightDataSource.source_name.ilike(like_keyword),
+                    InsightDataSource.source_code.ilike(like_keyword),
+                    InsightDataSource.base_url.ilike(like_keyword),
+                    InsightCompany.name.ilike(like_keyword),
+                    InsightCompany.short_name.ilike(like_keyword),
+                )
+            )
+        if source_type:
+            filters.append(InsightDataSource.source_type == source_type)
+        if status:
+            filters.append(InsightDataSource.status == status)
+        filters.append(
+            await insight_permission_service.visibility_filter_for_user(
+                db,
+                InsightDataSource,
+                target_type="data_source",
+                user_id=user_id,
+                is_admin=is_admin,
+            )
+        )
+        filters.append(await self._data_source_company_scope_filter(db, user_id=user_id, is_admin=is_admin))
+        rows = list(
+            (
+                await db.exec(
+                    select(InsightDataSource, InsightCompany)
+                    .join(InsightCompany, InsightCompany.id == InsightDataSource.company_id, isouter=True)
+                    .where(*filters)
+                    .order_by(InsightCompany.name.asc().nullslast(), InsightDataSource.source_type.asc(), InsightDataSource.update_time.desc())
+                )
+            ).all()
+        )
+        groups: dict[tuple[int | None, str], dict] = {}
+        for row, company in rows:
+            key = (row.company_id, row.source_type)
+            group = groups.setdefault(
+                key,
+                {
+                    "company": company,
+                    "source_type": row.source_type,
+                    "rows": [],
+                },
+            )
+            group["rows"].append(row)
+
+        result: list[InsightDataSourceGroupRead] = []
+        for (company_id, group_source_type), group in groups.items():
+            group_rows: list[InsightDataSource] = group["rows"]
+            company = group["company"]
+            visibility_scopes = sorted({row.visibility_scope for row in group_rows if row.visibility_scope})
+            result.append(
+                InsightDataSourceGroupRead(
+                    group_key=f"{company_id or 'none'}:{group_source_type}",
+                    company_id=company_id,
+                    company_name=company.name if company else "未关联企业",
+                    company_short_name=company.short_name if company else None,
+                    sys_company_id=company.sys_company_id if company else None,
+                    source_type=group_source_type,
+                    source_type_label=self._source_type_label(group_source_type),
+                    total_count=len(group_rows),
+                    enabled_count=sum(1 for row in group_rows if row.status == "enabled"),
+                    disabled_count=sum(1 for row in group_rows if row.status == "disabled"),
+                    scheduled_count=sum(1 for row in group_rows if row.schedule_enabled),
+                    llm_filter_count=sum(1 for row in group_rows if bool((row.fetch_config or {}).get("enable_llm_filter"))),
+                    auto_review_count=sum(1 for row in group_rows if str((row.fetch_config or {}).get("auto_review_mode") or "off") != "off"),
+                    failed_count=sum(1 for row in group_rows if row.last_schedule_status == "failed"),
+                    paused_count=sum(1 for row in group_rows if row.last_schedule_status == "paused" or bool(row.auto_paused_reason)),
+                    latest_success_time=max((row.last_success_time for row in group_rows if row.last_success_time), default=None),
+                    latest_failure_time=max((row.last_failure_time for row in group_rows if row.last_failure_time), default=None),
+                    next_run_time=min((row.next_run_time for row in group_rows if row.next_run_time), default=None),
+                    visibility_scopes=visibility_scopes,
+                    data_source_ids=[row.id for row in group_rows if row.id is not None],
+                )
+            )
+        return sorted(result, key=lambda item: (item.company_name or "", item.source_type_label))
 
     async def get_data_source(
         self,
@@ -320,6 +527,8 @@ class InsightDataSourceService:
         db: AsyncSession,
         payload: InsightDataSourceCreate,
         user_id: int | None,
+        *,
+        is_admin: bool = False,
     ) -> InsightDataSourceRead:
         source_code = payload.source_code or f"src_{uuid4().hex[:16]}"
         existing = (await db.exec(select(InsightDataSource).where(InsightDataSource.source_code == source_code))).first()
@@ -335,6 +544,7 @@ class InsightDataSourceService:
             status=payload.status,
             visibility_scope=payload.visibility_scope,
         )
+        await self._ensure_company_access(db, payload.company_id, user_id=user_id, is_admin=is_admin)
         row = InsightDataSource(
             source_code=source_code,
             source_name=payload.source_name,
@@ -360,6 +570,181 @@ class InsightDataSourceService:
         await db.refresh(row)
         return await self._to_read_with_company(db, row)
 
+    async def batch_create_data_sources(
+        self,
+        db: AsyncSession,
+        payload: InsightDataSourceBatchCreateRequest,
+        *,
+        user_id: int,
+        is_admin: bool,
+    ) -> InsightDataSourceBatchCreateResponse:
+        company_ids = self._dedupe_ints(payload.company_ids)
+        source_types = self._dedupe_keywords(payload.source_types)
+        response = InsightDataSourceBatchCreateResponse(
+            requested_company_count=len(company_ids),
+            requested_type_count=len(source_types),
+            requested_count=len(company_ids) * len(source_types),
+        )
+        companies = list(
+            (
+                await db.exec(
+                    select(InsightCompany)
+                    .where(InsightCompany.id.in_(company_ids), InsightCompany.is_deleted == 0, InsightCompany.status == "active")
+                    .order_by(InsightCompany.name.asc())
+                )
+            ).all()
+        )
+        company_map = {company.id: company for company in companies if company.id is not None}
+        user_sys_company_id = await insight_permission_service.resolve_user_sys_company_id(db, user_id) if not is_admin else None
+
+        for company_id in company_ids:
+            company = company_map.get(company_id)
+            if not company:
+                response.items.append(
+                    InsightDataSourceBatchCreateItem(
+                        company_id=company_id,
+                        company_name="",
+                        source_type="",
+                        source_name="",
+                        source_code="",
+                        status="failed",
+                        message="企业不存在或已停用",
+                    )
+                )
+                response.failed_count += len(source_types) or 1
+                continue
+            if not is_admin and company.sys_company_id != user_sys_company_id:
+                response.items.append(
+                    InsightDataSourceBatchCreateItem(
+                        company_id=company.id or company_id,
+                        company_name=company.name,
+                        source_type="",
+                        source_name="",
+                        source_code="",
+                        status="failed",
+                        message="无权为其他所属公司的企业创建数据源",
+                    )
+                )
+                response.failed_count += len(source_types) or 1
+                continue
+            for source_type in source_types:
+                source_name = f"{company.short_name or company.name}-{self._source_type_label(source_type)}"
+                source_code = self._batch_source_code(company.id or 0, source_type)
+                try:
+                    if source_type not in self.allowed_source_types:
+                        raise ValueError(f"数据源类型不支持：{source_type}")
+                    if source_type in self.web_source_types:
+                        raise ValueError("官网/通用网页需要明确 URL，不能通过批量标准源自动生成")
+
+                    config = self._build_batch_fetch_config(payload, company, source_type)
+                    self._validate_data_source_config(
+                        source_type=source_type,
+                        base_url=None,
+                        fetch_frequency=payload.fetch_frequency,
+                        fetch_config=config,
+                        schedule_enabled=None,
+                        status=payload.status,
+                        visibility_scope=payload.visibility_scope,
+                    )
+                    existing = (await db.exec(select(InsightDataSource).where(InsightDataSource.source_code == source_code))).first()
+                    if existing and existing.is_deleted == 0 and not payload.update_existing:
+                        response.items.append(
+                            InsightDataSourceBatchCreateItem(
+                                company_id=company.id or company_id,
+                                company_name=company.name,
+                                source_type=source_type,
+                                source_name=existing.source_name,
+                                source_code=source_code,
+                                status="skipped",
+                                data_source_id=existing.id,
+                                message="已存在，未更新",
+                            )
+                        )
+                        response.skipped_count += 1
+                        continue
+
+                    if existing:
+                        existing.source_name = source_name
+                        existing.source_type = source_type
+                        existing.base_url = None
+                        existing.company_id = company.id
+                        existing.fetch_frequency = payload.fetch_frequency
+                        existing.fetch_config = config
+                        existing.schedule_enabled = self._resolve_schedule_enabled(payload.fetch_frequency, None)
+                        existing.next_run_time = self._calculate_next_run_time(payload.fetch_frequency, config, datetime.now()) if existing.schedule_enabled else None
+                        existing.last_schedule_status = "waiting" if existing.schedule_enabled else existing.last_schedule_status
+                        existing.visibility_scope = payload.visibility_scope
+                        existing.status = payload.status
+                        existing.is_deleted = 0
+                        existing.update_by = str(user_id)
+                        existing.update_time = datetime.now()
+                        await db.commit()
+                        await db.refresh(existing)
+                        response.items.append(
+                            InsightDataSourceBatchCreateItem(
+                                company_id=company.id or company_id,
+                                company_name=company.name,
+                                source_type=source_type,
+                                source_name=source_name,
+                                source_code=source_code,
+                                status="updated",
+                                data_source_id=existing.id,
+                                message="已更新标准配置",
+                            )
+                        )
+                        response.updated_count += 1
+                        continue
+
+                    row = InsightDataSource(
+                        source_code=source_code,
+                        source_name=source_name,
+                        source_type=source_type,
+                        company_id=company.id,
+                        fetch_frequency=payload.fetch_frequency,
+                        fetch_config=config,
+                        schedule_enabled=self._resolve_schedule_enabled(payload.fetch_frequency, None),
+                        next_run_time=self._calculate_next_run_time(payload.fetch_frequency, config, datetime.now())
+                        if self._resolve_schedule_enabled(payload.fetch_frequency, None)
+                        else None,
+                        last_schedule_status="waiting" if self._resolve_schedule_enabled(payload.fetch_frequency, None) else None,
+                        owner_user_id=user_id,
+                        visibility_scope=payload.visibility_scope,
+                        status=payload.status,
+                        create_by=str(user_id),
+                        update_by=str(user_id),
+                    )
+                    db.add(row)
+                    await db.commit()
+                    await db.refresh(row)
+                    response.items.append(
+                        InsightDataSourceBatchCreateItem(
+                            company_id=company.id or company_id,
+                            company_name=company.name,
+                            source_type=source_type,
+                            source_name=source_name,
+                            source_code=source_code,
+                            status="created",
+                            data_source_id=row.id,
+                            message="已创建",
+                        )
+                    )
+                    response.created_count += 1
+                except Exception as exc:
+                    await db.rollback()
+                    response.items.append(
+                        InsightDataSourceBatchCreateItem(
+                            company_id=company.id or company_id,
+                            company_name=company.name,
+                            source_type=source_type,
+                            source_name=source_name,
+                            source_code=source_code,
+                            status="failed",
+                            message=str(exc),
+                        )
+                    )
+                    response.failed_count += 1
+        return response
+
     async def update_data_source(
         self,
         db: AsyncSession,
@@ -373,6 +758,8 @@ class InsightDataSourceService:
         data = payload.model_dump(exclude_unset=True)
         if "fetch_config" in data:
             data["fetch_config"] = self._normalize_fetch_config(data["fetch_config"])
+        if "company_id" in data:
+            await self._ensure_company_access(db, data.get("company_id"), user_id=user_id, is_admin=is_admin)
         self._validate_data_source_config(
             source_type=data.get("source_type", row.source_type),
             base_url=data.get("base_url", row.base_url),
@@ -460,7 +847,12 @@ class InsightDataSourceService:
         if not keywords:
             raise ValueError("搜索类数据源必须至少配置一个关键词")
         max_results = int(config.get("max_results") or 8)
-        crawl_top_n = payload.crawl_top_n if payload.crawl_top_n is not None else int(config.get("crawl_top_n") or max_results)
+        configured_crawl_top_n = config.get("crawl_top_n")
+        crawl_top_n = (
+            payload.crawl_top_n
+            if payload.crawl_top_n is not None
+            else int(configured_crawl_top_n if configured_crawl_top_n is not None else max_results)
+        )
         crawl_top_n = min(max(crawl_top_n, 0), max_results)
         search_results = []
         execution_errors: list[dict[str, str]] = []
@@ -481,6 +873,7 @@ class InsightDataSourceService:
                             filter_prompt=config.get("filter_prompt"),
                             enable_llm_filter=bool(config.get("enable_llm_filter")),
                             llm_min_score=float(config.get("llm_min_score") if config.get("llm_min_score") is not None else 0.6),
+                            create_candidate_from_hits=bool(config.get("create_candidate_from_hits")),
                         ),
                         user_id,
                         is_admin=is_admin,
@@ -664,10 +1057,47 @@ class InsightDataSourceService:
                 permission=permission,
             )
         )
+        filters.append(await self._data_source_company_scope_filter(db, user_id=user_id, is_admin=is_admin))
         row = (await db.exec(select(InsightDataSource).where(*filters))).first()
         if not row:
             raise ValueError("数据源不存在或无权访问")
         return row
+
+    async def _data_source_company_scope_filter(self, db: AsyncSession, *, user_id: int | None, is_admin: bool):
+        if is_admin:
+            return True
+        sys_company_id = await insight_permission_service.resolve_user_sys_company_id(db, user_id)
+        if sys_company_id is None:
+            return InsightDataSource.company_id.is_(None)
+        return or_(
+            InsightDataSource.company_id.is_(None),
+            exists()
+            .where(
+                and_(
+                    InsightCompany.id == InsightDataSource.company_id,
+                    InsightCompany.sys_company_id == sys_company_id,
+                    InsightCompany.is_deleted == 0,
+                )
+            )
+            .correlate(InsightDataSource),
+        )
+
+    async def _ensure_company_access(self, db: AsyncSession, company_id: int | None, *, user_id: int | None, is_admin: bool) -> None:
+        if is_admin or company_id is None:
+            return
+        sys_company_id = await insight_permission_service.resolve_user_sys_company_id(db, user_id)
+        company = (
+            await db.exec(
+                select(InsightCompany).where(
+                    InsightCompany.id == company_id,
+                    InsightCompany.is_deleted == 0,
+                )
+            )
+        ).first()
+        if not company:
+            raise ValueError("关联企业不存在")
+        if sys_company_id is None or company.sys_company_id != sys_company_id:
+            raise ValueError("无权为其他所属公司的企业配置数据源")
 
     def _channels_for_source_type(self, source_type: str) -> list[str]:
         mapping = {
@@ -676,8 +1106,118 @@ class InsightDataSourceService:
             "bocha_news": ["bocha_news"],
             "bocha_web": ["bocha"],
             "multi_news": ["baidu_news", "bocha_news"],
+            "wechat_public_account": ["baidu_news", "bocha_news"],
+            "ecommerce_search": ["baidu", "bocha"],
+            "government_policy": ["baidu_news", "bocha"],
+            "finance_news": ["baidu_news", "bocha_news"],
+            "patent_search": ["baidu", "bocha"],
+            "industry_media": ["baidu_news", "bocha_news"],
         }
         return mapping.get(source_type, ["baidu_news"])
+
+    def _build_batch_fetch_config(
+        self,
+        payload: InsightDataSourceBatchCreateRequest,
+        company: InsightCompany,
+        source_type: str,
+    ) -> dict:
+        company_name = company.name
+        company_short_name = company.short_name or company.name
+        keyword_template = (payload.keyword_template or "").strip()
+        if keyword_template:
+            keywords = [
+                keyword_template
+                .replace("{企业}", company_name)
+                .replace("{简称}", company_short_name)
+                .replace("{类型}", self._source_type_label(source_type))
+            ]
+        else:
+            keywords = self._default_keywords_for_source_type(company_name, company_short_name, source_type)
+        config = InsightDataSourceFetchConfig(
+            keywords=keywords,
+            include_keywords=payload.include_keywords,
+            exclude_keywords=payload.exclude_keywords,
+            max_results=payload.max_results,
+            crawl_top_n=payload.crawl_top_n,
+            freshness=payload.freshness,
+            schedule_type=payload.fetch_frequency,
+            enable_llm_filter=payload.enable_llm_filter,
+            filter_prompt=payload.filter_prompt or self._default_filter_prompt(source_type),
+            llm_min_score=0.6,
+            llm_failure_policy="keep",
+            auto_review_mode=payload.auto_review_mode,
+            auto_review_min_confidence=payload.auto_review_min_confidence,
+            auto_add_to_report_pool=payload.auto_add_to_report_pool,
+            auto_report_folder=payload.auto_report_folder,
+            create_candidate_from_hits=True,
+            extra={
+                "batch_generated": True,
+                "company_id": company.id,
+                "source_type_label": self._source_type_label(source_type),
+                "generated_strategy": "multi_company_multi_type",
+            },
+        ).model_dump()
+        return self._normalize_fetch_config(config)
+
+    def _default_keywords_for_source_type(self, company_name: str, company_short_name: str, source_type: str) -> list[str]:
+        name = company_short_name or company_name
+        mapping = {
+            "multi_news": [f"{name} 新品 OR 市场 OR 合作 OR 扩产 OR 价格"],
+            "wechat_public_account": [f"{name} 公众号 新品 市场 合作"],
+            "ecommerce_search": [f"{name} 新品 旗舰店 配料 规格 价格"],
+            "government_policy": [f"{company_name} 政策 公示 许可 监管 标准"],
+            "finance_news": [f"{company_name} 业绩 投资 融资 财报 经营"],
+            "patent_search": [f"{company_name} 专利 技术 配方 工艺"],
+            "industry_media": [f"{name} 食品饮料 行业 新品 趋势"],
+            "baidu_news": [f"{name} 新闻 新品 市场"],
+            "baidu_search": [f"{name} 新品 市场 竞品"],
+            "bocha_news": [f"{name} 新闻 新品 市场"],
+            "bocha_web": [f"{name} 新品 市场 竞品"],
+        }
+        return mapping.get(source_type, [f"{name} 新品 市场 动态"])
+
+    def _default_filter_prompt(self, source_type: str) -> str:
+        base = "保留与食品饮料、功能糖、淀粉糖、植物蛋白、配料原料、客户/竞对动态、政策法规、专利技术、研发营销机会相关的公开信息；过滤验证码、图片搜索、百科泛信息、无业务价值页面和明显跨行业噪声。"
+        additions = {
+            "ecommerce_search": "重点关注新品、规格、配料表、价格带、卖点、渠道和用户反馈。",
+            "patent_search": "重点关注专利标题、申请人、技术方案、配方工艺和研发方向。",
+            "government_policy": "重点关注政策、标准、监管、公示、许可和产业扶持。",
+            "finance_news": "重点关注经营变化、财务表现、投融资、产能、价格和供应链。",
+            "wechat_public_account": "重点关注品牌官方或行业号发布的新品、活动、渠道和研发营销信息。",
+            "industry_media": "重点关注行业趋势、竞对动作、产品创新和渠道变化。",
+        }
+        return f"{base}{additions.get(source_type, '')}"
+
+    def _source_type_label(self, source_type: str) -> str:
+        labels = {
+            "baidu_news": "百度资讯",
+            "baidu_search": "百度搜索",
+            "bocha_news": "博查资讯",
+            "bocha_web": "博查网页",
+            "multi_news": "综合动态",
+            "wechat_public_account": "公众号",
+            "ecommerce_search": "电商新品",
+            "government_policy": "政策监管",
+            "finance_news": "经营财经",
+            "patent_search": "专利技术",
+            "industry_media": "行业媒体",
+            "official_site": "官网",
+            "web_page": "网页",
+        }
+        return labels.get(source_type, source_type)
+
+    def _batch_source_code(self, company_id: int, source_type: str) -> str:
+        return f"batch_{company_id}_{source_type}"[:64]
+
+    def _dedupe_ints(self, values: list[int]) -> list[int]:
+        result: list[int] = []
+        seen: set[int] = set()
+        for value in values:
+            if value in seen:
+                continue
+            seen.add(value)
+            result.append(value)
+        return result
 
     def _resolve_schedule_enabled(self, fetch_frequency: str | None, value: bool | None) -> bool:
         if value is not None:
@@ -703,6 +1243,17 @@ class InsightDataSourceService:
             cron_expression = (fetch_config or {}).get("cron_expression")
             return self._next_cron_time(str(cron_expression or ""), base_time) or (base_time + timedelta(days=1))
         return base_time + timedelta(days=1)
+
+    def _schedule_source_timeout_seconds(self, fetch_config: dict | None) -> int:
+        config = fetch_config or {}
+        keywords = self._string_list(config.get("keywords"))
+        keyword_count = max(1, min(len(keywords), 5))
+        max_results = min(max(int(config.get("max_results") or 4), 1), 20)
+        crawl_top_n = int(config.get("crawl_top_n") if config.get("crawl_top_n") is not None else max_results)
+        per_keyword = settings.INSIGHT_SEARCH_TIMEOUT_SECONDS + 10
+        if crawl_top_n > 0:
+            per_keyword += min(crawl_top_n, max_results) * (settings.INSIGHT_FIRECRAWL_TIMEOUT_SECONDS + 5)
+        return max(45, min(keyword_count * per_keyword, 240))
 
     def _next_cron_time(self, cron_expression: str, base_time: datetime) -> datetime | None:
         parts = cron_expression.strip().split()

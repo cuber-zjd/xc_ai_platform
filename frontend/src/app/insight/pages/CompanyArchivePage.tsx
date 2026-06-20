@@ -40,16 +40,29 @@ const monitorLevelOptions = [
 export function CompanyArchivePage() {
     const [keywordInput, setKeywordInput] = useState("");
     const [keyword, setKeyword] = useState("");
+    const [sysCompanyFilter, setSysCompanyFilter] = useState("");
     const [selectedCompanyId, setSelectedCompanyId] = useState<number | null>(null);
     const [createOpen, setCreateOpen] = useState(false);
     const [importOpen, setImportOpen] = useState(false);
     const [importResult, setImportResult] = useState<InsightCompanyImportResponse | null>(null);
+    const [selectorOpen, setSelectorOpen] = useState(false);
     const [accessOpen, setAccessOpen] = useState(false);
+    const [bulkAccessOpen, setBulkAccessOpen] = useState(false);
+    const [selectedCompanyIds, setSelectedCompanyIds] = useState<number[]>([]);
+    const [companyPage, setCompanyPage] = useState(1);
     const importInputRef = useRef<HTMLInputElement | null>(null);
-    const companiesQuery = useInsightCompanies({ page: 1, size: 50, keyword: keyword || undefined });
+    const companiesQuery = useInsightCompanies({
+        page: companyPage,
+        size: 20,
+        keyword: keyword || undefined,
+        sys_company_id: parseOptionalNumber(sysCompanyFilter) ?? undefined,
+    });
     const companies = useMemo(() => companiesQuery.data?.items ?? [], [companiesQuery.data?.items]);
-    const selectedCompany = companies.find((company) => company.id === selectedCompanyId) ?? companies[0] ?? null;
-    const detailQuery = useInsightCompanyDetail(selectedCompany?.id ?? null);
+    const totalCompanies = companiesQuery.data?.total ?? 0;
+    const totalCompanyPages = Math.max(1, Math.ceil(totalCompanies / 20));
+    const effectiveSelectedCompanyId = selectedCompanyId ?? companies[0]?.id ?? null;
+    const selectedCompany = companies.find((company) => company.id === effectiveSelectedCompanyId) ?? null;
+    const detailQuery = useInsightCompanyDetail(effectiveSelectedCompanyId);
     const createMutation = useInsightCreateCompany();
     const importMutation = useInsightImportCompanies();
     const systemCompaniesQuery = useInsightSystemCompanies();
@@ -126,6 +139,15 @@ export function CompanyArchivePage() {
                         type="button"
                         variant="outline"
                         className="h-10 rounded-xl border-slate-200 bg-white px-5 text-blue-700"
+                        onClick={() => setSelectorOpen(true)}
+                    >
+                        <Building2 className="size-4" />
+                        选择企业
+                    </Button>
+                    <Button
+                        type="button"
+                        variant="outline"
+                        className="h-10 rounded-xl border-slate-200 bg-white px-5 text-blue-700"
                         onClick={() => {
                             setImportResult(null);
                             setImportOpen(true);
@@ -141,59 +163,7 @@ export function CompanyArchivePage() {
                 </div>
             </div>
 
-            <div className="grid min-h-0 gap-4 2xl:grid-cols-[360px_minmax(0,1fr)]">
-                <DemoCard className="flex min-h-0 min-w-0 flex-col p-4 2xl:max-h-[calc(100dvh-12rem)]">
-                    <div className="relative mb-4">
-                        <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
-                        <Input
-                            className="h-11 rounded-xl border-slate-200 bg-white pl-10 shadow-none"
-                            placeholder="搜索企业、简称、行业"
-                            value={keywordInput}
-                            onChange={(event) => setKeywordInput(event.target.value)}
-                            onKeyDown={(event) => {
-                                if (event.key === "Enter") {
-                                    setKeyword(keywordInput.trim());
-                                }
-                            }}
-                        />
-                    </div>
-                    <div className="mb-4 insight-action-cluster justify-start">
-                        <Button className="h-9 rounded-lg px-4" onClick={() => setKeyword(keywordInput.trim())}>搜索</Button>
-                        <Button
-                            variant="ghost"
-                            className="h-9 rounded-lg text-slate-600"
-                            onClick={() => {
-                                setKeyword("");
-                                setKeywordInput("");
-                            }}
-                        >
-                            重置
-                        </Button>
-                    </div>
-                    <div className="min-h-0 space-y-2 overflow-y-auto pr-1">
-                        {companies.map((company) => (
-                            <CompanyListButton
-                                key={company.id}
-                                company={company}
-                                active={company.id === selectedCompany?.id}
-                                onClick={() => setSelectedCompanyId(company.id)}
-                            />
-                        ))}
-                        {companiesQuery.isLoading ? (
-                            <div className="flex items-center justify-center gap-2 rounded-xl border border-slate-100 bg-slate-50 px-4 py-10 text-sm font-semibold text-slate-500">
-                                <Loader2 className="size-4 animate-spin" />
-                                正在加载企业档案
-                            </div>
-                        ) : null}
-                        {!companiesQuery.isLoading && companies.length === 0 ? (
-                            <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-10 text-center text-sm font-semibold text-slate-500">
-                                暂无企业档案，先新增一家企业，再把数据源关联过去。
-                            </div>
-                        ) : null}
-                    </div>
-                </DemoCard>
-
-                {detail ? (
+            {detail ? (
                     <div className="space-y-4">
                         <DemoCard className="p-4 sm:p-6">
                             <div className="flex flex-col justify-between gap-5 lg:flex-row lg:items-start">
@@ -287,19 +257,23 @@ export function CompanyArchivePage() {
                             <div className="space-y-4">
                                 <DemoCard className="p-5">
                                     <SectionTitle title="情报类型分布" />
-                                    <div className="space-y-3">
-                                        {(detail.type_distribution.length ? detail.type_distribution : [{ label: "暂无数据", count: 0, percent: 0 }]).map((slice) => (
-                                            <div key={slice.label}>
-                                                <div className="mb-1 flex flex-wrap items-center justify-between gap-2 text-sm font-bold text-slate-700">
-                                                    <span>{slice.label}</span>
-                                                    <span>{slice.count} 条</span>
+                                    {detail.type_distribution.length > 0 ? (
+                                        <div className="space-y-3">
+                                            {detail.type_distribution.map((slice) => (
+                                                <div key={slice.label}>
+                                                    <div className="mb-1 flex flex-wrap items-center justify-between gap-2 text-sm font-bold text-slate-700">
+                                                        <span>{slice.label}</span>
+                                                        <span>{slice.count} 条</span>
+                                                    </div>
+                                                    <div className="h-2 overflow-hidden rounded-full bg-slate-100">
+                                                        <div className="h-full rounded-full bg-blue-500" style={{ width: `${Math.max(slice.percent, slice.count > 0 ? 8 : 0)}%` }} />
+                                                    </div>
                                                 </div>
-                                                <div className="h-2 overflow-hidden rounded-full bg-slate-100">
-                                                    <div className="h-full rounded-full bg-blue-500" style={{ width: `${Math.max(slice.percent, slice.count > 0 ? 8 : 0)}%` }} />
-                                                </div>
-                                            </div>
-                                        ))}
-                                    </div>
+                                            ))}
+                                        </div>
+                                    ) : (
+                                        <EmptyPanel text="暂无类型分布数据" />
+                                    )}
                                 </DemoCard>
 
                                 <DemoCard className="p-5">
@@ -354,11 +328,68 @@ export function CompanyArchivePage() {
                         </div>
                     </div>
                 ) : (
-                    <DemoCard className="p-10 text-center text-sm font-semibold text-slate-500">
-                        请选择左侧企业查看档案。
+                    <DemoCard className="flex items-center justify-center gap-2 p-10 text-center text-sm font-semibold text-slate-500">
+                        {companiesQuery.isLoading || detailQuery.isLoading ? <Loader2 className="size-4 animate-spin" /> : null}
+                        {companiesQuery.isLoading || detailQuery.isLoading ? "正在加载企业档案" : "请点击“选择企业”查看档案。"}
                     </DemoCard>
                 )}
-            </div>
+
+            <CompanySelectorDialog
+                open={selectorOpen}
+                companies={companies}
+                loading={companiesQuery.isLoading}
+                fetching={companiesQuery.isFetching}
+                keywordInput={keywordInput}
+                sysCompanyFilter={sysCompanyFilter}
+                systemCompanyOptions={systemCompanyOptions}
+                selectedCompanyId={effectiveSelectedCompanyId}
+                selectedCompanyIds={selectedCompanyIds}
+                page={companyPage}
+                total={totalCompanies}
+                totalPages={totalCompanyPages}
+                onOpenChange={setSelectorOpen}
+                onKeywordInputChange={setKeywordInput}
+                onSearch={() => {
+                    setKeyword(keywordInput.trim());
+                    setCompanyPage(1);
+                }}
+                onReset={() => {
+                    setKeyword("");
+                    setKeywordInput("");
+                    setSysCompanyFilter("");
+                    setSelectedCompanyIds([]);
+                    setCompanyPage(1);
+                }}
+                onSysCompanyFilterChange={(value) => {
+                    setSysCompanyFilter(value);
+                    setSelectedCompanyIds([]);
+                    setCompanyPage(1);
+                }}
+                onSelectCompany={(companyId) => {
+                    setSelectedCompanyId(companyId);
+                    setSelectorOpen(false);
+                }}
+                onToggleSelect={(companyId) =>
+                    setSelectedCompanyIds((current) =>
+                        current.includes(companyId) ? current.filter((id) => id !== companyId) : [...current, companyId],
+                    )
+                }
+                onToggleCurrentPage={() =>
+                    setSelectedCompanyIds((current) => {
+                        const currentPageIds = companies.map((company) => company.id);
+                        const currentPageSelected = currentPageIds.length > 0 && currentPageIds.every((id) => current.includes(id));
+                        if (currentPageSelected) {
+                            return current.filter((id) => !currentPageIds.includes(id));
+                        }
+                        return Array.from(new Set([...current, ...currentPageIds]));
+                    })
+                }
+                onBulkAccess={() => {
+                    setSelectorOpen(false);
+                    setBulkAccessOpen(true);
+                }}
+                onPageChange={setCompanyPage}
+            />
 
             <CreateCompanyDialog
                 open={createOpen}
@@ -383,6 +414,14 @@ export function CompanyArchivePage() {
                 targetId={detail?.id ?? selectedCompany?.id ?? null}
                 targetName={detail?.name ?? selectedCompany?.name ?? ""}
             />
+            <AccessRuleDialog
+                open={bulkAccessOpen}
+                onOpenChange={setBulkAccessOpen}
+                targetType="company"
+                targetId={selectedCompanyIds[0] ?? null}
+                targetIds={selectedCompanyIds}
+                targetName={`已选择 ${selectedCompanyIds.length} 家企业`}
+            />
             <CompanyImportDialog
                 open={importOpen}
                 pending={importMutation.isPending}
@@ -395,14 +434,30 @@ export function CompanyArchivePage() {
     );
 }
 
-function CompanyListButton({ company, active, onClick }: { company: InsightCompanyListItem; active: boolean; onClick: () => void }) {
+function CompanyListButton({
+    company,
+    active,
+    selected,
+    onClick,
+    onToggleSelect,
+}: {
+    company: InsightCompanyListItem;
+    active: boolean;
+    selected: boolean;
+    onClick: () => void;
+    onToggleSelect: () => void;
+}) {
     return (
-        <button
-            type="button"
-            onClick={onClick}
-            className={`w-full rounded-xl border px-4 py-3 text-left transition ${active ? "border-blue-200 bg-blue-50" : "border-slate-100 bg-white hover:border-blue-100 hover:bg-blue-50/40"}`}
-        >
-            <div className="flex items-start gap-3">
+        <div className={`flex items-start gap-3 rounded-xl border px-4 py-3 transition ${active ? "border-blue-200 bg-blue-50" : "border-slate-100 bg-white hover:border-blue-100 hover:bg-blue-50/40"}`}>
+            <input
+                type="checkbox"
+                checked={selected}
+                onChange={onToggleSelect}
+                className="mt-3 size-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                aria-label={`选择${company.name}`}
+            />
+            <button type="button" onClick={onClick} className="min-w-0 flex-1 text-left">
+                <div className="flex items-start gap-3">
                 <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-blue-500 text-xs font-black text-white">
                     {(company.short_name || company.name).slice(0, 2)}
                 </div>
@@ -415,7 +470,175 @@ function CompanyListButton({ company, active, onClick }: { company: InsightCompa
                     </div>
                 </div>
             </div>
-        </button>
+            </button>
+        </div>
+    );
+}
+
+function CompanySelectorDialog({
+    open,
+    companies,
+    loading,
+    fetching,
+    keywordInput,
+    sysCompanyFilter,
+    systemCompanyOptions,
+    selectedCompanyId,
+    selectedCompanyIds,
+    page,
+    total,
+    totalPages,
+    onOpenChange,
+    onKeywordInputChange,
+    onSearch,
+    onReset,
+    onSysCompanyFilterChange,
+    onSelectCompany,
+    onToggleSelect,
+    onToggleCurrentPage,
+    onBulkAccess,
+    onPageChange,
+}: {
+    open: boolean;
+    companies: InsightCompanyListItem[];
+    loading: boolean;
+    fetching: boolean;
+    keywordInput: string;
+    sysCompanyFilter: string;
+    systemCompanyOptions: Array<{ value: string; label: string }>;
+    selectedCompanyId: number | null;
+    selectedCompanyIds: number[];
+    page: number;
+    total: number;
+    totalPages: number;
+    onOpenChange: (open: boolean) => void;
+    onKeywordInputChange: (value: string) => void;
+    onSearch: () => void;
+    onReset: () => void;
+    onSysCompanyFilterChange: (value: string) => void;
+    onSelectCompany: (companyId: number) => void;
+    onToggleSelect: (companyId: number) => void;
+    onToggleCurrentPage: () => void;
+    onBulkAccess: () => void;
+    onPageChange: (page: number) => void;
+}) {
+    const currentPageAllSelected = companies.length > 0 && companies.every((company) => selectedCompanyIds.includes(company.id));
+    return (
+        <Dialog open={open} onOpenChange={onOpenChange}>
+            <DialogContent className="max-h-[88vh] overflow-hidden rounded-2xl border-slate-200 bg-white p-0 sm:max-w-5xl">
+                <DialogHeader className="border-b border-slate-100 px-6 py-5">
+                    <DialogTitle className="flex items-center gap-2 text-xl font-black text-slate-950">
+                        <Building2 className="size-5 text-primary" />
+                        选择企业档案
+                    </DialogTitle>
+                    <DialogDescription>搜索或按所属公司筛选企业，选择后主页面只展示该企业档案。</DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4 p-5">
+                    <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_260px_auto_auto] lg:items-end">
+                        <label className="grid gap-2">
+                            <span className="text-sm font-bold text-slate-700">关键词</span>
+                            <div className="relative">
+                                <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+                                <Input
+                                    className="h-11 rounded-xl border-slate-200 bg-white pl-10 shadow-none"
+                                    placeholder="搜索企业、简称、行业"
+                                    value={keywordInput}
+                                    onChange={(event) => onKeywordInputChange(event.target.value)}
+                                    onKeyDown={(event) => {
+                                        if (event.key === "Enter") {
+                                            onSearch();
+                                        }
+                                    }}
+                                />
+                            </div>
+                        </label>
+                        <label className="grid gap-2">
+                            <span className="text-sm font-bold text-slate-700">所属公司</span>
+                            <select
+                                value={sysCompanyFilter}
+                                onChange={(event) => onSysCompanyFilterChange(event.target.value)}
+                                className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 shadow-none outline-none transition hover:border-blue-200 hover:bg-blue-50/30 focus:border-blue-300 focus:ring-4 focus:ring-blue-100"
+                            >
+                                <option value="">全部所属公司</option>
+                                {systemCompanyOptions.map((option) => (
+                                    <option key={option.value} value={option.value}>
+                                        {option.label}
+                                    </option>
+                                ))}
+                            </select>
+                        </label>
+                        <Button type="button" className="h-11 rounded-xl px-5" onClick={onSearch}>
+                            搜索
+                        </Button>
+                        <Button type="button" variant="ghost" className="h-11 rounded-xl text-slate-600" onClick={onReset}>
+                            重置
+                        </Button>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3">
+                        <div className="text-sm font-bold text-slate-600">
+                            {fetching ? "正在筛选企业..." : `共 ${total} 家企业 · 第 ${page} / ${totalPages} 页`}
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                            <Button type="button" variant="ghost" className="h-9 rounded-lg text-blue-700" disabled={companies.length === 0} onClick={onToggleCurrentPage}>
+                                {currentPageAllSelected ? "取消全选本页" : "全选本页"}
+                            </Button>
+                            <Button
+                                type="button"
+                                variant="outline"
+                                className="h-9 rounded-lg border-blue-100 bg-white px-3 text-blue-700"
+                                disabled={selectedCompanyIds.length === 0}
+                                onClick={onBulkAccess}
+                            >
+                                <ShieldCheck className="size-4" />
+                                批量权限 {selectedCompanyIds.length > 0 ? selectedCompanyIds.length : ""}
+                            </Button>
+                        </div>
+                    </div>
+
+                    <div className="max-h-[44vh] min-h-[280px] overflow-y-auto pr-1">
+                        <div className="grid gap-2 md:grid-cols-2">
+                            {!fetching && companies.map((company) => (
+                                <CompanyListButton
+                                    key={company.id}
+                                    company={company}
+                                    active={company.id === selectedCompanyId}
+                                    selected={selectedCompanyIds.includes(company.id)}
+                                    onClick={() => onSelectCompany(company.id)}
+                                    onToggleSelect={() => onToggleSelect(company.id)}
+                                />
+                            ))}
+                        </div>
+                        {loading || fetching ? (
+                            <div className="mt-3 flex items-center justify-center gap-2 rounded-xl border border-slate-100 bg-slate-50 px-4 py-10 text-sm font-semibold text-slate-500">
+                                <Loader2 className="size-4 animate-spin" />
+                                正在加载企业档案
+                            </div>
+                        ) : null}
+                        {!loading && !fetching && companies.length === 0 ? (
+                            <div className="mt-3 rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-10 text-center text-sm font-semibold text-slate-500">
+                                暂无符合条件的企业档案。
+                            </div>
+                        ) : null}
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-4">
+                        <div className="text-xs font-semibold text-slate-500">选择企业后将关闭弹窗并切换主页面档案。</div>
+                        <div className="flex items-center gap-2">
+                            <Button type="button" variant="outline" className="h-9 rounded-lg" disabled={page <= 1 || loading || fetching} onClick={() => onPageChange(Math.max(1, page - 1))}>
+                                上一页
+                            </Button>
+                            <span className="min-w-20 text-center text-sm font-black text-slate-700">
+                                {page} / {totalPages}
+                            </span>
+                            <Button type="button" variant="outline" className="h-9 rounded-lg" disabled={page >= totalPages || loading || fetching} onClick={() => onPageChange(Math.min(totalPages, page + 1))}>
+                                下一页
+                            </Button>
+                        </div>
+                    </div>
+                </div>
+            </DialogContent>
+        </Dialog>
     );
 }
 

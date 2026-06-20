@@ -7,12 +7,13 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 
-import type { InsightIntelligenceDetail, InsightIntelligenceSourceCreate, InsightIntelligenceUpdate } from "../api";
+import type { InsightIntelligenceDetail, InsightIntelligenceListItem, InsightIntelligenceSourceCreate, InsightIntelligenceUpdate } from "../api";
 import { AccessRuleDialog, WecomPushDialog } from "../components";
-import { DemoCard, DemoTag, RankList, SectionHeader } from "../components/DemoPrimitives";
+import { DemoCard, DemoTag, SectionHeader } from "../components/DemoPrimitives";
 import {
     useInsightAddIntelligenceSource,
     useInsightIntelligenceDetail,
+    useInsightIntelligences,
     useInsightUpdateIntelligence,
     useInsightUpsertPool,
     useInsightVisibilityRules,
@@ -36,6 +37,14 @@ export function IntelligenceDetailPage() {
     const detail = detailQuery.data;
     const primarySource = detail?.sources[0];
     const suggestedTags = Array.isArray(detail?.raw_payload?.suggested_tags) ? detail.raw_payload.suggested_tags : [];
+    const relatedQuery = useInsightIntelligences({
+        page: 1,
+        size: 8,
+        keyword: detail?.subject_name || undefined,
+        intelligence_type: detail?.intelligence_type || undefined,
+        data_source_id: primarySource?.data_source_id ?? undefined,
+    });
+    const relatedItems = (relatedQuery.data?.items ?? []).filter((item) => item.id !== detail?.id).slice(0, 5);
 
     if (detailQuery.isLoading) {
         return (
@@ -232,7 +241,7 @@ export function IntelligenceDetailPage() {
 
                     <DemoCard className="p-5">
                         <SectionHeader title="相似情报推荐" />
-                        <RankList items={["同主题最新正式情报待接入", "同来源历史情报待接入", "同标签趋势情报待接入", "同业务域机会点待接入"]} />
+                        <RelatedIntelligenceList items={relatedItems} loading={relatedQuery.isLoading} />
                     </DemoCard>
                 </div>
             </div>
@@ -289,6 +298,29 @@ export function IntelligenceDetailPage() {
                 defaultContent={detail.summary || primarySource?.content_excerpt || "发现一条新的市场情报，请进入研发营销市场洞察平台查看原文与证据。"}
             />
         </PageContainer>
+    );
+}
+
+function RelatedIntelligenceList({ items, loading }: { items: InsightIntelligenceListItem[]; loading: boolean }) {
+    if (loading) {
+        return <div className="rounded-xl border border-dashed border-slate-200 px-4 py-6 text-sm font-semibold text-slate-500">正在匹配相似情报...</div>;
+    }
+    if (items.length === 0) {
+        return <div className="rounded-xl border border-dashed border-slate-200 px-4 py-6 text-sm font-semibold text-slate-500">暂无同主题或同来源的相似情报。</div>;
+    }
+    return (
+        <div className="space-y-3">
+            {items.map((item) => (
+                <Link key={item.id} to={`/insight/intelligence/${item.id}`} className="block rounded-xl border border-slate-200 bg-white p-3 transition hover:border-blue-200 hover:bg-blue-50/40">
+                    <div className="line-clamp-2 text-sm font-black leading-6 text-slate-900">{item.title}</div>
+                    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs font-semibold text-slate-500">
+                        <span>{formatInsightType(item.intelligence_type)}</span>
+                        <span>{formatInsightDate(item.publish_time, item.capture_time ?? item.create_time)}</span>
+                    </div>
+                    {item.summary ? <p className="mt-2 line-clamp-2 text-xs leading-5 text-slate-600">{item.summary}</p> : null}
+                </Link>
+            ))}
+        </div>
     );
 }
 

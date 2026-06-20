@@ -60,6 +60,7 @@ export interface ReportDslColumn {
     format?: string | null;
     group: boolean;
     expandDirection?: 'down' | 'right' | 'none';
+    hidden?: boolean;
 }
 
 export interface ReportDslDataset {
@@ -115,6 +116,23 @@ export interface ReportDsl {
         showRowNumber: boolean;
         pageSize: number;
     };
+    writeBack?: {
+        enabled: boolean;
+        submitterName: string;
+        databaseName?: string | null;
+        schemaName: string;
+        tableName?: string | null;
+        mode: string;
+        toolbar: boolean;
+        rowActions: {
+            enabled: boolean;
+            insertLabel: string;
+            deleteLabel: string;
+            columnWidth: number;
+        };
+        widgets: Array<Record<string, unknown>>;
+        columns: Array<Record<string, unknown>>;
+    };
 }
 
 export interface GenerateReportResponse {
@@ -143,6 +161,7 @@ export interface GenerateSqlStepResponse {
     requirementSummary?: Record<string, unknown> | null;
     excelAnalysis?: ExcelAnalysisResult | null;
     querySql?: string | null;
+    createTableSql?: string | null;
     sqlValidation?: SqlValidationResult | null;
     warnings: string[];
     errors: string[];
@@ -180,10 +199,66 @@ export interface GenerateCptStepResponse {
     createSqlObjectPath?: string | null;
     logObjectPath?: string | null;
     previewUrl?: string | null;
+    reportId?: string | null;
+    fileVersionId?: string | null;
+    structureVersionId?: string | null;
+    conflict?: Record<string, unknown> | null;
     warnings: string[];
     errors: string[];
     createTime: string;
     updateTime: string;
+}
+
+export interface GenerateCptStepPayload {
+    taskId: string;
+    reportName?: string | null;
+    targetFolder?: string | null;
+    targetObjectPath?: string | null;
+    conflictStrategy?: 'abort' | 'archive_and_overwrite' | 'import_external';
+}
+
+export interface FrAiReportAgentContext {
+    reportName?: string | null;
+    targetFolder?: string | null;
+    targetObjectPath?: string | null;
+    sourceTableName?: string | null;
+    templateObjectPath?: string | null;
+    taskId?: string | null;
+    conversationId?: string | null;
+    requirement?: string | null;
+    ddlDialect?: 'sqlserver' | 'mysql' | 'postgresql' | string;
+    idAutoIncrement?: boolean;
+}
+
+export type FrAiReportAgentAction = 'chat' | 'start_generate' | 'save_cpt';
+
+export interface FrAiReportAgentChatPayload {
+    message: string;
+    action?: FrAiReportAgentAction;
+    context?: FrAiReportAgentContext;
+    file?: File | null;
+}
+
+export interface FrAiReportAgentEvent {
+    type: string;
+    content?: string | null;
+    toolName?: string | null;
+    payload: Record<string, unknown>;
+}
+
+export interface FrAiReportAgentChatResponse {
+    status: string;
+    conversationId?: string | null;
+    taskId?: string | null;
+    context: FrAiReportAgentContext;
+    events: FrAiReportAgentEvent[];
+    questions: string[];
+    review?: FrAiReportRequirementReviewResponse | null;
+    sqlStep?: GenerateSqlStepResponse | null;
+    dslStep?: GenerateDslStepResponse | null;
+    cptStep?: GenerateCptStepResponse | null;
+    warnings: string[];
+    errors: string[];
 }
 
 export interface PreviewValidationResult {
@@ -234,6 +309,7 @@ export interface ReportTaskRead {
     warnings: string[];
     excelAnalysis?: ExcelAnalysisResult | null;
     querySql?: string | null;
+    createTableSql?: string | null;
     reportDsl?: ReportDsl | null;
     sqlValidation?: SqlValidationResult | null;
     requirementSummary?: Record<string, unknown> | null;
@@ -248,6 +324,9 @@ export interface GenerateReportPayload {
     file?: File | null;
     tableSchemaJson?: string;
     conversationId?: string | null;
+    ddlDialect?: 'sqlserver' | 'mysql' | 'postgresql';
+    idAutoIncrement?: boolean;
+    tableNameOverridesJson?: string;
 }
 
 export interface PageResult<T> {
@@ -560,6 +639,8 @@ export interface FrReportAiUploadedFileRead {
 export interface FrReportAiNewReportPlanPayload {
     requirement: string;
     templateObjectPath?: string | null;
+    reportName?: string | null;
+    targetFolder?: string | null;
     files?: File[];
 }
 
@@ -567,6 +648,9 @@ export interface FrReportAiNewReportPlanResponse {
     draftId: string;
     status: 'proposal' | 'blocked';
     assistantMessage: string;
+    reportName?: string | null;
+    targetFolder?: string | null;
+    targetObjectPath?: string | null;
     questions: string[];
     proposal: Record<string, unknown>;
     operations: FrReportAiOperationRead[];
@@ -609,6 +693,21 @@ export interface FrAiReportQualityGate {
     autoCheck: boolean;
 }
 
+export interface FrAiReportWriteBackPlan {
+    enabled: boolean;
+    mode: string;
+    targetTable?: string | null;
+    primaryKeys: string[];
+    hiddenKeys: string[];
+    editableFields: string[];
+    readonlyFields: string[];
+    calculatedFields: string[];
+    allowInsert: boolean;
+    allowDelete: boolean;
+    widgetPolicy: string;
+    safetyNotes: string[];
+}
+
 export interface FrAiReportRequirementReviewResponse {
     status: string;
     scenario?: string | null;
@@ -620,6 +719,7 @@ export interface FrAiReportRequirementReviewResponse {
     maintenanceTables: FrAiReportMaintenanceTable[];
     recommendedSourceTables: string[];
     qualityGates: FrAiReportQualityGate[];
+    writeBackPlan: FrAiReportWriteBackPlan;
     warnings: string[];
     excelAnalysis?: ExcelAnalysisResult | null;
 }
@@ -664,18 +764,109 @@ export interface FrReportAiApplyDraftResponse {
 
 export interface FrReportAiSnapshotCptPayload {
     snapshotId: string;
+    reportName?: string | null;
+    targetFolder?: string | null;
+    targetObjectPath?: string | null;
+    conflictStrategy?: 'abort' | 'archive_and_overwrite' | 'import_external';
 }
 
 export interface FrReportAiSnapshotCptResponse {
     snapshotId: string;
-    status: 'generated' | 'preview_failed';
+    status: 'generated' | 'preview_failed' | 'conflict';
     cptObjectPath: string;
     metaObjectPath?: string | null;
     operationsObjectPath?: string | null;
     logObjectPath?: string | null;
     previewUrl: string;
+    reportId?: string | null;
+    fileVersionId?: string | null;
+    structureVersionId?: string | null;
+    conflict?: Record<string, unknown> | null;
     warnings: string[];
     errors: string[];
+}
+
+export interface FrReportProjectRead {
+    reportId: string;
+    reportName: string;
+    reportCode: string;
+    targetFolder: string;
+    currentObjectPath: string;
+    currentStructureVersionId?: string | null;
+    currentFileVersionId?: string | null;
+    status: string;
+}
+
+export interface FrReportStructureVersionRead {
+    structureVersionId: string;
+    reportId: string;
+    snapshotId?: string | null;
+    versionNo: number;
+    versionName?: string | null;
+    parentVersionId?: string | null;
+    sourceType: string;
+    status: string;
+    createTime: string;
+    diffSummary: Record<string, unknown>;
+}
+
+export interface FrReportFileVersionRead {
+    fileVersionId: string;
+    reportId: string;
+    structureVersionId?: string | null;
+    versionNo: number;
+    versionName?: string | null;
+    currentObjectPath: string;
+    archiveObjectPath: string;
+    manifestObjectPath?: string | null;
+    sourceFileHash?: string | null;
+    targetFileHash?: string | null;
+    sourceLastModified?: string | null;
+    targetLastModified?: string | null;
+    writeStatus: string;
+    previewUrl?: string | null;
+    createTime: string;
+    diffSummary: Record<string, unknown>;
+    warnings: string[];
+    errors: string[];
+}
+
+export interface FrReportVersionListResponse {
+    project?: FrReportProjectRead | null;
+    structureVersions: FrReportStructureVersionRead[];
+    fileVersions: FrReportFileVersionRead[];
+    externalConflict?: Record<string, unknown> | null;
+}
+
+export interface FrReportVersionRollbackResponse {
+    reportId: string;
+    restoredFileVersionId: string;
+    newFileVersionId: string;
+    currentObjectPath: string;
+    previewUrl?: string | null;
+    warnings: string[];
+}
+
+export interface FrReportStructureRollbackResponse {
+    reportId: string;
+    restoredStructureVersionId: string;
+    newStructureVersionId: string;
+    currentObjectPath: string;
+    warnings: string[];
+}
+
+export interface FrReportExternalSyncResponse {
+    reportId: string;
+    fileVersion: FrReportFileVersionRead;
+    currentObjectPath: string;
+    warnings: string[];
+}
+
+export interface FrReportRecycleResponse {
+    reportId: string;
+    recycledObjectPath: string;
+    trashObjectPath: string;
+    warnings: string[];
 }
 
 export interface FrReportDatasetPreviewParameter {

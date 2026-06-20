@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
     insightApi,
+    type InsightAccessRuleBulkUpsert,
     type InsightAccessRuleUpsert,
     type InsightCandidateListParams,
     type InsightCandidatePromoteRequest,
@@ -10,11 +11,17 @@ import {
     type InsightCompanyImportResponse,
     type InsightCompanyListParams,
     type InsightCompanyUpdate,
+    type InsightAssistantChatRequest,
+    type InsightDataSourceBatchCreateRequest,
     type InsightDataSourceCreate,
+    type InsightDataSourceBulkActionRequest,
     type InsightDataSourceExecutionLogParams,
     type InsightDataSourceExecuteRequest,
+    type InsightDataSourceImportResponse,
     type InsightDataSourceListParams,
     type InsightDataSourceUpdate,
+    type InsightDeepResearchRequest,
+    type InsightIntelligenceBulkActionRequest,
     type InsightIntelligenceCreate,
     type InsightIntelligenceListParams,
     type InsightIntelligenceSourceCreate,
@@ -26,6 +33,9 @@ import {
     type InsightReportGenerateRequest,
     type InsightReportListParams,
     type InsightReportPreferenceUpdate,
+    type InsightReportSubscriptionCreate,
+    type InsightReportSubscriptionListParams,
+    type InsightReportSubscriptionUpdate,
     type InsightReportTemplateCloneRequest,
     type InsightReportTemplateCreate,
     type InsightReportTemplatePublishRequest,
@@ -50,6 +60,7 @@ export const insightQueryKeys = {
     companies: (params: InsightCompanyListParams) => [...insightQueryKeys.all, "companies", params] as const,
     companyDetail: (companyId: number) => [...insightQueryKeys.all, "company", companyId] as const,
     dataSources: (params: InsightDataSourceListParams) => [...insightQueryKeys.all, "data-sources", params] as const,
+    dataSourceGroups: (params: InsightDataSourceListParams) => [...insightQueryKeys.all, "data-source-groups", params] as const,
     dataSourceExecutionLogs: (params: InsightDataSourceExecutionLogParams) => [...insightQueryKeys.all, "data-source-execution-logs", params] as const,
     schedulerStatus: () => [...insightQueryKeys.all, "scheduler-status"] as const,
     intelligences: (params: InsightIntelligenceListParams) => [...insightQueryKeys.all, "intelligences", params] as const,
@@ -58,6 +69,7 @@ export const insightQueryKeys = {
     pool: (poolType?: string) => [...insightQueryKeys.all, "pool", poolType ?? "all"] as const,
     candidates: (params: InsightCandidateListParams) => [...insightQueryKeys.all, "candidates", params] as const,
     reports: (params: InsightReportListParams) => [...insightQueryKeys.all, "reports", params] as const,
+    reportSubscriptions: (params: InsightReportSubscriptionListParams) => [...insightQueryKeys.all, "report-subscriptions", params] as const,
     reportTemplates: () => [...insightQueryKeys.all, "report-templates"] as const,
     reportPreference: () => [...insightQueryKeys.all, "report-preference"] as const,
     reportDetail: (reportId: number) => [...insightQueryKeys.all, "report", reportId] as const,
@@ -282,6 +294,53 @@ export function useInsightReports(params: InsightReportListParams) {
     });
 }
 
+export function useInsightReportSubscriptions(params: InsightReportSubscriptionListParams) {
+    return useQuery({
+        queryKey: insightQueryKeys.reportSubscriptions(params),
+        queryFn: () => insightApi.listReportSubscriptions(params),
+    });
+}
+
+export function useInsightCreateReportSubscription() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: (payload: InsightReportSubscriptionCreate) => insightApi.createReportSubscription(payload),
+        onSuccess: () => {
+            void queryClient.invalidateQueries({ queryKey: insightQueryKeys.all });
+        },
+    });
+}
+
+export function useInsightUpdateReportSubscription() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: (payload: InsightReportSubscriptionUpdateMutationPayload) => insightApi.updateReportSubscription(payload.subscriptionId, payload.data),
+        onSuccess: () => {
+            void queryClient.invalidateQueries({ queryKey: insightQueryKeys.all });
+        },
+    });
+}
+
+export function useInsightDeleteReportSubscription() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: (subscriptionId: number) => insightApi.deleteReportSubscription(subscriptionId),
+        onSuccess: () => {
+            void queryClient.invalidateQueries({ queryKey: insightQueryKeys.all });
+        },
+    });
+}
+
+export function useInsightRunReportSubscription() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: (subscriptionId: number) => insightApi.runReportSubscription(subscriptionId),
+        onSuccess: () => {
+            void queryClient.invalidateQueries({ queryKey: insightQueryKeys.all });
+        },
+    });
+}
+
 export function useInsightReportTemplates() {
     return useQuery({
         queryKey: insightQueryKeys.reportTemplates(),
@@ -392,6 +451,19 @@ export function useInsightGrantAccessRule() {
     });
 }
 
+export function useInsightGrantAccessRulesBulk() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: (payload: InsightAccessRuleBulkMutationPayload) => insightApi.grantAccessRulesBulk(payload.targetType, payload.data),
+        onSuccess: (_response, variables) => {
+            void queryClient.invalidateQueries({ queryKey: insightQueryKeys.all });
+            for (const targetId of variables.data.target_ids) {
+                void queryClient.invalidateQueries({ queryKey: insightQueryKeys.accessRules(variables.targetType, targetId) });
+            }
+        },
+    });
+}
+
 export function useInsightRevokeAccessRule() {
     const queryClient = useQueryClient();
     return useMutation({
@@ -460,6 +532,49 @@ export function useInsightCreateDataSource() {
     });
 }
 
+export function useInsightDataSourceGroups(params: InsightDataSourceListParams = {}) {
+    return useQuery({
+        queryKey: insightQueryKeys.dataSourceGroups(params),
+        queryFn: () => insightApi.listDataSourceGroups(params),
+    });
+}
+
+export function useInsightBatchCreateDataSources() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: (payload: InsightDataSourceBatchCreateRequest) => insightApi.batchCreateDataSources(payload),
+        onSuccess: () => {
+            void queryClient.invalidateQueries({ queryKey: insightQueryKeys.all });
+        },
+    });
+}
+
+export function useInsightImportDataSources() {
+    const queryClient = useQueryClient();
+    return useMutation<InsightDataSourceImportResponse, Error, FormData>({
+        mutationFn: (payload: FormData) => insightApi.importDataSources(payload),
+        onSuccess: () => {
+            void queryClient.invalidateQueries({ queryKey: insightQueryKeys.all });
+        },
+    });
+}
+
+export function useInsightPreviewImportDataSources() {
+    return useMutation<InsightDataSourceImportResponse, Error, FormData>({
+        mutationFn: (payload: FormData) => insightApi.previewImportDataSources(payload),
+    });
+}
+
+export function useInsightBulkActionDataSources() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: (payload: InsightDataSourceBulkActionRequest) => insightApi.bulkActionDataSources(payload),
+        onSuccess: () => {
+            void queryClient.invalidateQueries({ queryKey: insightQueryKeys.all });
+        },
+    });
+}
+
 export function useInsightUpdateDataSource() {
     const queryClient = useQueryClient();
     return useMutation({
@@ -511,6 +626,32 @@ export function useInsightIntelligences(params: InsightIntelligenceListParams) {
     return useQuery({
         queryKey: insightQueryKeys.intelligences(params),
         queryFn: () => insightApi.listIntelligences(params),
+    });
+}
+
+export function useInsightBulkActionIntelligence() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: (payload: InsightIntelligenceBulkActionRequest) => insightApi.bulkActionIntelligence(payload),
+        onSuccess: () => {
+            void queryClient.invalidateQueries({ queryKey: insightQueryKeys.all });
+        },
+    });
+}
+
+export function useInsightAssistantChat() {
+    return useMutation({
+        mutationFn: (payload: InsightAssistantChatRequest) => insightApi.chatWithAssistant(payload),
+    });
+}
+
+export function useInsightDeepResearch() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: (payload: InsightDeepResearchRequest) => insightApi.deepResearch(payload),
+        onSuccess: () => {
+            void queryClient.invalidateQueries({ queryKey: insightQueryKeys.all });
+        },
     });
 }
 
@@ -686,6 +827,11 @@ export interface InsightReportExportMutationPayload {
     exportFormat?: string;
 }
 
+export interface InsightReportSubscriptionUpdateMutationPayload {
+    subscriptionId: number;
+    data: InsightReportSubscriptionUpdate;
+}
+
 export interface InsightReportTemplateUpdateMutationPayload {
     templateId: number;
     data: InsightReportTemplateUpdate;
@@ -705,6 +851,11 @@ export interface InsightAccessRuleMutationPayload {
     targetType: string;
     targetId: number;
     data: InsightAccessRuleUpsert;
+}
+
+export interface InsightAccessRuleBulkMutationPayload {
+    targetType: string;
+    data: InsightAccessRuleBulkUpsert;
 }
 
 export interface InsightAccessRuleRevokePayload {

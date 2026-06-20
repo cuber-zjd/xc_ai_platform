@@ -13,10 +13,14 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from app.core.llm_factory import LLMFactory
 from app.core.logger import logger
 from app.models.agent.insight import (
+    InsightCandidateReviewStatus,
+    InsightCompany,
     InsightCrawlerChannel,
     InsightCrawlResult,
     InsightCrawlStatus,
     InsightDataSource,
+    InsightIntelligenceCandidate,
+    InsightSubjectType,
     InsightTask,
     InsightTaskStatus,
 )
@@ -82,7 +86,10 @@ class InsightSearchDiscoveryService:
             crawled_results = []
             candidates = []
             crawl_errors: list[dict[str, Any]] = []
-            for hit in hits[: request.crawl_top_n]:
+            fallback_candidate_results: list[InsightCrawlResult] = []
+            if request.create_candidate_from_hits and request.crawl_top_n == 0:
+                candidates = await self._create_candidates_from_hits(db, discovered_results, request, user_id)
+            for index, hit in enumerate(hits[: request.crawl_top_n]):
                 try:
                     crawl_response = await insight_crawl_service.crawl_manual_url(
                         db,
@@ -104,6 +111,17 @@ class InsightSearchDiscoveryService:
                     crawled_results.append(crawl_response.crawl_result)
                     candidates.append(crawl_response.candidate)
                 except Exception as exc:
+                    discovered_result = discovered_results[index] if index < len(discovered_results) else None
+                    if discovered_result:
+                        crawl_metadata = discovered_result.crawl_metadata or {}
+                        crawl_metadata["crawl_fallback"] = {
+                            "reason": "正文抓取失败，已基于搜索命中生成候选",
+                            "error": str(exc)[:500],
+                            "fallback_time": datetime.now().isoformat(),
+                        }
+                        discovered_result.crawl_metadata = crawl_metadata
+                        db.add(discovered_result)
+                        fallback_candidate_results.append(discovered_result)
                     crawl_errors.append(
                         {
                             "title": hit.title,
@@ -112,6 +130,9 @@ class InsightSearchDiscoveryService:
                             "error": str(exc),
                         }
                     )
+            if fallback_candidate_results:
+                fallback_candidates = await self._create_candidates_from_hits(db, fallback_candidate_results, request, user_id)
+                candidates.extend(fallback_candidates)
 
             task.status = InsightTaskStatus.SUCCESS
             task.progress = 100
@@ -123,6 +144,9 @@ class InsightSearchDiscoveryService:
                 "candidate_ids": [item.id for item in candidates],
                 "rule_filter_enabled": bool(request.include_keywords or request.exclude_keywords),
                 "llm_filter_configured": bool(request.enable_llm_filter and request.filter_prompt),
+                "llm_filter_applied": trace.llm_filter_applied,
+                "llm_filter_message": trace.llm_filter_message,
+                "hit_ai_analysis_applied": bool(request.create_candidate_from_hits and request.crawl_top_n == 0 and candidates),
                 "filter_summary": {
                     "source_hit_count": trace.collected_count,
                     "rule_kept_count": trace.rule_kept_count,
@@ -191,6 +215,8 @@ class InsightSearchDiscoveryService:
         errors: list[str] = []
         channels = {channel.lower() for channel in request.channels}
         per_channel_count = max(request.max_results, 1)
+        if not channels:
+            raise ValueError("未配置搜索通道")
 
         if "baidu" in channels:
             try:
@@ -226,22 +252,50 @@ class InsightSearchDiscoveryService:
         ]
         rejected_items = rule_rejected + dedupe_rejected + llm_rejected + limit_rejected
 
-        if final_hits:
-            return SearchFilterTrace(
-                hits=final_hits,
-                collected_count=len(hits),
-                rule_kept_count=len(filtered_hits),
-                dedupe_kept_count=len(deduped),
-                llm_kept_count=len(llm_hits),
-                rejected_items=rejected_items,
-                kept_items=[self._kept_item(hit) for hit in final_hits],
-                channel_errors=errors,
-                llm_filter_applied=llm_applied,
-                llm_filter_message=llm_message,
-            )
-        if errors:
+        if not final_hits and errors and not hits and not rejected_items and not self._is_empty_result_error(errors):
             raise ValueError("；".join(errors))
-        raise ValueError("未启用可用的搜索通道，或结果已被筛选规则全部过滤")
+        return SearchFilterTrace(
+            hits=final_hits,
+            collected_count=len(hits),
+            rule_kept_count=len(filtered_hits),
+            dedupe_kept_count=len(deduped),
+            llm_kept_count=len(llm_hits),
+            rejected_items=rejected_items,
+            kept_items=[self._kept_item(hit) for hit in final_hits],
+            channel_errors=errors,
+            llm_filter_applied=llm_applied,
+            llm_filter_message=llm_message if final_hits else llm_message or "搜索完成，但没有命中可进入候选池的结果",
+        )
+
+    def _is_empty_result_error(self, errors: list[str]) -> bool:
+        if not errors:
+            return False
+        empty_result_markers = (
+            "结果已被筛选规则全部过滤",
+            "没有命中可进入候选池",
+            "未找到可用结果",
+            "no results",
+            "empty result",
+        )
+        hard_failure_markers = (
+            "未配置",
+            "401",
+            "403",
+            "429",
+            "500",
+            "502",
+            "503",
+            "504",
+            "timeout",
+            "timed out",
+            "连接",
+            "鉴权",
+            "api key",
+        )
+        joined = "；".join(errors).lower()
+        if any(marker.lower() in joined for marker in hard_failure_markers):
+            return False
+        return any(marker.lower() in joined for marker in empty_result_markers)
 
     async def _search_bocha_news(
         self,
@@ -460,10 +514,10 @@ class InsightSearchDiscoveryService:
             task_id=task_id,
             data_source_id=request.data_source_id,
             channel=hit.channel,
-            query_text=request.query,
-            source_url=hit.url,
-            source_title=hit.title,
-            snippet=hit.snippet,
+            query_text=self._truncate(request.query, 500),
+            source_url=self._truncate(hit.url, 1000) or hit.url[:1000],
+            source_title=self._truncate(hit.title, 500),
+            snippet=self._truncate(hit.snippet, 2000),
             published_at=hit.published_at,
             dedupe_hash=sha256(dedupe_text.encode("utf-8")).hexdigest(),
             crawl_metadata={
@@ -478,6 +532,210 @@ class InsightSearchDiscoveryService:
             create_by=str(user_id) if user_id else None,
             update_by=str(user_id) if user_id else None,
         )
+
+    def _truncate(self, value: str | None, limit: int) -> str | None:
+        if value is None:
+            return None
+        text = str(value)
+        return text if len(text) <= limit else text[: limit - 1]
+
+    async def _create_candidates_from_hits(
+        self,
+        db: AsyncSession,
+        discovered_results: list[InsightCrawlResult],
+        request: InsightSearchDiscoveryRequest,
+        user_id: int | None,
+    ) -> list[InsightIntelligenceCandidate]:
+        if not discovered_results:
+            return []
+        data_source = None
+        company = None
+        if request.data_source_id:
+            data_source = (await db.exec(select(InsightDataSource).where(InsightDataSource.id == request.data_source_id))).first()
+            if data_source and data_source.company_id:
+                company = (await db.exec(select(InsightCompany).where(InsightCompany.id == data_source.company_id))).first()
+
+        analyses = await self._analyze_search_hit_candidates(discovered_results, request)
+        candidates: list[InsightIntelligenceCandidate] = []
+        for result in discovered_results:
+            existing = (
+                await db.exec(
+                    select(InsightIntelligenceCandidate).where(
+                        InsightIntelligenceCandidate.crawl_result_id == result.id,
+                        InsightIntelligenceCandidate.is_deleted == 0,
+                    )
+                )
+            ).first()
+            if existing:
+                candidates.append(existing)
+                continue
+
+            title = result.source_title or request.query
+            analysis = analyses.get(result.id or 0, {})
+            summary = (
+                str(analysis.get("summary") or "").strip()
+                or result.snippet
+                or f"搜索发现与“{request.query}”相关的公开信息，等待后续正文抓取和 AI 深化。"
+            )
+            confidence = self._float_value(analysis.get("confidence"), 0.58)
+            relevance_score = self._float_value(analysis.get("relevance_score"), confidence)
+            keep = bool(analysis.get("keep", True))
+            intelligence_type = str(analysis.get("intelligence_type") or "").strip() or self._infer_type_from_query(request.query)
+            llm_tags = [{"name": item[:30], "source": "llm"} for item in self._string_items(analysis.get("tags"))[:6]]
+            if not llm_tags:
+                llm_tags = [{"name": "搜索发现", "source": "search_hit"}]
+            crawl_fallback = (result.crawl_metadata or {}).get("crawl_fallback") if isinstance(result.crawl_metadata, dict) else None
+            fallback_tags = (
+                [
+                    {
+                        "name": "正文抓取待补",
+                        "source": "crawl_fallback",
+                        "reason": str(crawl_fallback.get("reason") or "")[:200],
+                        "error": str(crawl_fallback.get("error") or "")[:300],
+                    }
+                ]
+                if isinstance(crawl_fallback, dict)
+                else []
+            )
+            candidate = InsightIntelligenceCandidate(
+                crawl_result_id=result.id or 0,
+                candidate_title=title[:500],
+                candidate_summary=summary[:1000],
+                subject_type=InsightSubjectType.COMPANY if company else InsightSubjectType.CUSTOM,
+                subject_name=(company.short_name or company.name)[:200] if company else request.query[:200],
+                company_id=data_source.company_id if data_source else None,
+                intelligence_type=intelligence_type[:50],
+                suggested_tags=[
+                    *llm_tags,
+                    *fallback_tags,
+                    {"name": self._enum_value(result.channel), "source": "search_channel"},
+                    {
+                        "name": "AI搜索初筛",
+                        "source": "llm_analysis",
+                        "sentiment": self._sentiment_value(analysis.get("sentiment")),
+                        "sentiment_reason": str(analysis.get("sentiment_reason") or analysis.get("reason") or "").strip()[:500],
+                        "opportunities": self._string_items(analysis.get("opportunities"))[:6],
+                        "risks": self._string_items(analysis.get("risks"))[:6],
+                        "keep": keep,
+                        "relevance_score": round(relevance_score, 4),
+                        "analysis_scope": "search_hit",
+                    },
+                ],
+                confidence=min(max(confidence, 0), 1),
+                review_status=InsightCandidateReviewStatus.PENDING,
+                status="active",
+                create_by=str(user_id) if user_id else None,
+                update_by=str(user_id) if user_id else None,
+            )
+            db.add(candidate)
+            candidates.append(candidate)
+        await db.commit()
+        for candidate in candidates:
+            await db.refresh(candidate)
+        return candidates
+
+    async def _analyze_search_hit_candidates(
+        self,
+        discovered_results: list[InsightCrawlResult],
+        request: InsightSearchDiscoveryRequest,
+    ) -> dict[int, dict[str, Any]]:
+        if not discovered_results:
+            return {}
+        payload = {
+            "query": request.query,
+            "filterPrompt": request.filter_prompt or self._default_hit_analysis_prompt(),
+            "items": [
+                {
+                    "id": result.id,
+                    "title": result.source_title,
+                    "url": result.source_url,
+                    "snippet": result.snippet,
+                    "published_at": result.published_at.isoformat() if result.published_at else None,
+                    "channel": self._enum_value(result.channel),
+                }
+                for result in discovered_results[:20]
+                if result.id is not None
+            ],
+        }
+        if not payload["items"]:
+            return {}
+        try:
+            response = await LLMFactory.safe_invoke(
+                [
+                    SystemMessage(
+                        content=(
+                            "你是研发营销市场洞察平台的搜索情报初筛助手。"
+                            "你只能基于搜索标题、URL、摘要和发布时间做保守判断，不得编造正文细节。"
+                            "请判断每条结果是否与食品饮料、功能糖/淀粉糖、植物蛋白、配料原料、客户/竞对、政策、专利、研发营销洞察相关。"
+                            "输出严格 JSON：{\"items\":[{\"id\":1,\"keep\":true,\"relevance_score\":0.8,\"summary\":\"...\",\"intelligence_type\":\"行业资讯\",\"tags\":[\"...\"],\"sentiment\":\"neutral\",\"sentiment_reason\":\"...\",\"opportunities\":[\"...\"],\"risks\":[\"...\"],\"confidence\":0.75,\"reason\":\"...\"}]}。"
+                            "summary 用中文 1-2 句，必须明确这是基于公开搜索摘要的初筛结论；"
+                            "sentiment 只能为 positive、neutral、negative、mixed；confidence 和 relevance_score 为 0 到 1。"
+                        )
+                    ),
+                    HumanMessage(content=json.dumps(payload, ensure_ascii=False)),
+                ],
+                capability="general",
+                temperature=0,
+                json_mode=True,
+                max_retries=2,
+            )
+        except Exception as exc:
+            logger.warning(f"Insight 搜索命中 AI 初筛失败，使用规则候选继续：{exc}")
+            return {}
+
+        content = getattr(response, "content", response)
+        if isinstance(content, list):
+            content = "".join(str(item) for item in content)
+        if not isinstance(content, str):
+            return {}
+        try:
+            parsed = json.loads(self._strip_json_fence(content))
+        except json.JSONDecodeError as exc:
+            logger.warning(f"Insight 搜索命中 AI 初筛 JSON 解析失败，使用规则候选继续：{exc}")
+            return {}
+        items = parsed.get("items") if isinstance(parsed, dict) else None
+        if not isinstance(items, list):
+            return {}
+        analyses: dict[int, dict[str, Any]] = {}
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            try:
+                result_id = int(item.get("id"))
+            except (TypeError, ValueError):
+                continue
+            analyses[result_id] = item
+        return analyses
+
+    def _default_hit_analysis_prompt(self) -> str:
+        return (
+            "保留与食品饮料、功能糖、淀粉糖、植物蛋白、配料原料、竞对、客户新品、政策法规、专利技术、"
+            "研发营销机会相关的公开信息；过滤验证码、图片搜索、百科泛信息、无业务价值页面和明显跨行业噪声。"
+        )
+
+    def _sentiment_value(self, value: object) -> str:
+        sentiment = str(value or "neutral").strip()
+        return sentiment if sentiment in {"positive", "neutral", "negative", "mixed"} else "neutral"
+
+    def _string_items(self, value: object) -> list[str]:
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        if isinstance(value, str) and value.strip():
+            return [item.strip() for item in re.split(r"[\n,，;；]+", value) if item.strip()]
+        return []
+
+    def _infer_type_from_query(self, query: str) -> str:
+        if "专利" in query or "技术" in query:
+            return "研发技术"
+        if "政策" in query or "法规" in query:
+            return "政策法规"
+        if "新品" in query or "配料" in query:
+            return "新品情报"
+        if "业绩" in query or "投资" in query or "融资" in query or "年报" in query:
+            return "经营动态"
+        if "电商" in query or "旗舰店" in query:
+            return "电商监测"
+        return "行业资讯"
 
     def _to_hit_read(self, hit: InsightSearchHit) -> InsightSearchHitRead:
         return InsightSearchHitRead(

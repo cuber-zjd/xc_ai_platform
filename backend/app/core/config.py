@@ -102,11 +102,19 @@ class Settings(BaseSettings):
     INSIGHT_WECOM_RETRY_MAX_ATTEMPTS: int = 3
     INSIGHT_PUBLIC_BASE_URL: str = ""
 
+    # Weaver / E-cology
+    WEAVER_DEFAULT_ENV: str = "default"  # 泛微默认环境 key，ecode 未传 env 时使用
+    WEAVER_DB_CONFIGS: str = "{}"  # 泛微 MySQL8 多环境连接配置，JSON：{"test":{"host":"...","port":3306,"database":"ecology","user":"...","password":"..."}}
+    WEAVER_AI_MODEL_NAME: str = ""  # 泛微流程 AI 助手专用模型名；为空则按 WEAVER_AI_MODEL_CAPABILITY 选择
+    WEAVER_AI_MODEL_CAPABILITY: str = "complex-reasoning"  # 泛微流程 AI 助手默认使用更强推理模型能力
+    WEAVER_AI_ENABLE_REASONING: bool = False  # 模型支持 reasoning 时可开启；本地小模型建议保持关闭
+
     # Security
     SECRET_KEY: str = "change_this_to_a_secure_random_string_in_production"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 8 # 8 days
     MCP_API_KEY: str = ""  # MCP 服务认证密钥，留空则开发环境放行
     EXTERNAL_API_KEYS: List[str] = ["default_ai_sign_key_1", "default_ai_sign_key_2"] # 外部调用统一认证密钥
+    WEAVER_AI_FIELD_CONFIGS: str = "{}"  # 泛微流程 AI 助手字段配置，JSON：{"494":[{"bizKey":"title","label":"标题","fieldId":"field1234"}]}
 
 
     model_config = SettingsConfigDict(

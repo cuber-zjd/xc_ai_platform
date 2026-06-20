@@ -39,7 +39,12 @@ class ExcelAnalyzer:
 
             header_index = table_region["headerIndex"]
             data_start_index = table_region["dataStartIndex"]
-            header_matrix = self._header_matrix(rows, table_region["headerStartIndex"], header_index)
+            header_matrix = self._header_matrix(
+                rows,
+                table_region["headerStartIndex"],
+                header_index,
+                worksheet,
+            )
             header_meta = self._build_header_meta(header_matrix)
             headers = [item["label"] for item in header_meta]
             data_rows_raw = self._data_rows_until_gap(rows, data_start_index)
@@ -145,12 +150,37 @@ class ExcelAnalyzer:
         rows: list[tuple[Any, ...]],
         header_start_index: int,
         header_end_index: int,
+        worksheet=None,
     ) -> list[list[Any]]:
         matrix: list[list[Any]] = []
         width = max((len(row) for row in rows[header_start_index : header_end_index + 1]), default=0)
-        for row in rows[header_start_index : header_end_index + 1]:
-            matrix.append([self._json_value(row[index] if index < len(row) else None) for index in range(width)])
+        for offset, row in enumerate(rows[header_start_index : header_end_index + 1]):
+            excel_row = header_start_index + offset + 1
+            matrix.append(
+                [
+                    self._json_value(
+                        self._merged_cell_value(
+                            worksheet,
+                            excel_row,
+                            index + 1,
+                            row[index] if index < len(row) else None,
+                        )
+                    )
+                    for index in range(width)
+                ]
+            )
         return matrix
+
+    def _merged_cell_value(self, worksheet, row_index: int, column_index: int, value: Any) -> Any:
+        if value not in (None, "") or worksheet is None:
+            return value
+        for cell_range in getattr(worksheet, "merged_cells", []).ranges:
+            if (
+                cell_range.min_row <= row_index <= cell_range.max_row
+                and cell_range.min_col <= column_index <= cell_range.max_col
+            ):
+                return worksheet.cell(cell_range.min_row, cell_range.min_col).value
+        return value
 
     def _build_header_meta(self, header_matrix: list[list[Any]]) -> list[dict[str, Any]]:
         width = max((len(row) for row in header_matrix), default=0)
@@ -170,6 +200,8 @@ class ExcelAnalyzer:
                     "isMetricColumn": self._is_metric_header_column(column_values),
                 }
             )
+        while meta and not meta[-1]["parts"]:
+            meta.pop()
         return meta
 
     def _normalize_headers(self, row: tuple[Any, ...]) -> list[str]:
@@ -234,9 +266,13 @@ class ExcelAnalyzer:
         return samples
 
     def _infer_type(self, values: list[Any], header_meta: dict[str, Any] | None = None) -> FieldType:
+        header_text = " ".join(str(part) for part in (header_meta or {}).get("parts", []))
+        if self._is_date_like_header(header_text):
+            return FieldType.DATE
+        if any(keyword in header_text for keyword in ["执行价", "单价", "成交量", "手续费", "收益", "持仓量", "数量", "金额", "价格", "盈亏"]):
+            return FieldType.DECIMAL
         if not values:
             return FieldType.STRING
-        header_text = " ".join(str(part) for part in (header_meta or {}).get("parts", []))
         if any(keyword in header_text for keyword in ["账户", "合约", "代码", "品种", "策略", "方向", "单位"]):
             return FieldType.STRING
         if self._is_date_like_header(header_text) and self._date_like_ratio(values) >= 0.8:
@@ -272,7 +308,7 @@ class ExcelAnalyzer:
     ) -> FieldRole:
         lowered = header.lower()
         date_keywords = ["date", "time", "日期", "时间", "月份", "年度", "年份", "年", "月", "日"]
-        measure_keywords = ["金额", "数量", "销量", "收入", "成本", "利润", "单价", "余额", "合计", "均价", "涨跌", "sum", "amount", "qty", "price"]
+        measure_keywords = ["金额", "数量", "销量", "收入", "成本", "利润", "单价", "余额", "合计", "均价", "涨跌", "成交量", "手续费", "收益", "持仓量", "执行价", "sum", "amount", "qty", "price"]
         text_keywords = ["备注", "说明", "描述", "地址", "内容", "comment", "desc"]
         if field_type in {FieldType.DATE, FieldType.DATETIME} or any(key in lowered for key in date_keywords):
             return FieldRole.DATE
@@ -619,8 +655,25 @@ class ExcelAnalyzer:
         ]
         if normalized_parts:
             unique_parts = list(dict.fromkeys(normalized_parts))
-            return unique_parts[0]
+            return self._compose_hierarchical_header(unique_parts)
         return f"字段{index + 1}"
+
+    def _compose_hierarchical_header(self, parts: list[str]) -> str:
+        if not parts:
+            return ""
+        if len(parts) == 1:
+            return parts[0]
+        parent, child = parts[0], parts[-1]
+        generic_parents = {"项目", "基本信息", "基础信息", "明细", "数据"}
+        standalone_children = {"收益情况", "持仓量", "备注", "合计"}
+        group_prefixes = {"开仓", "平仓", "持仓"}
+        if parent in generic_parents or child in standalone_children:
+            return child
+        if parent in group_prefixes and not child.startswith(parent):
+            return f"{parent}{child}"
+        if parent == child:
+            return child
+        return child
 
     def _is_effective_header_part(self, value: Any) -> bool:
         if value in (None, ""):

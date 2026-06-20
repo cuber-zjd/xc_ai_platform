@@ -103,6 +103,85 @@ class FrReportSnapshot(BaseDBModel, table=True):
     generation_warnings: list[str] = Field(default_factory=list, sa_type=JSONB)
 
 
+class FrReportProject(BaseDBModel, table=True):
+    __tablename__ = "fr_report_project"
+
+    report_id: str = Field(index=True, unique=True)
+    report_name: str = Field(index=True)
+    report_code: str = Field(index=True)
+    target_folder: str = Field(index=True)
+    current_object_path: str = Field(index=True)
+    current_structure_version_id: str | None = Field(default=None, index=True)
+    current_file_version_id: str | None = Field(default=None, index=True)
+    owner_user_id: int = Field(index=True)
+    source_object_path: str | None = Field(default=None, index=True)
+    status: str = Field(default="active", index=True)
+    summary: dict[str, Any] = Field(default_factory=dict, sa_type=JSONB)
+
+
+class FrReportStructureVersion(BaseDBModel, table=True):
+    __tablename__ = "fr_report_structure_version"
+
+    structure_version_id: str = Field(index=True, unique=True)
+    report_id: str = Field(index=True)
+    snapshot_id: str | None = Field(default=None, index=True)
+    version_no: int = Field(default=1, index=True)
+    version_name: str | None = None
+    parent_version_id: str | None = Field(default=None, index=True)
+    source_type: str = Field(default="ai_generated", index=True)
+    report_dsl: dict[str, Any] = Field(default_factory=dict, sa_type=JSONB)
+    document_snapshot: dict[str, Any] = Field(default_factory=dict, sa_type=JSONB)
+    sql_snapshot: dict[str, Any] = Field(default_factory=dict, sa_type=JSONB)
+    style_snapshot: dict[str, Any] = Field(default_factory=dict, sa_type=JSONB)
+    writeback_snapshot: dict[str, Any] = Field(default_factory=dict, sa_type=JSONB)
+    operation_patch: dict[str, Any] = Field(default_factory=dict, sa_type=JSONB)
+    diff_summary: dict[str, Any] = Field(default_factory=dict, sa_type=JSONB)
+    status: str = Field(default="active", index=True)
+
+
+class FrReportFileVersion(BaseDBModel, table=True):
+    __tablename__ = "fr_report_file_version"
+
+    file_version_id: str = Field(index=True, unique=True)
+    report_id: str = Field(index=True)
+    structure_version_id: str | None = Field(default=None, index=True)
+    version_no: int = Field(default=1, index=True)
+    version_name: str | None = None
+    current_object_path: str = Field(index=True)
+    archive_object_path: str = Field(index=True)
+    dsl_object_path: str | None = None
+    manifest_object_path: str | None = None
+    diff_object_path: str | None = None
+    source_file_hash: str | None = Field(default=None, index=True)
+    target_file_hash: str | None = Field(default=None, index=True)
+    source_etag: str | None = Field(default=None, index=True)
+    target_etag: str | None = Field(default=None, index=True)
+    source_last_modified: str | None = None
+    target_last_modified: str | None = None
+    write_status: str = Field(default="generated", index=True)
+    preview_url: str | None = None
+    manifest: dict[str, Any] = Field(default_factory=dict, sa_type=JSONB)
+    warnings: list[str] = Field(default_factory=list, sa_type=JSONB)
+    errors: list[str] = Field(default_factory=list, sa_type=JSONB)
+
+
+class FrReportExternalChangeLog(BaseDBModel, table=True):
+    __tablename__ = "fr_report_external_change_log"
+
+    change_id: str = Field(index=True, unique=True)
+    report_id: str = Field(index=True)
+    object_path: str = Field(index=True)
+    last_known_hash: str | None = Field(default=None, index=True)
+    detected_hash: str | None = Field(default=None, index=True)
+    last_known_etag: str | None = None
+    detected_etag: str | None = None
+    last_known_modified: str | None = None
+    detected_modified: str | None = None
+    base_file_version_id: str | None = Field(default=None, index=True)
+    status: str = Field(default="detected", index=True)
+    detail: dict[str, Any] = Field(default_factory=dict, sa_type=JSONB)
+
+
 class FrReportOperationDraft(BaseDBModel, table=True):
     __tablename__ = "fr_report_operation_draft"
 

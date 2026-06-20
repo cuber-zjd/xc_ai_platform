@@ -102,16 +102,20 @@ pnpm build
 - FineReport AI 报表生成必须遵循“AI 只生成 ReportDSL，CPT/XML 只能由确定性程序生成”的边界。
 - 当前前端交互应优先按分步骤推进，第一步先收集需求、人工修改意见、Excel 和相关表名，完成 SQL 生成与数据预览，再进入后续报表设计和预览发布步骤。
 - 第二步通过 `POST /api/v1/fr/ai-reports/steps/dsl/generate` 基于第一步任务产物生成 ReportDSL，并写回同一条任务记录；该步骤不得生成 CPT/XML，也不得调用 FineReport 预览。
-- 第三步通过 `POST /api/v1/fr/ai-reports/steps/cpt/generate` 基于同一任务的 ReportDSL 确定性生成 CPT，上传 MinIO 的 `reportlets/AI生成报表/` 专用预览目录，并返回 FineReport 预览地址。
+- 第三步通过 `POST /api/v1/fr/ai-reports/steps/cpt/generate` 或 AI 草稿 CPT 生成入口，基于已确认的 ReportDSL/快照确定性生成 CPT；写入用户指定的 `webroot/APP/reportlets/` 子路径前必须创建平台结构版本和 CPT 文件版本，并进行外部修改冲突检测。
 - 第二步允许携带 `dsl_feedback` 重新生成 ReportDSL，用于只调整版式和 DSL 预览，不重复跑 SQL。
 - 第二步预览为前端基于 ReportDSL 布局和 SQL 样例数据渲染的轻量预览，尤其需要支持 `horizontalExpansion` 横向扩展，不代表 FineReport 运行时预览结果。
 - ReportDSL 必须通过 `reportMeta` 承载标题、单位、更新时间、均价、备注和筛选条件等模板级语义；Excel 标题识别应结合全报表语义、合并单元格和表格区域上方文本，不能简单把第一行当标题。
+- Excel 多层表头解析必须结合合并单元格生成完整字段语义；例如期权填报模板中的 `开仓` + `权利金单价` 应解析为 `开仓权利金单价`，空白尾列不得进入字段列表。
+- 期货和期权操作台账是不同沉淀场景：期权应识别为 `option_operation_ledger`，使用 `fr_option_contract_base`、`fr_option_trade_ledger`、权利金、执行价和合约乘数口径，不得落入期货吨数/手、每日收盘价和浮动盈亏模板。
 - 对非标准表格需要优先沉淀到 `layout.designHints`：例如“涨跌只保留最新一天、单独一行、放在市场下面价格列表上面”应表达为 `specialRows.latest_change_row`，前端 DSL 预览按该提示渲染。
 - FineReport AI 报表任务需要沉淀历史任务和会话上下文；新任务应优先写入 `conversation_id`、`revision_no` 和 `parent_task_id`，便于恢复旧任务、追踪多轮人工修订和后续经验检索。
 - 人工反馈应通过结构化反馈记录沉淀为正向样本或待优化样本；第一版只做历史经验积累和后续检索基础，不允许自动改写全局提示词、业务规则或代码。
 - SQL 生成应优先服务 FineReport 设计器布局：Excel 中城市、市场、区域等横向表头可通过 ReportDSL/FineReport 横向扩展表达时，SQL 保持 `record_date/market/price/change_amt` 等长表结果，不强行用大量 `CASE WHEN`、`PIVOT` 或聚合转宽表。
-- 生成文件只能写入 MinIO `webroot/APP/reportlets/AI生成报表/` 专用预览目录，不得覆盖其他正式 reportlets。
-- 第三步对接文档见 `docs/fr-ai-report-third-step.md`；当前只做 CPT 生成、MinIO 专用预览目录上传和 FineReport 预览，不做审批复制或正式 reportlets 发布。
+- AI 新建或修改后的 CPT 可写入用户指定的 `webroot/APP/reportlets/` 子路径，也可以覆盖目标 CPT；但写入前必须检查当前 MinIO 文件 hash/lastModified，发现 FineReport 设计器外部修改时默认阻止覆盖，并要求同步外部修改或归档当前文件后覆盖。
+- 每次写入 CPT 都必须同步生成平台结构版本和 CPT 文件版本；CPT 文件版本归档在目标文件夹下的 `版本库/<报表名>/v0001/` 等结构化目录中，至少包含 `report.cpt`、`report.dsl.json`、`manifest.json` 和 `diff.json`。
+- 同一 CPT 路径的生成、覆盖、外部同步、回档和回收必须通过版本控制服务串行化处理；只同步外部修改时不得覆盖当前 CPT，回收时移动到目标目录下 `回收站/<报表名>/<时间>/`。
+- 第三步对接文档见 `docs/fr-ai-report-third-step.md`；当前支持 CPT 生成、版本归档、目标路径写入和 FineReport 预览，正式发布或覆盖必须经过用户确认和外部修改检测。
 - 帆软报表文件读写使用专用 `FR_AI_MINIO_*` 配置，不复用平台通用 `MINIO_*`；第三步默认 `FR_AI_MINIO_ENDPOINT=192.168.14.41:9000`、`FR_AI_MINIO_BUCKET_NAME=fanruan`，FineReport 预览根地址为 `http://192.168.14.41:1080`，CPT 数据连接名通过 `FR_AI_FINEREPORT_DB_NAME` 配置，当前默认 `XcTest`。
 - 现有报表结构读取入口为 `GET /api/v1/fr/ai-reports/files/structure`，只能在线内存读取 `FR_AI_REPORT_FILE_PREFIXES` 允许范围内且当前用户可见的 CPT/FRM；第一版只返回 XML 版本、数据集、连接名、参数、截断 SQL 和 warnings，不返回完整 CPT/XML 原文，不落盘下载。
 
@@ -120,6 +124,7 @@ pnpm build
 - 除 `/insight/*` 市场洞察专 app 或用户明确要求的独立视觉外，登录后用户侧与管理后台统一采用接近 ChatGPT 的极简产品壳：浅灰固定侧边栏、冷白主内容区、黑白中性色、轻描边和克制阴影。
 - 默认主题点缀色采用当前 SAP 助手确认过的青绿色体系，用于选中态、轻量标签、聚焦态、状态提示和少量品牌强调；不要回退到大面积紫蓝渐变、黑底模块或偏黄旧纸感背景。
 - 智能体入口优先通过工作台集中展示，侧边栏可展示常用和最近使用智能体；智能体不强制做成聊天形态，点击后按 `route_path` 跳转到对应页面。
+- 助手类智能区域默认采用“聊天优先、上下文隐藏”的交互：第一屏只保留对话流和输入框，结构、工具结果、版本、环境信息、调试信息和待应用操作默认隐藏到弹窗、抽屉或可展开面板中；除非用户明确要求常驻，否则不要把内部状态铺满主界面。
 - 新页面优先复用 `app-shell`、`app-sidebar`、`app-stage`、`app-panel`、`app-page`、`app-page-header` 等全局样式类，但视觉应保持中性、简洁、低装饰。
 
 ## 9. SAP 助手约束
@@ -162,7 +167,14 @@ pnpm build
 ## 泛微流程AI助手约束
 
 - 泛微流程 AI 助手用于 ecode 嵌入泛微流程发起/处理页面，平台前端入口为 `/weaver/assistant/embed`，源码位于 `frontend/src/features/weaver-ai-assistant/`。
+- 泛微流程 AI 填报规则配置页用于 ecode 嵌入泛微流程路径设置/基础信息页，平台前端入口为 `/weaver/assistant/workflow-config`，按 `env + workflow_id` 维护流程特殊填报要求、提示词和工具/技能说明。
+- 泛微流程 AI 智审用于审批节点预审和审批建议展示，平台前端入口为 `/weaver/assistant/review`，智审规则配置入口为 `/weaver/assistant/review-config`；泛微后端节点附加操作示例放在 `docs/solution-plans/泛微流程AI助手/java/WeaverAiReviewAction.java`。
 - 后端接口统一挂载到 `/api/v1/weaver/ai-assistant`，入口位于 `backend/app/api/v1/endpoints/agent/weaver_ai_assistant.py`，服务层位于 `backend/app/services/agent/weaver_ai_assistant/`。
+- 流程规则保存在 `weaver_ai_workflow_rule` 表，聊天接口需要自动加载启用规则进入 AI 上下文，但仍不得突破字段可见、可写和安全边界。
+- 智审规则保存在 `weaver_ai_review_rule` 表，智审记录保存在 `weaver_ai_review_record` 表；初版只生成风险等级、检查项、建议结论和建议审批意见，不得直接保存、提交、审批、退回或越权替审。
+- 泛微助手模型选择优先读取 `WEAVER_AI_MODEL_NAME`；未配置时按 `WEAVER_AI_MODEL_CAPABILITY` 选择模型，默认 `complex-reasoning`，用于提升流程特殊规则理解能力。
 - ecode 侧只保留悬浮图标、iframe 打开、`WfForm` 上下文采集和结构化动作执行；聊天面板、样式、AI 调用和业务逻辑由平台承载。
 - 该嵌入页不走平台登录态，接口必须通过 `ai-sign` 校验，生产环境必须配置非默认 `EXTERNAL_API_KEYS`。
+- 泛微助手嵌入页聊天优先调用 `/api/v1/weaver/ai-assistant/chat/stream` 获取 SSE 流式文本，最终仍只接收后端白名单结构化动作；`/chat` 保留为非流式兼容入口。
+- 泛微助手后端每轮聊天必须注入 `current_date` 日期工具结果，作为“今天、明天、下周一、本月”等相对日期的唯一换算基准。
 - AI 只允许返回 `set_field`、`add_detail_row`、`show_message` 等结构化动作；不得返回任意 JavaScript，不得自动保存、提交、审批或删除流程。

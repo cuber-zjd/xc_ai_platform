@@ -107,7 +107,8 @@ uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - 真实报表结构读取入口：`GET /api/v1/fr/ai-reports/files/structure`，按当前登录用户和显示范围校验 `object_path`，只在线内存读取 MinIO 对象，不落盘；当前解析 UTF-8/XML CPT 的根节点、版本、数据集、连接名、参数、截断 SQL，并返回 `document.sheets` 中的行列、单元格、合并区域、基础样式、字段绑定和原始节点路径引用；只返回结构化结果和 warnings，不返回完整 CPT 原文。
 - 报表文件用户可见范围入口：`GET/PUT /api/v1/fr/ai-reports/files/visibility-preference`，按当前登录用户保存显示的文件夹或报表路径；`GET /files` 默认按偏好过滤，配置弹窗需要传 `include_all=true` 拉取全量目录。
 - 帆软报表文件存储必须走专用 `FR_AI_MINIO_*` 配置和 `FrMinIOService`，不得复用平台通用 `MINIO_*`，避免影响合同、知识库、图标等平台文件。
-- 当前需要同时维护“第一步 SQL 生成”“第二步 DSL 生成”“第三步 CPT 生成”与“全流程生成”四类接口，其中第一步接口为 `POST /api/v1/fr/ai-reports/steps/sql/generate`，用于只生成 SQL、执行只读校验并返回样例数据；第二步接口为 `POST /api/v1/fr/ai-reports/steps/dsl/generate`，基于同一任务的 SQL、需求摘要、Excel 分析和表结构生成 ReportDSL，不生成 CPT/XML，不调用 FineReport 预览；第三步接口为 `POST /api/v1/fr/ai-reports/steps/cpt/generate`，基于同一任务的 ReportDSL 确定性生成 CPT、上传 MinIO `reportlets/AI生成报表/` 专用预览目录并返回 FineReport 预览地址。
+- 当前需要同时维护“第一步 SQL 生成”“第二步 DSL 生成”“第三步 CPT 生成”与“全流程生成”四类接口，其中第一步接口为 `POST /api/v1/fr/ai-reports/steps/sql/generate`，用于只生成 SQL、执行只读校验并返回样例数据；第二步接口为 `POST /api/v1/fr/ai-reports/steps/dsl/generate`，基于同一任务的 SQL、需求摘要、Excel 分析和表结构生成 ReportDSL，不生成 CPT/XML，不调用 FineReport 预览；第三步接口为 `POST /api/v1/fr/ai-reports/steps/cpt/generate` 或 AI 草稿 CPT 入口，基于已确认 ReportDSL/快照确定性生成 CPT，按用户指定 `webroot/APP/reportlets/` 子路径写入并同步版本归档。
+- 小驰新建报表聊天入口为 `POST /api/v1/fr/ai-reports/agent/chat`，接收用户消息、上下文 JSON 和可选上传文件；后端按受控 ReAct 外壳决策是否追问、需求预检、读取真实表结构/预览数据、生成 SQL、生成 ReportDSL 或保存 CPT。前端不得自行固定“主表/基础表”流程，只能把用户描述和上下文交给该入口。
 - 任务模型：`backend/app/models/agent/fr_report/report_task.py`，保存 Excel 分析、需求摘要、ReportDSL、SQL、建表 SQL、生成日志、MinIO 专用预览目录路径和预览校验结果。
 - Schema：`backend/app/schemas/agent/fr_report/report_dsl.py` 定义第一版 ReportDSL 和 JSON Schema，当前阶段只落地 `detail_table`、`group_table`、`pivot_table` 三类表格报表。
 - ReportDSL 需要通过 `reportMeta` 承载模板级语义，包括标题、单位、更新时间、均价、备注和筛选条件；这些信息不能只停留在 Excel `templateAnalysis` 或 `layout.designHints`。
@@ -115,15 +116,20 @@ uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - 分步骤改造时，优先把阶段产物持久化到同一个任务表中，至少保留 `requirement_text`、`source_table_name`、Excel 分析、需求摘要、SQL、SQL 校验结果与日志，方便人工回看和后续步骤接力。
 - 第二步生成的 ReportDSL 继续写回同一条 `fr_ai_report_task.report_dsl`，前端预览直接基于 DSL 布局和 SQL 样例数据渲染，用于人工确认版式，不代表 FineReport 运行时预览结果。
 - 第二步接口可接收 `dsl_feedback` 做 DSL 版式重生成，只更新需求摘要中的 DSL 修订提示、ReportDSL 和日志，不重复生成 SQL；非标准表格结构优先落入 `layout.designHints.specialRows`，例如最新一天涨跌单行使用 `latest_change_row`。
-- 第三步当前只允许从已确认的 `report_dsl` 确定性生成 CPT、写入 MinIO `reportlets/AI生成报表/` 专用预览目录并返回 FineReport 预览地址；不做正式 reportlets 复制、审批发布或覆盖。
+- 第三步当前只允许从已确认的 `report_dsl` 或 AI 快照确定性生成 CPT；写入目标 CPT 前必须走 `FrReportVersionControlService`，保存结构版本、文件版本，并检测 FineReport 设计器外部修改，不能直接覆盖。
+- 版本控制服务需要覆盖生成、外部同步、文件回档、结构回档和回收站；同一 `current_object_path` 的写操作必须串行化，避免并发请求同时通过 hash 检测后互相覆盖。
 - 第三步对接细节见 `docs/fr-ai-report-third-step.md`。CPT XML 按 FineReport 11.5.0 样例生成，数据库连接名来自 `FR_AI_FINEREPORT_DB_NAME`，当前默认 `XcTest`。
 - Agent 实现：`RequirementAgent`、`DataModelAgent`、`SqlAgent`、`ReportDesignerAgent` 必须优先通过 `app.core.llm_factory.LLMFactory` 调用已配置大模型生成结构化 JSON；模型不可用或 JSON 校验失败时才使用规则兜底。
 - 表结构与 SQL 校验：用户只提供单表或多表表名时，`SqlServerQueryService` 可查询 SQL Server `INFORMATION_SCHEMA.COLUMNS` 获取字段结构并推断字段类型/角色；多表会生成 `tables`、字段来源和 `joinHints` 供 `SqlAgent` 生成 JOIN SQL。`SqlAgent` 生成 SQL 后由同一服务做只读预执行校验，只允许 `SELECT/WITH` 查询，禁止 DDL/DML/存储过程/多语句，参数使用安全默认值绑定，失败时允许 `SqlAgent` 基于错误修复一次。
 - SQL ReAct：`SqlReActAgent` 会读取 Excel 模板摘要、真实表结构和 SQL Server TOP 样例数据，生成 SQL 后立即执行只读校验；如果 SQL 不可执行会把错误和样例数据反馈给大模型继续修复，最多迭代 3 轮。对于 Excel 中城市、市场、区域等横向表头，优先通过 ReportDSL/FineReport 横向扩展表达，SQL 保持 `record_date/market/price/change_amt` 等长表结果，不因模板横向表头强制生成大量 `CASE WHEN`、`PIVOT` 或聚合宽表列。
 - Excel 模板分析：`ExcelAnalyzer` 需要保留标题、单位、筛选区、更新时间、备注说明、年份/月日格式、涨跌规则和横向扩展候选信息，供 SQL Agent 与 ReportDesignerAgent 共同判断“数据集长表 + 设计器横向扩展”的方案。
 - Excel 标题识别不能简单默认第一行，应结合表格区域上方文本、合并单元格、标题关键词和全报表语义打分判断；筛选条件、单位、更新时间、备注等辅助文本不能误判为标题。
+- 多层表头解析必须结合合并单元格生成完整语义字段；例如期权填报模板中的 `开仓` + `权利金单价` 应解析为 `开仓权利金单价`，空白尾列不得进入字段列表。
+- 已沉淀的期货和期权操作台账场景应走独立 `businessPlan.scenario`、候选数据模型、SQL 兜底和 DSL 规范化；期权场景不得复用期货的吨数/手、每日收盘价和浮动盈亏口径。
+- 候选表结构生成必须默认使用英文下划线表名和字段名，并包含 `id` 主键；第一步接口支持 `ddl_dialect`、`id_auto_increment`、`table_name_overrides_json`，DDL 需要按 SQL Server、MySQL、PostgreSQL 分别生成数据库级表注释和字段注释。
 - 关键边界：AI/Agent 只能输出结构化 ReportDSL、需求摘要、逻辑表结构和 SQL；FineReport `.cpt`/XML 必须由 `CptGenerator` 确定性生成。
-- 存储边界：生成产物只能写入 MinIO `webroot/APP/reportlets/AI生成报表/{task_id}/` 或 `webroot/APP/reportlets/AI生成报表/快照/{snapshot_id}/`，不得覆盖其他正式 reportlets。
+- 存储边界：AI 生成或修改后的 CPT 可写入用户指定的 `webroot/APP/reportlets/` 子路径，也可以覆盖目标 CPT；但必须先通过文件版本服务记录平台结构版本、CPT 文件版本、hash/lastModified，并把版本文件归档到目标目录下的 `版本库/<报表名>/v0001/` 等结构化目录。检测到 FineReport 设计器外部修改时默认阻止覆盖。
+- 外部修改处理分为“仅同步外部修改为文件版本”和“覆盖前自动归档当前文件”；前者不得继续生成或覆盖 CPT。回收站目录固定为目标文件夹下 `回收站/<报表名>/<时间>/`。
 
 ## 10. SAP 助手
 
@@ -144,6 +150,7 @@ uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - 后端接口统一挂载到 `/api/v1/insight`，入口目录为 `backend/app/api/v1/endpoints/agent/insight/`。
 - 后端业务服务放在 `backend/app/services/agent/insight/`，按 `crawler`、`intelligence`、`visibility`、`report` 等子域逐步拆分。
 - 数据模型放在 `backend/app/models/agent/insight/`，Schema 放在 `backend/app/schemas/agent/insight/`。
+- 定时报告计划服务位于 `backend/app/services/agent/insight/report_subscription_service.py`，通过 `insight_report_subscription` 保存模板、范围、周期和企业微信接收人；执行时必须按计划创建者权限生成报告并复用通知服务写 `insight_notification`。
 - 第一阶段开发顺序以通用联网采集为先：本地 Firecrawl 通用网页抓取、百度搜索发现、Bocha/博查 API 多源查询、采集清洗、候选情报入库，再进入情报权限、情报池和报告模块。
 - Insight 情报不固定绑定企业，必须支持 `company`、`industry`、`market`、`product`、`policy`、`technology`、`custom` 等主题类型。
 - 情报列表接口必须在后端执行可见性过滤，不能返回全量情报后只靠前端隐藏。
@@ -168,5 +175,11 @@ uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 - 后端接口入口为 `backend/app/api/v1/endpoints/agent/weaver_ai_assistant.py`，统一挂载到 `/api/v1/weaver/ai-assistant`。
 - Schema 位于 `backend/app/schemas/agent/weaver_ai_assistant.py`，服务层位于 `backend/app/services/agent/weaver_ai_assistant/`。
+- 流程特殊填报规则使用 `weaver_ai_workflow_rule` 表保存，按 `env + workflow_id` 维护；规则管理接口为 `/workflow-rules`，聊天时会自动加载启用规则进入 AI 上下文。
+- 流程 AI 智审规则使用 `weaver_ai_review_rule` 表保存，按 `env + workflow_id + node_id + reviewer_user_id` 逐级匹配；智审记录使用 `weaver_ai_review_record` 保存表单快照、规则快照和模型结论。
+- 智审主入口为 `POST /api/v1/weaver/ai-assistant/review/precheck`，只返回风险等级、检查项、建议结论和建议审批意见；任何自动替审能力必须先通过规则授权并保留审计记录。
+- 泛微助手模型选择优先读取 `WEAVER_AI_MODEL_NAME`；未配置时按 `WEAVER_AI_MODEL_CAPABILITY` 选择模型，默认使用 `complex-reasoning`，避免复杂流程规则被轻量模型弱化。
 - ecode 或泛微页面调用该接口时使用 `ai-sign` 请求头，校验逻辑复用 `deps.verify_external_ai_sign`。
+- 聊天主入口为 `POST /api/v1/weaver/ai-assistant/chat/stream`，以 SSE 推送 `message_delta`、`actions`、`done`；`/chat` 仅作为非流式兼容入口保留。
+- 服务层需要在每轮聊天上下文中注入 `current_date` 日期工具结果，供 AI 将“今天、明天、下周一、本月”等相对日期换算为具体日期。
 - AI 只能返回 `set_field`、`add_detail_row`、`show_message` 等结构化动作，不得返回任意 JavaScript，不得触发保存、提交、审批或删除流程。

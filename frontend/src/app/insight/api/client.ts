@@ -33,6 +33,7 @@ export const insightApi = {
         apiClient.post<InsightCompanyRead, InsightCompanyRead>(`${insightApiPrefix}/companies`, payload),
     importCompanies: (payload: FormData) =>
         apiClient.post<InsightCompanyImportResponse, InsightCompanyImportResponse>(`${insightApiPrefix}/companies/import`, payload, {
+            headers: { "Content-Type": "multipart/form-data" },
             timeout: 120000,
         }),
     downloadCompanyImportTemplate: () =>
@@ -68,6 +69,20 @@ export const insightApi = {
         apiClient.post<InsightReportGenerateResponse, InsightReportGenerateResponse>(`${insightApiPrefix}/reports/generate`, payload, {
             timeout: 180000,
         }),
+    listReportSubscriptions: (params: InsightReportSubscriptionListParams) =>
+        apiClient.get<InsightPage<InsightReportSubscriptionRead>, InsightPage<InsightReportSubscriptionRead>>(`${insightApiPrefix}/reports/subscriptions`, { params }),
+    createReportSubscription: (payload: InsightReportSubscriptionCreate) =>
+        apiClient.post<InsightReportSubscriptionRead, InsightReportSubscriptionRead>(`${insightApiPrefix}/reports/subscriptions`, payload),
+    updateReportSubscription: (subscriptionId: number, payload: InsightReportSubscriptionUpdate) =>
+        apiClient.put<InsightReportSubscriptionRead, InsightReportSubscriptionRead>(`${insightApiPrefix}/reports/subscriptions/${subscriptionId}`, payload),
+    deleteReportSubscription: (subscriptionId: number) =>
+        apiClient.delete<void, void>(`${insightApiPrefix}/reports/subscriptions/${subscriptionId}`),
+    runReportSubscription: (subscriptionId: number) =>
+        apiClient.post<InsightReportSubscriptionRunResponse, InsightReportSubscriptionRunResponse>(`${insightApiPrefix}/reports/subscriptions/${subscriptionId}/run`, undefined, {
+            timeout: 180000,
+        }),
+    runDueReportSubscriptions: (params?: { limit?: number }) =>
+        apiClient.post<InsightReportSubscriptionDueRunResponse, InsightReportSubscriptionDueRunResponse>(`${insightApiPrefix}/reports/subscriptions/run-due`, undefined, { params, timeout: 180000 }),
     updateReport: (reportId: number, payload: InsightReportUpdateRequest) =>
         apiClient.put<InsightReportDetail, InsightReportDetail>(`${insightApiPrefix}/reports/${reportId}`, payload),
     listReportExports: (reportId: number) =>
@@ -89,6 +104,8 @@ export const insightApi = {
         apiClient.get<InsightAccessRuleRead[], InsightAccessRuleRead[]>(`${insightApiPrefix}/permissions/${targetType}/${targetId}`),
     grantAccessRule: (targetType: string, targetId: number, payload: InsightAccessRuleUpsert) =>
         apiClient.post<InsightAccessRuleRead, InsightAccessRuleRead>(`${insightApiPrefix}/permissions/${targetType}/${targetId}`, payload),
+    grantAccessRulesBulk: (targetType: string, payload: InsightAccessRuleBulkUpsert) =>
+        apiClient.post<InsightAccessRuleBulkResponse, InsightAccessRuleBulkResponse>(`${insightApiPrefix}/permissions/${targetType}/bulk`, payload),
     revokeAccessRule: (ruleId: number) =>
         apiClient.delete<void, void>(`${insightApiPrefix}/permissions/rules/${ruleId}`),
     getSchedulerStatus: () =>
@@ -101,6 +118,8 @@ export const insightApi = {
         apiClient.post<InsightSchedulerStatusRead, InsightSchedulerStatusRead>(`${insightApiPrefix}/scheduler/stop`),
     listDataSources: (params: InsightDataSourceListParams) =>
         apiClient.get<InsightPage<InsightDataSourceRead>, InsightPage<InsightDataSourceRead>>(`${insightApiPrefix}/data-sources`, { params }),
+    listDataSourceGroups: (params: InsightDataSourceListParams) =>
+        apiClient.get<InsightDataSourceGroupRead[], InsightDataSourceGroupRead[]>(`${insightApiPrefix}/data-sources/groups`, { params }),
     listDataSourceExecutionLogs: (params: InsightDataSourceExecutionLogParams) =>
         apiClient.get<InsightPage<InsightTaskRead>, InsightPage<InsightTaskRead>>(`${insightApiPrefix}/data-sources/execution-logs`, { params }),
     runDueDataSources: (params?: { limit?: number }) =>
@@ -111,6 +130,27 @@ export const insightApi = {
         ),
     createDataSource: (payload: InsightDataSourceCreate) =>
         apiClient.post<InsightDataSourceRead, InsightDataSourceRead>(`${insightApiPrefix}/data-sources`, payload),
+    batchCreateDataSources: (payload: InsightDataSourceBatchCreateRequest) =>
+        apiClient.post<InsightDataSourceBatchCreateResponse, InsightDataSourceBatchCreateResponse>(`${insightApiPrefix}/data-sources/batch-create`, payload),
+    importDataSources: (payload: FormData) =>
+        apiClient.post<InsightDataSourceImportResponse, InsightDataSourceImportResponse>(`${insightApiPrefix}/data-sources/import`, payload, {
+            headers: { "Content-Type": "multipart/form-data" },
+            timeout: 180000,
+        }),
+    previewImportDataSources: (payload: FormData) =>
+        apiClient.post<InsightDataSourceImportResponse, InsightDataSourceImportResponse>(`${insightApiPrefix}/data-sources/import-preview`, payload, {
+            headers: { "Content-Type": "multipart/form-data" },
+            timeout: 180000,
+        }),
+    downloadDataSourceImportTemplate: () =>
+        apiClient.get<Blob, Blob>(`${insightApiPrefix}/data-sources/import-template`, {
+            responseType: "blob",
+            timeout: 120000,
+        }),
+    bulkActionDataSources: (payload: InsightDataSourceBulkActionRequest) =>
+        apiClient.post<InsightDataSourceBulkActionResponse, InsightDataSourceBulkActionResponse>(`${insightApiPrefix}/data-sources/bulk-action`, payload, {
+            timeout: 180000,
+        }),
     updateDataSource: (dataSourceId: number, payload: InsightDataSourceUpdate) =>
         apiClient.put<InsightDataSourceRead, InsightDataSourceRead>(`${insightApiPrefix}/data-sources/${dataSourceId}`, payload),
     deleteDataSource: (dataSourceId: number) =>
@@ -124,6 +164,18 @@ export const insightApi = {
     listIntelligences: (params: InsightIntelligenceListParams) =>
         apiClient.get<InsightPage<InsightIntelligenceListItem>, InsightPage<InsightIntelligenceListItem>>(`${insightApiPrefix}/intelligence`, {
             params,
+        }),
+    bulkActionIntelligence: (payload: InsightIntelligenceBulkActionRequest) =>
+        apiClient.post<InsightIntelligenceBulkActionResponse, InsightIntelligenceBulkActionResponse>(`${insightApiPrefix}/intelligence/bulk-action`, payload, {
+            timeout: 180000,
+        }),
+    chatWithAssistant: (payload: InsightAssistantChatRequest) =>
+        apiClient.post<InsightAssistantChatResponse, InsightAssistantChatResponse>(`${insightApiPrefix}/assistant/chat`, payload, {
+            timeout: 180000,
+        }),
+    deepResearch: (payload: InsightDeepResearchRequest) =>
+        apiClient.post<InsightDeepResearchResponse, InsightDeepResearchResponse>(`${insightApiPrefix}/research/deep`, payload, {
+            timeout: 240000,
         }),
     getIntelligenceDetail: (intelligenceId: number) =>
         apiClient.get<InsightIntelligenceDetail, InsightIntelligenceDetail>(`${insightApiPrefix}/intelligence/${intelligenceId}`),
@@ -378,6 +430,7 @@ export interface InsightCompanyListParams {
     page?: number;
     size?: number;
     keyword?: string;
+    sys_company_id?: number;
     industry?: string;
     monitor_level?: string;
     status?: string;
@@ -395,6 +448,86 @@ export interface InsightReportGenerateRequest {
     period_end?: string | null;
     max_materials?: number;
     generation_prompt?: string | null;
+}
+
+export interface InsightReportSubscriptionCreate {
+    subscription_name: string;
+    report_type?: string;
+    template_code?: string | null;
+    scope_type?: string;
+    sys_company_id?: number | null;
+    company_ids?: number[];
+    data_source_ids?: number[];
+    folder_name?: string | null;
+    max_materials?: number;
+    generation_prompt?: string | null;
+    schedule_frequency?: string;
+    weekday?: number | null;
+    day_of_month?: number | null;
+    time_of_day?: string;
+    timezone?: string;
+    wecom_recipient_scope?: string;
+    wecom_recipients?: InsightNotificationRecipient[];
+    visibility_scope?: string;
+    status?: string;
+}
+
+export type InsightReportSubscriptionUpdate = Partial<InsightReportSubscriptionCreate>;
+
+export interface InsightReportSubscriptionRead {
+    id: number;
+    subscription_uid: string;
+    subscription_name: string;
+    report_type: string;
+    template_code?: string | null;
+    scope_type: string;
+    sys_company_id?: number | null;
+    company_ids: number[];
+    data_source_ids: number[];
+    folder_name?: string | null;
+    max_materials: number;
+    generation_prompt?: string | null;
+    schedule_frequency: string;
+    weekday?: number | null;
+    day_of_month?: number | null;
+    time_of_day: string;
+    timezone: string;
+    next_run_time?: string | null;
+    last_run_time?: string | null;
+    last_report_id?: number | null;
+    last_notification_id?: number | null;
+    last_status?: string | null;
+    last_error?: string | null;
+    wecom_recipient_scope: string;
+    wecom_recipients: InsightNotificationRecipient[];
+    owner_user_id?: number | null;
+    owner_dept_id?: number | null;
+    visibility_scope: string;
+    status: string;
+    create_time: string;
+    update_time: string;
+}
+
+export interface InsightReportSubscriptionRunResponse {
+    subscription: InsightReportSubscriptionRead;
+    report?: InsightReportDetail | null;
+    notification?: InsightNotificationRead | null;
+    skipped?: boolean;
+    message?: string | null;
+}
+
+export interface InsightReportSubscriptionDueRunResponse {
+    checked_count: number;
+    due_count: number;
+    executed_count: number;
+    failed_count: number;
+    results: InsightReportSubscriptionRunResponse[];
+}
+
+export interface InsightReportSubscriptionListParams {
+    page?: number;
+    size?: number;
+    status?: string;
 }
 
 export interface InsightReportUpdateRequest {
@@ -503,6 +636,17 @@ export interface InsightAccessRuleUpsert {
     grant_type?: string;
     effective_from?: string | null;
     effective_to?: string | null;
+}
+
+export interface InsightAccessRuleBulkUpsert extends InsightAccessRuleUpsert {
+    target_ids: number[];
+}
+
+export interface InsightAccessRuleBulkResponse {
+    target_type: string;
+    target_count: number;
+    rule_count: number;
+    rules: InsightAccessRuleRead[];
 }
 
 export interface InsightAccessRuleRead {
@@ -862,6 +1006,29 @@ export interface InsightDataSourceRead {
     update_time: string;
 }
 
+export interface InsightDataSourceGroupRead {
+    group_key: string;
+    company_id?: number | null;
+    company_name?: string | null;
+    company_short_name?: string | null;
+    sys_company_id?: number | null;
+    source_type: string;
+    source_type_label: string;
+    total_count: number;
+    enabled_count: number;
+    disabled_count: number;
+    scheduled_count: number;
+    llm_filter_count: number;
+    auto_review_count: number;
+    failed_count: number;
+    paused_count: number;
+    latest_success_time?: string | null;
+    latest_failure_time?: string | null;
+    next_run_time?: string | null;
+    visibility_scopes: string[];
+    data_source_ids: number[];
+}
+
 export interface InsightDataSourceCreate {
     source_code?: string | null;
     source_name: string;
@@ -874,6 +1041,49 @@ export interface InsightDataSourceCreate {
     schedule_enabled?: boolean | null;
     visibility_scope?: string;
     status?: string;
+}
+
+export interface InsightDataSourceBatchCreateRequest {
+    company_ids: number[];
+    source_types: string[];
+    keyword_template?: string | null;
+    include_keywords?: string[];
+    exclude_keywords?: string[];
+    fetch_frequency?: string;
+    max_results?: number;
+    crawl_top_n?: number;
+    freshness?: string | null;
+    enable_llm_filter?: boolean;
+    filter_prompt?: string | null;
+    auto_review_mode?: string;
+    auto_review_min_confidence?: number;
+    auto_add_to_report_pool?: boolean;
+    auto_report_folder?: string | null;
+    visibility_scope?: string;
+    status?: string;
+    update_existing?: boolean;
+}
+
+export interface InsightDataSourceBatchCreateItem {
+    company_id: number;
+    company_name: string;
+    source_type: string;
+    source_name: string;
+    source_code: string;
+    status: string;
+    data_source_id?: number | null;
+    message?: string | null;
+}
+
+export interface InsightDataSourceBatchCreateResponse {
+    requested_company_count: number;
+    requested_type_count: number;
+    requested_count: number;
+    created_count: number;
+    updated_count: number;
+    skipped_count: number;
+    failed_count: number;
+    items: InsightDataSourceBatchCreateItem[];
 }
 
 export type InsightDataSourceUpdate = Partial<InsightDataSourceCreate>;
@@ -906,6 +1116,52 @@ export interface InsightDataSourceExecuteResponse {
     search_results?: InsightSearchDiscoveryResponse[];
     execution_errors?: InsightDataSourceExecutionError[];
     auto_review_summary?: InsightAutoReviewSummary | null;
+}
+
+export interface InsightDataSourceImportItem {
+    row_no: number;
+    source_name: string;
+    source_type: string;
+    base_url?: string | null;
+    company_id?: number | null;
+    company_name?: string | null;
+    keywords: string[];
+    project_name?: string | null;
+    channel_name?: string | null;
+    source_document?: string | null;
+    status: string;
+    data_source_id?: number | null;
+    message?: string | null;
+}
+
+export interface InsightDataSourceImportResponse {
+    file_count: number;
+    parsed_count: number;
+    created_count: number;
+    updated_count: number;
+    skipped_count: number;
+    failed_count: number;
+    items: InsightDataSourceImportItem[];
+    unsupported_channels: Array<Record<string, unknown>>;
+}
+
+export interface InsightDataSourceBulkActionRequest {
+    data_source_ids: number[];
+    action: string;
+    status?: string | null;
+    fetch_frequency?: string | null;
+    schedule_enabled?: boolean | null;
+    visibility_scope?: string | null;
+    fetch_config_patch?: Record<string, unknown> | null;
+    execute_crawl_top_n?: number | null;
+}
+
+export interface InsightDataSourceBulkActionResponse {
+    action: string;
+    requested_count: number;
+    success_count: number;
+    failed_count: number;
+    items: Array<Record<string, unknown>>;
 }
 
 export interface InsightAutoReviewSummary {
@@ -1122,6 +1378,14 @@ export interface InsightIntelligenceListParams {
     subject_type?: string;
     intelligence_type?: string;
     visibility_scope?: string;
+    company_id?: number;
+    sys_company_id?: number;
+    project_name?: string;
+    sentiment?: string;
+    tag?: string;
+    data_source_id?: number;
+    date_from?: string;
+    date_to?: string;
 }
 
 export interface InsightIntelligenceCreate {
@@ -1203,6 +1467,89 @@ export interface InsightCandidatePromoteRequest extends InsightCandidateReviewRe
 export interface InsightCandidateReviewResponse {
     candidate: InsightIntelligenceCandidateRead;
     intelligence?: InsightIntelligenceRead | null;
+}
+
+export interface InsightIntelligenceBulkActionRequest {
+    target_type?: "candidate" | "intelligence" | string;
+    candidate_ids?: number[];
+    intelligence_ids?: number[];
+    action: string;
+    review_comment?: string | null;
+    visibility_scope?: string | null;
+    importance_level?: string | null;
+    business_domain?: string | null;
+    pool_type?: string | null;
+    folder_name?: string | null;
+    tags?: Array<Record<string, unknown>> | null;
+    sentiment?: string | null;
+    status?: string | null;
+}
+
+export interface InsightIntelligenceBulkActionResponse {
+    action: string;
+    target_type: string;
+    requested_count: number;
+    success_count: number;
+    failed_count: number;
+    items: Array<Record<string, unknown>>;
+}
+
+export interface InsightAssistantChatRequest {
+    question: string;
+    keyword?: string | null;
+    company_id?: number | null;
+    sys_company_id?: number | null;
+    project_name?: string | null;
+    sentiment?: string | null;
+    tag?: string | null;
+    intelligence_type?: string | null;
+    data_source_id?: number | null;
+    date_from?: string | null;
+    date_to?: string | null;
+    limit?: number;
+}
+
+export interface InsightAssistantCitation {
+    intelligence_id: number;
+    title: string;
+    source_url?: string | null;
+    source_title?: string | null;
+    publish_time?: string | null;
+    summary?: string | null;
+}
+
+export interface InsightAssistantChatResponse {
+    answer: string;
+    citations: InsightAssistantCitation[];
+    evidence_count: number;
+    no_evidence: boolean;
+    generation_mode?: string;
+}
+
+export interface InsightDeepResearchRequest extends InsightAssistantChatRequest {
+    save_report?: boolean;
+    report_title?: string | null;
+}
+
+export interface InsightEvidenceMatrixItem {
+    intelligence_id: number;
+    title: string;
+    evidence: string;
+    source_url?: string | null;
+    publish_time?: string | null;
+}
+
+export interface InsightDeepResearchResponse {
+    title: string;
+    conclusion: string;
+    findings: string[];
+    opportunities: string[];
+    risks: string[];
+    evidence_matrix: InsightEvidenceMatrixItem[];
+    follow_up_questions: string[];
+    citations: InsightAssistantCitation[];
+    report_id?: number | null;
+    generation_mode?: string;
 }
 
 export interface InsightManualUrlCrawlResponse {

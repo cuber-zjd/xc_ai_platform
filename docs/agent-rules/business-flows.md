@@ -117,8 +117,9 @@
 - 第一步完成后，把需求文本、来源表名、Excel 分析、需求摘要、SQL、SQL 校验结果和日志写回同一个任务记录，供人工回看和后续步骤接力。
 - 第二步入口使用 `POST /api/v1/fr/ai-reports/steps/dsl/generate`，基于同一任务的第一步产物继续生成 ReportDSL，并写回 `fr_ai_report_task.report_dsl`；前端预览直接基于 DSL 布局和 SQL 样例数据渲染，不借助 FineReport 预览。
 - 第二步可携带 `dsl_feedback` 重生成 DSL，用于人工指出版式调整；例如“涨跌只保留最新一天，单独一行，放在市场下面、价格列表上面”会沉淀为 `layout.designHints.specialRows.latest_change_row`，由前端 DSL 预览按最新日期涨跌单行渲染。
-- 第三步入口使用 `POST /api/v1/fr/ai-reports/steps/cpt/generate`，基于同一任务的 ReportDSL 确定性生成 CPT、写入 `reportlets/AI生成报表/` 专用预览目录并返回 FineReport 预览地址。
-- 第三步当前只做专用目录预览，不做正式 reportlets 复制或覆盖；对接细节见 `docs/fr-ai-report-third-step.md`。MinIO 对象路径固定为 `webroot/APP/reportlets/AI生成报表/{task_id}/report.cpt`，FineReport 预览 `viewlet` 使用 `AI生成报表/{task_id}/report.cpt`。
+- 第三步入口使用 `POST /api/v1/fr/ai-reports/steps/cpt/generate` 或 AI 草稿 CPT 生成入口，基于同一任务的 ReportDSL/快照确定性生成 CPT；写入用户指定 `webroot/APP/reportlets/` 子路径前必须保存平台结构版本和 CPT 文件版本，并通过 hash/lastModified 检查 FineReport 设计器外部修改。
+- 第三步不再固定只能进入 `AI生成报表/{task_id}` 预览目录；默认仍可使用专用目录作为兜底，但用户指定目标路径时，版本库应在目标目录下按 `版本库/<报表名>/v0001/` 结构归档，对接细节见 `docs/fr-ai-report-third-step.md`。
+- 小驰聊天入口 `POST /api/v1/fr/ai-reports/agent/chat` 位于阶段化接口之上：前端只发送消息、上下文和资料，后端按受控 ReAct 外壳把需求预检、读取真实表结构/预览数据、SQL ReAct、ReportDSL 生成和 CPT 版本保存作为白名单工具串联；用户明确“开始生成”时，未完全确认的问题可转为假设和风险提示继续执行，生成后通过后续聊天修订。
 
 入口文件：
 - 后端接口：`backend/app/api/v1/endpoints/agent/fr_report.py`
@@ -139,9 +140,9 @@
 7. `ReportDesignerAgent` 通过 `LLMFactory` 只生成 ReportDSL，不允许输出 CPT/XML；当前阶段仅生成表格类 DSL，不生成柱状图、折线图、饼图等图表型 DSL。ReportDSL 可通过 `layout.columnGroupFields`、`layout.valueFields` 和 `layout.horizontalExpansion` 表达 FineReport 设计器横向扩展；分步骤第二步不生成 CPT，也不调用 FineReport 预览。
 8. `DslValidator` 校验 DSL 完整性、字段一致性、参数绑定、字段类型、格式和聚合规则。
 9. `CptGenerator` 以确定性程序生成 FineReport `.cpt` 文件。
-10. `MinIOStagingService` 通过帆软专用 `FrMinIOService` 将 CPT、DSL、SQL、建表 SQL 和生成日志写入 `webroot/APP/reportlets/AI生成报表/{task_id}/`，不得复用平台通用文件 MinIO。
+10. CPT 写入通过帆软专用 `FrMinIOService` 和版本控制服务完成，目标路径必须位于 `FR_AI_REPORT_FILE_PREFIXES` 允许范围内；每次写入同步归档 `report.cpt`、`report.dsl.json`、`manifest.json` 和 `diff.json`，不得复用平台通用文件 MinIO。
 11. `PreviewValidator` 调用 FineReport 预览 URL，返回 `previewUrl`、`errors` 和 `warnings`。
-12. `publish` 接口当前只标记任务已发布，仍保留在 staging，不直接写正式 reportlets。
+12. `publish` 或确认写入动作不得绕过版本控制；若目标 CPT 已被 FineReport 设计器修改，默认阻止覆盖，并允许“仅同步外部修改为版本”或“覆盖前自动归档当前文件”。回收站使用目标目录下 `回收站/<报表名>/<时间>/`。
 
 真实报表设计器副驾驶补充：
 1. 前端进入 `/fr-ai-reports` 后通过 `GET /api/v1/fr/ai-reports/files` 读取当前用户可见的 MinIO 报表文件树。
@@ -168,20 +169,22 @@
 
 1. 用户在 `/insight/data-sources` 维护数据源，配置来源类型、独立搜索关键词、抓取上限、排除词、LLM 后处理提示词和可选 `company_id`。
 2. 点击测试或后续调度触发数据源执行，后端按关键词逐个搜索；百度资讯、博查资讯和通用网页搜索各自返回候选 URL。
-3. 搜索阶段只做 URL 归一、同 URL 去重、排除词和数量保护，不默认用 LLM 拦截搜索结果。
-4. URL 进入 Firecrawl 正文抓取，正文清洗后写入 `insight_crawl_result`，并记录命中 URL、抓取成功、抓取失败和候选生成明细到 `insight_task.output_payload`。
-5. 候选生成阶段先做正文质量评分、正文指纹/相似候选去重和质量标签，再调用 LLM 生成摘要、主题类型、情报类型、标签和置信度；模型失败时使用规则摘要兜底。情报类型必须使用中文业务词，历史英文枚举需要在服务层和展示层兜底映射。
-6. 文章发布时间优先来自搜索结果发布时间，其次来自 Firecrawl 元数据、正文/标题中的中文日期；无法可靠解析时保持为空，前端显示“发布时间未知 · 抓取时间”，不得把抓取时间伪装成文章发布时间。
-7. 企业归因优先使用数据源绑定的 `company_id`，其次按 `InsightCompany.name`、`short_name` 和 `profile_json.aliases` 在标题/正文中匹配；候选和正式情报都保留 `company_id`，供 P1 企业档案聚合。
-8. P1 企业档案通过 `GET/POST /api/v1/insight/companies` 和 `GET/PUT /api/v1/insight/companies/{company_id}` 管理企业主数据；企业详情聚合关联数据源、正式情报时间线、情报类型分布和候选/正式情报标签。
-9. 情报中心以一条 URL 一条资讯的卡片流展示候选和正式情报，标题和原文按钮都可跳转来源链接；候选可通过、驳回或忽略，通过后生成正式情报和来源证据。
-10. 正式情报列表和详情页可加入收藏、稍后看、隐藏或 `report_material` 报告素材池；P1 报告草稿优先读取 `report_material` 素材，并保留原文链接和来源证据。
-10.1. 数据源可配置采集后的自动处理策略：`auto_review_mode` 默认为关闭，可设置高置信度自动通过或全部自动通过；可通过 `auto_review_min_confidence`、`auto_review_required_tags` 和 `auto_review_intelligence_types` 约束自动通过范围；`auto_add_to_report_pool` 开启后会把自动通过的正式情报加入 `report_material` 素材池，并可写入 `auto_report_folder`。自动操作必须复用候选审核和情报池服务，写入审核记录，不能绕过正式情报和来源证据链路。
-11. 报告中心通过 `GET /api/v1/insight/reports/templates` 获取“模板市场 + 当前用户个人模板”，通过 `POST /api/v1/insight/reports/templates`、`PUT /api/v1/insight/reports/templates/{template_id}` 和 `DELETE /api/v1/insight/reports/templates/{template_id}` 管理个人模板；自定义模板会保存模板名、说明、报告类型、默认 Prompt 和章节结构。`POST /api/v1/insight/reports/templates/upload` 支持上传 `.docx` / `.xlsx` 模板，后端解析 Word 标题、段落、表格或 Excel Sheet、字段、样例行，转为 `sections_json`、`structure_json` 和默认 Prompt 后保存为个人模板。模板新增 `template_kind`、`style_code`、`export_formats`、`market_status`、`market_category`、`market_description`、`cloned_from_template_id`、`visibility_scope` 等字段：内置 HTML 风格模板默认进入市场，个人模板默认仅本人可见；用户可通过 `POST /api/v1/insight/reports/templates/{template_id}/publish` 发布到市场，也可通过 `POST /api/v1/insight/reports/templates/{template_code}/clone` 复制市场模板为自己的模板后再调整章节、Prompt、数据范围和导出格式。报告生成通过 `POST /api/v1/insight/reports/generate` 生成草稿，生成请求可携带 `template_code`，并可按 `company_ids`、`data_source_ids`、`intelligence_ids`、`folder_name` 和 `max_materials` 控制素材范围。后端写入 `insight_report`、`insight_report_material`、`insight_report_version` 和 `insight_task`，并在 `content_json` 中保留模板编码和模板名称。
-12. 报告中心通过 `GET /api/v1/insight/reports/preference` 和 `PUT /api/v1/insight/reports/preference` 管理当前用户的报告生成偏好；偏好保存默认模板、默认报告类型、默认素材池、素材上限、写作立场、报告深度、引用方式、是否包含风险提醒、机会建议、后续问题和附加 Prompt。生成报告时后端会读取用户偏好并补充到生成请求中，前端也可显式将偏好应用到生成栏。
-13. 报告生成阶段通过 `LLMFactory.safe_invoke(..., capability="complex-reasoning", json_mode=True)` 优先调用复杂推理模型，内部按深度研究方式做分组、交叉验证、风险机会判断和证据缺口反思；输出需要包含可直接交付的章节正文 `chapters`、执行摘要、结论建议和引用元数据。报告默认面向客户经营洞察，测试企业按我们的客户或潜在客户处理，风险表达应服务于客户维护、销售跟进、方案匹配和合作机会识别，避免第三方投研式唱空或竞品攻击口吻。模型不可用或 JSON 解析失败时使用规则兜底，但仍保留素材引用。
-14. 报告素材引用必须保留 `intelligence_id`、来源标题、原文 URL 和引用摘要，前端 `/insight/reports` 采用“左侧报告历史 + 顶部紧凑生成栏 + 中间 Word 式报告纸张”的阅读器结构。正文只展示标题、摘要、章节段落、结论和参考资料；证据链、引用摘要和原文链接通过正文上标悬浮小窗展示，悬浮窗需要允许鼠标移入并点击原文，鼠标离开后自然消失，避免把研究过程或证据表直接铺在报告正文里。报告正文支持进入编辑模式，人工修改标题、摘要、章节段落和结论后调用 `PUT /api/v1/insight/reports/{report_id}` 保存，并写入新的 `insight_report_version` 版本快照。
-15. 报告详情 `GET /api/v1/insight/reports/{report_id}` 会基于当前报告引用素材实时聚合 `charts`，第一版包含企业与主题分布、情报类型分布、来源渠道占比、素材发布时间趋势、机会风险信号和高频标签。图表只能使用已经进入报告的素材，不额外扩大查询范围；前端在 Word 式报告正文的“附录：数据图表”展示，不把图表当作正文观点替代证据引用。
+3. 搜索阶段先做 URL 归一、同 URL 去重、排除词和数量保护；若数据源启用 `enable_llm_filter` 且提供 `filter_prompt`，必须调用平台 LLM 对搜索结果判分并写入 `insight_task.output_payload.filter_summary`。
+4. 周期调度推荐 `crawl_top_n=0` 的轻量模式：不抓正文时也必须对搜索命中执行 AI 初筛，候选入库即写入摘要、标签、情感、机会点、风险点、相关性分、置信度和 `AI搜索初筛` 标签，不得只保存裸搜索摘要。
+5. URL 进入 Firecrawl 正文抓取时，正文清洗后写入 `insight_crawl_result`，并记录命中 URL、抓取成功、抓取失败和候选生成明细到 `insight_task.output_payload`。
+6. 正文候选生成阶段先做正文质量评分、正文指纹/相似候选去重和质量标签，再调用 LLM 生成摘要、主题类型、情报类型、标签和置信度；模型失败时使用规则摘要兜底。情报类型必须使用中文业务词，历史英文枚举需要在服务层和展示层兜底映射。
+7. 文章发布时间优先来自搜索结果发布时间，其次来自 Firecrawl 元数据、正文/标题中的中文日期；无法可靠解析时保持为空，前端显示“发布时间未知 · 抓取时间”，不得把抓取时间伪装成文章发布时间。
+8. 企业归因优先使用数据源绑定的 `company_id`，其次按 `InsightCompany.name`、`short_name` 和 `profile_json.aliases` 在标题/正文中匹配；候选和正式情报都保留 `company_id`，供 P1 企业档案聚合。
+9. P1 企业档案通过 `GET/POST /api/v1/insight/companies` 和 `GET/PUT /api/v1/insight/companies/{company_id}` 管理企业主数据；企业详情聚合关联数据源、正式情报时间线、情报类型分布和候选/正式情报标签。
+10. 情报中心以一条 URL 一条资讯的卡片流展示候选和正式情报，标题和原文按钮都可跳转来源链接；候选可通过、驳回或忽略，通过后生成正式情报和来源证据。
+11. 正式情报列表和详情页可加入收藏、稍后看、隐藏或 `report_material` 报告素材池；P1 报告草稿优先读取 `report_material` 素材，并保留原文链接和来源证据。
+12. 数据源可配置采集后的自动处理策略：`auto_review_mode` 默认为关闭，可设置高置信度自动通过或全部自动通过；可通过 `auto_review_min_confidence`、`auto_review_required_tags` 和 `auto_review_intelligence_types` 约束自动通过范围；`auto_add_to_report_pool` 开启后会把自动通过的正式情报加入 `report_material` 素材池，并可写入 `auto_report_folder`。自动操作必须复用候选审核和情报池服务，写入审核记录，不能绕过正式情报和来源证据链路。
+13. 报告中心通过 `GET /api/v1/insight/reports/templates` 获取“模板市场 + 当前用户个人模板”，通过 `POST /api/v1/insight/reports/templates`、`PUT /api/v1/insight/reports/templates/{template_id}` 和 `DELETE /api/v1/insight/reports/templates/{template_id}` 管理个人模板；自定义模板会保存模板名、说明、报告类型、默认 Prompt 和章节结构。`POST /api/v1/insight/reports/templates/upload` 支持上传 `.docx` / `.xlsx` 模板，后端解析 Word 标题、段落、表格或 Excel Sheet、字段、样例行，转为 `sections_json`、`structure_json` 和默认 Prompt 后保存为个人模板。模板新增 `template_kind`、`style_code`、`export_formats`、`market_status`、`market_category`、`market_description`、`cloned_from_template_id`、`visibility_scope` 等字段：内置 HTML 风格模板默认进入市场，个人模板默认仅本人可见；用户可通过 `POST /api/v1/insight/reports/templates/{template_id}/publish` 发布到市场，也可通过 `POST /api/v1/insight/reports/templates/{template_code}/clone` 复制市场模板为自己的模板后再调整章节、Prompt、数据范围和导出格式。报告生成通过 `POST /api/v1/insight/reports/generate` 生成草稿，生成请求可携带 `template_code`，并可按 `company_ids`、`data_source_ids`、`intelligence_ids`、`folder_name` 和 `max_materials` 控制素材范围。后端写入 `insight_report`、`insight_report_material`、`insight_report_version` 和 `insight_task`，并在 `content_json` 中保留模板编码和模板名称。
+14. 报告中心通过 `GET /api/v1/insight/reports/preference` 和 `PUT /api/v1/insight/reports/preference` 管理当前用户的报告生成偏好；偏好保存默认模板、默认报告类型、默认素材池、素材上限、写作立场、报告深度、引用方式、是否包含风险提醒、机会建议、后续问题和附加 Prompt。生成报告时后端会读取用户偏好并补充到生成请求中，前端也可显式将偏好应用到生成栏。
+15. 报告中心支持定时报告计划，接口为 `GET/POST/PUT/DELETE /api/v1/insight/reports/subscriptions`、`POST /api/v1/insight/reports/subscriptions/{subscription_id}/run` 和 `POST /api/v1/insight/reports/subscriptions/run-due`。计划保存模板、报告类型、素材范围、素材上限、生成 Prompt、频率、执行时间和企业微信接收人；素材范围支持当前用户报告素材池、某个 `sys_company` 下全部企业、指定企业和指定数据源。计划到期执行时必须按计划创建者身份重新校验模板、企业、数据源和报告生成权限，生成报告后再复用企业微信通知服务创建 `insight_notification`，不能使用管理员身份绕过隔离。
+16. 报告生成阶段通过 `LLMFactory.safe_invoke(..., capability="complex-reasoning", json_mode=True)` 优先调用复杂推理模型，内部按深度研究方式做分组、交叉验证、风险机会判断和证据缺口反思；输出需要包含可直接交付的章节正文 `chapters`、执行摘要、结论建议和引用元数据。报告默认面向客户经营洞察，测试企业按我们的客户或潜在客户处理，风险表达应服务于客户维护、销售跟进、方案匹配和合作机会识别，避免第三方投研式唱空或竞品攻击口吻。模型不可用或 JSON 解析失败时使用规则兜底，但仍保留素材引用。
+16. 报告素材引用必须保留 `intelligence_id`、来源标题、原文 URL 和引用摘要，前端 `/insight/reports` 采用“左侧报告历史 + 顶部紧凑生成栏 + 中间 Word 式报告纸张”的阅读器结构。正文只展示标题、摘要、章节段落、结论和参考资料；证据链、引用摘要和原文链接通过正文上标悬浮小窗展示，悬浮窗需要允许鼠标移入并点击原文，鼠标离开后自然消失，避免把研究过程或证据表直接铺在报告正文里。报告正文支持进入编辑模式，人工修改标题、摘要、章节段落和结论后调用 `PUT /api/v1/insight/reports/{report_id}` 保存，并写入新的 `insight_report_version` 版本快照。
+17. 报告详情 `GET /api/v1/insight/reports/{report_id}` 会基于当前报告引用素材实时聚合 `charts`，第一版包含企业与主题分布、情报类型分布、来源渠道占比、素材发布时间趋势、机会风险信号和高频标签。图表只能使用已经进入报告的素材，不额外扩大查询范围；前端在 Word 式报告正文的“附录：数据图表”展示，不把图表当作正文观点替代证据引用。
 16. 权限过滤必须在后端完成，正式情报列表、首页看板、详情接口、数据源列表、报告列表、报告详情、报告素材选择、模板列表和企业档案列表/详情都不能先返回全量再由前端隐藏。数据源、报告和模板保留 `owner_user_id`、`owner_dept_id`、`visibility_scope`，企业档案至少保留 `owner_user_id`，并统一复用 `InsightPermissionService.visibility_filter_for_user` 解析 owner、public、用户、角色、部门和全员授权规则；授权接口统一使用 `GET/POST /api/v1/insight/permissions/{target_type}/{target_id}` 和 `DELETE /api/v1/insight/permissions/rules/{rule_id}`。企业微信报告推送、团队数据源协作和企业档案共享都必须先复用该权限结果，再决定是否推送或展示。
 17. P2-1 周期采集使用 Insight 内置生产级调度器，不再按 demo 型显式扫描方案推进。数据源通过 `fetch_frequency`、`schedule_enabled`、`next_run_time`、`last_schedule_status`、`last_schedule_message`、`consecutive_failure_count`、`last_failure_time` 和 `auto_paused_reason` 表达周期状态；FastAPI 生命周期可按 `INSIGHT_SCHEDULER_ENABLED` 自动启动常驻调度器，调度器按 `INSIGHT_SCHEDULER_INTERVAL_SECONDS` 扫描到期数据源，并按 `INSIGHT_SCHEDULER_BATCH_LIMIT` 分批执行。后端调度接口包括 `GET /api/v1/insight/scheduler/status`、`POST /api/v1/insight/scheduler/run-once`、`/start` 和 `/stop`；每轮扫描写入 `scheduler_tick` 任务日志，并通过 PostgreSQL advisory lock 防止多实例重复执行。数据源连续失败达到 `INSIGHT_SCHEDULER_FAILURE_PAUSE_THRESHOLD` 后自动暂停周期采集并保留暂停原因，人工可通过 `POST /api/v1/insight/data-sources/{data_source_id}/schedule/retry` 将单个数据源加入下一轮调度。`POST /api/v1/insight/data-sources/schedule/run-due` 仅作为兼容入口保留，前端主入口应使用调度器接口。
 18. P0 封板验收前先调用 `POST /api/v1/insight/data-sources/tasks/cleanup-stale` 或服务方法清理超时 running/pending 任务，再运行 `uv run python scripts/insight_p0_acceptance.py` 检查数据源、任务、抓取结果、候选情报、正式情报和遗留任务状态；P1 封板验收运行 `uv run python scripts/insight_p1_acceptance.py`，只读检查企业档案、数据源、情报、报告素材池、报告、报告引用和遗留任务状态；P1 报告生成冒烟可运行 `uv run python scripts/insight_p1_report_smoke.py` 基于真实素材生成测试报告。
@@ -259,6 +262,15 @@
 
 1. ecode 在泛微流程发起或处理页面通过 `WeaReqTop` 钩子挂载悬浮图标。
 2. 用户点击图标后，ecode 打开平台 `/weaver/assistant/embed` iframe，并通过 `postMessage` 传入 `WfForm.getBaseInfo()` 和字段白名单上下文。
-3. 平台嵌入页调用 `/api/v1/weaver/ai-assistant/chat`，后端 Agent 根据用户输入和字段上下文生成结构化填单动作。
-4. 用户在嵌入页确认“写入表单”后，平台向父页面发送 `WEAVER_AI_APPLY_ACTIONS`。
-5. ecode 只按白名单动作调用 `WfForm.changeFieldValue()` 或 `WfForm.addDetailRow()`，不执行任意脚本，不自动提交流程。
+3. 每次聊天发送前，平台嵌入页通过 `WEAVER_AI_REQUEST_CONTEXT` 请求 ecode 回传当前表单实时状态，包括字段值、可写状态和只读原因。
+4. 平台嵌入页调用 `/api/v1/weaver/ai-assistant/chat/stream`，后端先以 SSE 流式返回自然语言回答，再返回白名单结构化填单动作。
+5. 用户在嵌入页确认“写入表单”后，平台向父页面发送 `WEAVER_AI_APPLY_ACTIONS`。
+6. ecode 只按白名单动作调用 `WfForm.changeFieldValue()` 或 `WfForm.addDetailRow()`，不执行任意脚本，不自动提交流程。
+
+## 泛微流程AI智审流程
+
+1. 流程审批页 ecode 打开 `/weaver/assistant/review` iframe，读取最近一次 AI 智审记录，必要时可手动发起预审。
+2. 泛微后端可在节点前或节点后配置 `WeaverAiReviewAction`，在流程流转时调用 `/api/v1/weaver/ai-assistant/review/precheck` 自动生成智审记录。
+3. 智审服务按 `env + workflow_id + node_id + reviewer_user_id` 匹配启用规则，把表单快照、审批动作、规则快照交给模型生成结构化预审结果。
+4. 预审结果保存到 `weaver_ai_review_record`，包含风险等级、建议结论、检查项、缺失材料、关注点和建议审批意见。
+5. 初版只做建议展示和审计沉淀，不直接替审批人执行同意、退回、拒绝、保存或提交；后续替审必须显式授权、限制低风险场景并保留完整审计。

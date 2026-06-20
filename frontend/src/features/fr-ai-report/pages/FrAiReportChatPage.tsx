@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useLocation } from 'react-router-dom';
 import {
@@ -11,15 +11,19 @@ import {
     Database,
     ExternalLink,
     FileSpreadsheet,
+    Paperclip,
     Folder,
     History,
     LayoutGrid,
     ListTree,
     MessageSquareText,
     PaintBucket,
+    PanelRightClose,
+    PanelRightOpen,
     Play,
     Plus,
     Redo2,
+    RefreshCw,
     Rows3,
     Save,
     Search,
@@ -29,6 +33,7 @@ import {
     SlidersHorizontal,
     Sparkles,
     Table2,
+    Trash2,
     Undo2,
     WandSparkles,
 } from 'lucide-react';
@@ -41,25 +46,33 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { cn } from '@/lib/utils';
 import {
     useApplyFrReportAiOperationDraft,
+    useFrAiReportAgentChat,
     useFrAiReportFileStructure,
     useFrAiReportFiles,
-    useGenerateFrReportAiNewReportPlan,
     useGenerateFrReportAiOperationDraft,
     useGenerateFrReportAiSnapshotCpt,
     useFrReportVisibilityPreference,
     useFrReportDatabaseConnections,
     useFrReportDatabaseDrivers,
+    useFrReportVersions,
     usePreviewFrReportDataset,
-    useReviewFrAiReportRequirement,
+    useRollbackFrReportFileVersion,
+    useRollbackFrReportStructureVersion,
+    useRecycleFrReportFile,
+    useSyncFrReportExternalVersion,
     useUpsertFrReportDatabaseConnection,
     useUpdateFrReportVisibilityPreference,
 } from '@/features/fr-ai-report/hooks/useFrAiReport';
 import type {
     FrReportAiApplyDraftResponse,
-    FrReportAiNewReportPlanResponse,
     FrReportAiOperationDraftResponse,
     FrReportAiSnapshotCptResponse,
+    FrAiReportAgentChatResponse,
+    FrAiReportAgentContext,
     FrAiReportRequirementReviewResponse,
+    GenerateCptStepResponse,
+    GenerateDslStepResponse,
+    GenerateSqlStepResponse,
     FrReportCellRead,
     FrReportDatasetRead,
     FrReportFileRead,
@@ -102,7 +115,7 @@ const operationItems = [
     '设置横向扩展：市场字段按列展开，合计行固定',
 ];
 
-const versionItems = ['V2.3 当前草稿', 'V2.2 调整筛选区', 'V2.1 增加利润字段', 'V1.0 Excel 模板识别'];
+const DEFAULT_NEW_REPORT_TEMPLATE_OBJECT_PATH = 'webroot/APP/reportlets/数据分析/农产品价格平台/大豆/谷物大豆国际海运费报价-周报.cpt';
 
 type AiPreviewCellPatch = {
     style?: Partial<FrReportCellRead['style']>;
@@ -112,6 +125,13 @@ type AiPreviewCellPatch = {
 
 type AiPreviewPatch = {
     cells?: Record<string, AiPreviewCellPatch>;
+};
+
+type AssistantMessage = {
+    id: string;
+    role: 'user' | 'assistant' | 'system';
+    content: string;
+    status?: 'pending' | 'success' | 'error';
 };
 
 void aiMessages;
@@ -128,14 +148,16 @@ interface ReportTreeFolder {
 export function FrAiReportChatPage() {
     const location = useLocation();
     const [selectedCell, setSelectedCell] = useState('C3');
-    const [selectedPanel, setSelectedPanel] = useState<'属性' | '副驾驶'>('副驾驶');
+    const [selectedPanel, setSelectedPanel] = useState<'属性' | '小驰'>('小驰');
+    const [rightPanelVisible, setRightPanelVisible] = useState(true);
+    const [rightPanelWidth, setRightPanelWidth] = useState(430);
+    const [isResizingRightPanel, setIsResizingRightPanel] = useState(false);
     const [reportKeyword, setReportKeyword] = useState('');
     const [selectedReportPath, setSelectedReportPath] = useState<string | null>(null);
     const [selectedDatasetName, setSelectedDatasetName] = useState<string | null>(null);
     const [previewColumnsByDataset, setPreviewColumnsByDataset] = useState<Record<string, string[]>>({});
     const [aiDraft, setAiDraft] = useState<FrReportAiOperationDraftResponse | null>(null);
     const [aiPreviewPatch, setAiPreviewPatch] = useState<AiPreviewPatch | null>(null);
-    const [aiVersionItems, setAiVersionItems] = useState<string[]>([]);
     const [aiAppliedSnapshotId, setAiAppliedSnapshotId] = useState<string | null>(null);
     const [aiSnapshotCpt, setAiSnapshotCpt] = useState<FrReportAiSnapshotCptResponse | null>(null);
     const [newReportDialogOpen, setNewReportDialogOpen] = useState(false);
@@ -162,12 +184,51 @@ export function FrAiReportChatPage() {
     const selectedReportCell = useMemo(() => {
         return activeSheet?.cells.find((cell) => cell.address === selectedCell) ?? null;
     }, [activeSheet, selectedCell]);
-    const selectedDatasetPreviewColumns = selectedDatasetName ? previewColumnsByDataset[selectedDatasetName] ?? [] : [];
+    const inferredColumnsByDataset = useMemo(() => {
+        const result: Record<string, string[]> = {};
+        for (const cell of activeSheet?.cells ?? []) {
+            const binding = cell.fieldBinding ?? cell.dataColumn;
+            const datasetName = binding?.dataset;
+            const fieldName = binding?.field;
+            if (!datasetName || !fieldName) {
+                continue;
+            }
+            result[datasetName] = result[datasetName] ?? [];
+            if (!result[datasetName].includes(fieldName)) {
+                result[datasetName].push(fieldName);
+            }
+        }
+        return result;
+    }, [activeSheet]);
+    const selectedDatasetPreviewColumns = selectedDatasetName
+        ? previewColumnsByDataset[selectedDatasetName]?.length
+            ? previewColumnsByDataset[selectedDatasetName]
+            : inferredColumnsByDataset[selectedDatasetName] ?? []
+        : [];
     const parsedFieldBindings = selectedDatasetPreviewColumns.map((field) => ({
         dataset: selectedDatasetName,
         field,
         expression: field,
     }));
+    useEffect(() => {
+        if (!isResizingRightPanel) {
+            return undefined;
+        }
+        const handleMouseMove = (event: MouseEvent) => {
+            setRightPanelWidth(Math.min(Math.max(window.innerWidth - event.clientX, 360), 680));
+        };
+        const handleMouseUp = () => setIsResizingRightPanel(false);
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+        window.addEventListener('mousemove', handleMouseMove);
+        window.addEventListener('mouseup', handleMouseUp);
+        return () => {
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+            window.removeEventListener('mousemove', handleMouseMove);
+            window.removeEventListener('mouseup', handleMouseUp);
+        };
+    }, [isResizingRightPanel]);
 
     return (
         <div
@@ -182,7 +243,7 @@ export function FrAiReportChatPage() {
                         <Badge className="border-[#dedede] bg-white text-[#0f8f7b] shadow-none">真实报表</Badge>
                         <h1 className="truncate text-lg font-semibold text-[#1f2933]">帆软报表助手</h1>
                         <span className="hidden rounded-full border border-[#dbe7e4] bg-[#f6fbfa] px-2.5 py-1 text-xs text-[#5c716d] md:inline-flex">
-                            设计器副驾驶 V2
+                            小驰报表助手 V2
                         </span>
                     </div>
                     <p className="mt-1 text-xs text-[#71817e]">已对接帆软 MinIO，当前先展示真实报表文件列表。</p>
@@ -247,8 +308,8 @@ export function FrAiReportChatPage() {
                 </button>
             </div>
 
-            <main className="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_360px] bg-white 2xl:grid-cols-[260px_minmax(0,1fr)_360px]">
-                <aside className="hidden min-h-0 border-r border-[#e5e5e5] bg-[#fafafa] 2xl:block">
+            <main className="flex min-h-0 flex-1 bg-white">
+                <aside className="hidden min-h-0 w-[260px] shrink-0 border-r border-[#e5e5e5] bg-[#fafafa] 2xl:block">
                     <div className="border-b border-[#eeeeee] p-3">
                         <div className="relative">
                             <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-[#8aa19c]" />
@@ -340,7 +401,7 @@ export function FrAiReportChatPage() {
                     </div>
                 </aside>
 
-                <section className="flex min-h-0 min-w-0 flex-col">
+                <section className="flex min-h-0 min-w-0 flex-1 flex-col">
                     <div className="flex shrink-0 items-center justify-between border-b border-[#eeeeee] bg-white px-4 py-3">
                         <div className="min-w-0">
                             <div className="flex items-center gap-2">
@@ -359,6 +420,21 @@ export function FrAiReportChatPage() {
                         <div className="flex items-center gap-2 text-xs text-[#60736f]">
                             <span>缩放 100%</span>
                             <span className="rounded-md bg-[#f7f7f7] px-2 py-1 ring-1 ring-[#e5e5e5]">选区 {selectedCell}</span>
+                            {!rightPanelVisible ? (
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-8 border-[#d8ebe6] bg-[#f6fbfa] px-2 text-xs text-[#0c7a68] hover:bg-[#eef8f5]"
+                                    onClick={() => {
+                                        setRightPanelVisible(true);
+                                        setSelectedPanel('小驰');
+                                    }}
+                                >
+                                    <PanelRightOpen className="size-3.5" />
+                                    打开小驰
+                                </Button>
+                            ) : null}
                         </div>
                     </div>
 
@@ -381,9 +457,19 @@ export function FrAiReportChatPage() {
                     </footer>
                 </section>
 
-                <aside className="grid min-h-0 border-l border-[#e5e5e5] bg-white">
+                {rightPanelVisible ? (
+                <aside className="relative grid min-h-0 shrink-0 grid-rows-[auto_minmax(0,1fr)] border-l border-[#e5e5e5] bg-white" style={{ width: rightPanelWidth }}>
+                    <button
+                        type="button"
+                        aria-label="拖动调整小驰宽度"
+                        className="absolute left-0 top-0 z-20 h-full w-1 cursor-col-resize bg-transparent transition hover:bg-[#bfe3dc]"
+                        onMouseDown={(event) => {
+                            event.preventDefault();
+                            setIsResizingRightPanel(true);
+                        }}
+                    />
                     <div className="flex border-b border-[#eeeeee] p-2">
-                        {(['属性', '副驾驶'] as const).map((item) => (
+                        {(['属性', '小驰'] as const).map((item) => (
                             <button
                                 key={item}
                                 type="button"
@@ -396,6 +482,16 @@ export function FrAiReportChatPage() {
                                 {item}
                             </button>
                         ))}
+                        <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="ml-2 size-9 shrink-0 text-[#60736f] hover:bg-[#f5f5f5] hover:text-[#0f8f7b]"
+                            onClick={() => setRightPanelVisible(false)}
+                            title="隐藏小驰侧栏"
+                        >
+                            <PanelRightClose className="size-4" />
+                        </Button>
                     </div>
                     <div className="min-h-0 overflow-hidden p-4">
                         {selectedPanel === '属性' ? (
@@ -414,13 +510,14 @@ export function FrAiReportChatPage() {
                                 reportStructure={reportStructureQuery.data ?? null}
                                 structureLoading={reportStructureQuery.isLoading || reportStructureQuery.isFetching}
                                 structureError={reportStructureQuery.error}
+                                structureFetching={reportStructureQuery.isFetching}
+                                onRefetchStructure={() => reportStructureQuery.refetch()}
                                 selectedCell={selectedCell}
                                 selectedDatasetName={selectedDatasetName}
                                 previewColumns={selectedDatasetPreviewColumns}
                                 aiDraft={aiDraft}
                                 appliedSnapshotId={aiAppliedSnapshotId}
                                 snapshotCpt={aiSnapshotCpt}
-                                versionItems={[...aiVersionItems, ...versionItems]}
                                 onDraftReady={(draft) => {
                                     setAiDraft(draft);
                                     setAiPreviewPatch(toAiPreviewPatch(draft.previewPatch));
@@ -431,20 +528,12 @@ export function FrAiReportChatPage() {
                                     setAiDraft(draft);
                                 }}
                                 onDraftApplied={(result) => {
-                                    setAiVersionItems((current) => [
-                                        `${result.targetVersion} · 快照 ${result.targetSnapshot.snapshotNo}`,
-                                        ...current,
-                                    ]);
                                     setAiPreviewPatch(toAiPreviewPatch(result.previewPatch));
                                     setAiAppliedSnapshotId(result.targetSnapshot.snapshotId);
                                     setAiSnapshotCpt(null);
                                 }}
                                 onSnapshotCptGenerated={(result) => {
                                     setAiSnapshotCpt(result);
-                                    setAiVersionItems((current) => [
-                                        `已生成预览 CPT · ${result.snapshotId}`,
-                                        ...current,
-                                    ]);
                                 }}
                                 onClearDraft={() => {
                                     setAiDraft(null);
@@ -456,12 +545,14 @@ export function FrAiReportChatPage() {
                         )}
                     </div>
                 </aside>
+                ) : null}
             </main>
 
             <NewReportAiDialog
                 open={newReportDialogOpen}
                 onOpenChange={setNewReportDialogOpen}
                 templateObjectPath={selectedReport?.objectPath ?? null}
+                reportFiles={allReportFilesQuery.data?.items ?? reportFiles}
             />
 
             <VisibilityPreferenceDialog
@@ -1129,8 +1220,11 @@ function VisibilityPreferenceDialog({
     onShowAll: () => void;
     onSave: () => void;
 }) {
+    const [keyword, setKeyword] = useState('');
     const tree = useMemo(() => buildReportFileTree(files), [files]);
+    const filteredTree = useMemo(() => filterReportFileTree(tree, keyword), [keyword, tree]);
     const selectedCount = selectedPaths.size;
+    const visibleCount = filteredTree.fileCount;
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
@@ -1156,16 +1250,28 @@ function VisibilityPreferenceDialog({
                     </aside>
 
                     <div className="min-h-0 p-4">
-                        <div className="mb-3 flex items-center justify-between text-xs text-[#60736f]">
-                            <span>全量目录：{files.length} 个报表</span>
-                            <span>已选：{selectedCount}</span>
+                        <div className="mb-3 flex items-center justify-between gap-3 text-xs text-[#60736f]">
+                            <div className="relative min-w-0 flex-1">
+                                <Search className="absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-[#8aa19c]" />
+                                <Input
+                                    value={keyword}
+                                    onChange={(event) => setKeyword(event.target.value)}
+                                    className="h-9 border-[#dedede] bg-white pl-8 text-xs"
+                                    placeholder="搜索文件夹或报表，列表会直接定位到匹配项"
+                                />
+                            </div>
+                            <span className="shrink-0">
+                                {keyword.trim() ? `匹配：${visibleCount}` : `全量：${files.length}`} · 已选：{selectedCount}
+                            </span>
                         </div>
                         <div className="max-h-[56vh] overflow-auto rounded-lg border border-[#eeeeee] bg-white p-2">
                             {loading ? (
                                 <div className="px-3 py-6 text-sm text-[#6d817d]">正在读取全量报表目录...</div>
+                            ) : keyword.trim() && visibleCount === 0 ? (
+                                <div className="px-3 py-6 text-sm text-[#6d817d]">没有找到匹配的文件夹或报表。</div>
                             ) : (
                                 <>
-                                    {tree.folders.map((folder) => (
+                                    {filteredTree.folders.map((folder) => (
                                         <VisibilityTreeFolderNode
                                             key={folder.path}
                                             folder={folder}
@@ -1174,7 +1280,7 @@ function VisibilityPreferenceDialog({
                                             onTogglePath={onTogglePath}
                                         />
                                     ))}
-                                    {tree.files.map((file) => (
+                                    {filteredTree.files.map((file) => (
                                         <VisibilityTreeFileNode
                                             key={file.objectPath}
                                             file={file}
@@ -1444,6 +1550,96 @@ function formatReportPath(reportPath: string) {
     return reportPath.replace(/^reportlets\//, '');
 }
 
+function listReportFolders(files: FrReportFileRead[]) {
+    const folders = new Set<string>();
+    for (const file of files) {
+        const objectPath = file.objectPath || '';
+        const reportPath = file.reportPath || '';
+        const normalized = objectPath.startsWith('webroot/APP/reportlets/')
+            ? objectPath
+            : `webroot/APP/${reportPath.replace(/^reportlets\//, 'reportlets/')}`;
+        const folder = normalized.split('/').slice(0, -1).join('/');
+        if (folder.startsWith('webroot/APP/reportlets')) {
+            folders.add(folder);
+        }
+    }
+    folders.add('webroot/APP/reportlets/AI生成报表');
+    return Array.from(folders).sort((left, right) => left.localeCompare(right, 'zh-Hans-CN'));
+}
+
+function extractNewReportContext(text: string) {
+    const normalized = text.trim();
+    const reportName =
+        matchFirst(normalized, [
+            /报表(?:名称|名)?[：:]\s*([^\n，,；;]+)/,
+            /(?:叫|命名为|名称为)\s*([^\n，,；;]+?报表)/,
+        ]) ?? undefined;
+    const targetFolder =
+        matchFirst(normalized, [
+            /(?:保存到|放到|生成到|目录)[：:\s]*((?:webroot\/APP\/reportlets|reportlets)\/[^\s，,；;]+)/i,
+            /((?:webroot\/APP\/reportlets|reportlets)\/[^\s，,；;]+)/i,
+        ]) ?? undefined;
+    const tableMatches = Array.from(
+        normalized.matchAll(/\b(?:[A-Za-z_][\w]*\.)?[A-Za-z_][\w]*(?:\s*,\s*(?:[A-Za-z_][\w]*\.)?[A-Za-z_][\w]*)*\b/g),
+    )
+        .map((match) => match[0])
+        .filter((value) => /[_\.]/.test(value) && !value.toLowerCase().includes('webroot') && !value.toLowerCase().includes('reportlets'))
+        .slice(0, 8);
+    const sourceTablesText = tableMatches.length > 0 ? tableMatches.join('\n') : undefined;
+    return { reportName, targetFolder: normalizeReportFolder(targetFolder), sourceTablesText };
+}
+
+function matchFirst(text: string, patterns: RegExp[]) {
+    for (const pattern of patterns) {
+        const matched = text.match(pattern);
+        const value = matched?.[1]?.trim();
+        if (value) {
+            return value;
+        }
+    }
+    return null;
+}
+
+function normalizeReportFolder(value?: string) {
+    if (!value) {
+        return undefined;
+    }
+    const trimmed = value.replace(/[。.!！?？]+$/, '').replace(/\/+$/, '');
+    if (trimmed.startsWith('webroot/APP/reportlets')) {
+        return trimmed;
+    }
+    if (trimmed.startsWith('reportlets/')) {
+        return `webroot/APP/${trimmed}`;
+    }
+    return trimmed;
+}
+
+function isGenerateReportCommand(text: string) {
+    const normalized = text.replace(/\s/g, '');
+    return /开始生成|生成报表|可以生成|直接生成|开始做|开始吧/.test(normalized);
+}
+
+function isSaveCptCommand(text: string) {
+    const normalized = text.replace(/\s/g, '').toLowerCase();
+    return normalized.includes('保存成cpt') || normalized.includes('生成cpt') || normalized.includes('保存cpt');
+}
+
+function isFreshReportRequest(text: string) {
+    const normalized = text.replace(/\s/g, '');
+    return /^(帮我|我要|请|直接)?(做|新建|生成|创建|设计)(一个|一张)?/.test(normalized) || /报表名[：:]/.test(text);
+}
+
+function agentToolLabel(toolName: string) {
+    const labels: Record<string, string> = {
+        ai_requirement_review: 'AI 需求理解',
+        review_requirement: '需求预检',
+        generate_sql_with_preview: 'SQL 与数据预览',
+        generate_report_dsl: '报表设计',
+        generate_cpt: 'CPT 与版本控制',
+    };
+    return labels[toolName] ?? toolName;
+}
+
 function buildReportFileTree(files: FrReportFileRead[]) {
     const root: ReportTreeFolder = {
         name: '报表',
@@ -1489,6 +1685,29 @@ function sortAndCountReportFolder(folder: ReportTreeFolder) {
     folder.files.sort((left, right) => left.fileName.localeCompare(right.fileName, 'zh-Hans-CN'));
     folder.fileCount = folder.files.length + folder.folders.reduce((total, child) => total + sortAndCountReportFolder(child), 0);
     return folder.fileCount;
+}
+
+function filterReportFileTree(folder: ReportTreeFolder, keyword: string): ReportTreeFolder {
+    const text = keyword.trim().toLowerCase();
+    if (!text) {
+        return folder;
+    }
+    const nextFolders = folder.folders
+        .map((child) => filterReportFileTree(child, text))
+        .filter((child) => child.fileCount > 0 || child.name.toLowerCase().includes(text) || child.path.toLowerCase().includes(text));
+    const nextFiles = folder.files.filter((file) => {
+        const path = formatReportPath(file.reportPath).toLowerCase();
+        return file.fileName.toLowerCase().includes(text) || path.includes(text) || file.objectPath.toLowerCase().includes(text);
+    });
+    const folderMatches = folder.name.toLowerCase().includes(text) || folder.path.toLowerCase().includes(text);
+    const visibleFiles = folderMatches ? folder.files : nextFiles;
+    const visibleFolders = folderMatches ? folder.folders : nextFolders;
+    return {
+        ...folder,
+        folders: visibleFolders,
+        files: visibleFiles,
+        fileCount: visibleFiles.length + visibleFolders.reduce((total, child) => total + child.fileCount, 0),
+    };
 }
 
 function reportFolderHasSelectedFile(folder: ReportTreeFolder, selectedPath: string | null): boolean {
@@ -1983,12 +2202,21 @@ function ReportStructurePanel({
     reportStructure,
     loading,
     error,
+    fetching,
+    hasDraft,
+    onRefetchStructure,
 }: {
     selectedReport: FrReportFileRead | null;
     reportStructure: FrReportFileStructureRead | null;
     loading: boolean;
     error: unknown;
+    fetching: boolean;
+    hasDraft: boolean;
+    onRefetchStructure: () => void;
 }) {
+    const [detailOpen, setDetailOpen] = useState(false);
+    const [syncDialogOpen, setSyncDialogOpen] = useState(false);
+
     if (!selectedReport) {
         return (
             <section className="rounded-xl border border-[#e5e5e5] bg-white p-4">
@@ -2026,67 +2254,165 @@ function ReportStructurePanel({
     }
 
     return (
-        <section className="rounded-xl border border-[#dbe9e6] bg-white p-4">
+        <section className="rounded-xl border border-[#dbe9e6] bg-white p-3">
             <div className="mb-3 flex items-start justify-between gap-3">
                 <div className="min-w-0">
                     <div className="flex items-center gap-2 text-sm font-semibold text-[#243a35]">
                         <Database className="size-4 text-[#0f8f7b]" />
-                        报表结构已读取
+                        当前结构
                     </div>
                     <p className="mt-1 truncate text-xs text-[#60736f]">{reportStructure.fileName}</p>
                 </div>
                 <Badge className="border-[#d8ebe6] bg-[#f6fbfa] text-[#0c7a68] shadow-none">{reportStructure.format.toUpperCase()}</Badge>
             </div>
 
-            <div className="grid grid-cols-2 gap-2 text-xs">
-                <InfoItem label="工作表" value={`${reportStructure.summary.sheetCount}`} />
-                <InfoItem label="单元格" value={`${reportStructure.summary.cellCount}`} />
-                <InfoItem label="合并" value={`${reportStructure.summary.mergeCount}`} />
-                <InfoItem label="数据集" value={`${reportStructure.summary.datasetCount}`} />
-                <InfoItem label="SQL" value={`${reportStructure.summary.queryCount}`} />
-                <InfoItem label="参数" value={`${reportStructure.summary.parameterCount}`} />
-            </div>
-
-            <div className="mt-3 grid gap-2 text-xs">
-                <div className="rounded-lg bg-[#fafafa] px-3 py-2 ring-1 ring-[#eeeeee]">
-                    <div className="text-[11px] text-[#8a8a8a]">FineReport 版本</div>
-                    <div className="mt-1 truncate font-semibold text-[#333333]">
-                        {reportStructure.releaseVersion || '未识别'}
-                        {reportStructure.xmlVersion ? ` / XML ${reportStructure.xmlVersion}` : ''}
-                    </div>
+            <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                <div className="rounded-lg bg-[#f7fbfa] px-2 py-2 ring-1 ring-[#e1efec]">
+                    <div className="font-semibold text-[#203b35]">{reportStructure.summary.cellCount}</div>
+                    <div className="mt-0.5 text-[11px] text-[#60736f]">单元格</div>
+                </div>
+                <div className="rounded-lg bg-[#f7fbfa] px-2 py-2 ring-1 ring-[#e1efec]">
+                    <div className="font-semibold text-[#203b35]">{reportStructure.summary.datasetCount}</div>
+                    <div className="mt-0.5 text-[11px] text-[#60736f]">数据集</div>
+                </div>
+                <div className="rounded-lg bg-[#f7fbfa] px-2 py-2 ring-1 ring-[#e1efec]">
+                    <div className="font-semibold text-[#203b35]">{reportStructure.summary.parameterCount}</div>
+                    <div className="mt-0.5 text-[11px] text-[#60736f]">参数</div>
                 </div>
             </div>
 
             {reportStructure.warnings.length > 0 ? (
-                <div className="mt-3 rounded-lg border border-[#f0dfb8] bg-[#fffaf0] px-3 py-2 text-xs leading-5 text-[#8a6518]">
-                    {reportStructure.warnings.join('；')}
+                <div className="mt-3 rounded-lg border border-[#f0dfb8] bg-[#fffaf0] px-3 py-2 text-xs leading-5 text-[#8a6518] line-clamp-2">
+                    {reportStructure.warnings.length} 条结构提示：{reportStructure.warnings.join('；')}
                 </div>
             ) : null}
 
-            <div className="mt-4 space-y-2">
-                {reportStructure.datasets.slice(0, 6).map((dataset, index) => (
-                    <div key={`${dataset.name}-${index}`} className="rounded-lg border border-[#eeeeee] bg-[#fafafa] p-3">
-                        <div className="mb-2 flex items-center justify-between gap-2">
-                            <div className="min-w-0">
-                                <div className="truncate text-xs font-semibold text-[#243a35]">{dataset.name || `未命名数据集 ${index + 1}`}</div>
-                                <div className="mt-0.5 truncate text-[11px] text-[#7a8a87]">{dataset.databaseName || dataset.className || '无连接信息'}</div>
-                            </div>
-                            <span className="shrink-0 rounded-full bg-white px-2 py-0.5 text-[10px] text-[#0c7a68] ring-1 ring-[#dbe9e6]">
-                                {dataset.parameters.length} 参数
-                            </span>
-                        </div>
-                        {dataset.querySql ? (
-                            <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded-md bg-white p-2 text-[11px] leading-4 text-[#3f4f4b] ring-1 ring-[#eeeeee]">
-                                {dataset.querySql}
-                                {dataset.querySqlTruncated ? '\n...' : ''}
-                            </pre>
-                        ) : (
-                            <div className="rounded-md bg-white p-2 text-[11px] text-[#8a8a8a] ring-1 ring-[#eeeeee]">该数据集暂无 SQL。</div>
-                        )}
-                    </div>
-                ))}
+            <div className="mt-3 grid grid-cols-2 gap-2">
+                <Button type="button" variant="outline" className="h-8 border-[#dedede] text-xs" onClick={() => setDetailOpen(true)}>
+                    查看结构
+                </Button>
+                <Button
+                    type="button"
+                    variant="outline"
+                    className="h-8 border-[#bfe3dc] bg-[#f6fbfa] text-xs text-[#0b7c6b] hover:bg-[#eaf7f4]"
+                    onClick={() => setSyncDialogOpen(true)}
+                    disabled={fetching}
+                >
+                    <RefreshCw className={cn('size-3.5', fetching && 'animate-spin')} />
+                    重新获取
+                </Button>
             </div>
+            <ReportStructureDetailDialog open={detailOpen} onOpenChange={setDetailOpen} reportStructure={reportStructure} />
+            <Dialog open={syncDialogOpen} onOpenChange={setSyncDialogOpen}>
+                <DialogContent className="max-w-xl">
+                    <DialogHeader>
+                        <DialogTitle className="text-base text-[#243a35]">重新获取设计器中的报表结构</DialogTitle>
+                        <DialogDescription className="text-xs leading-5 text-[#60736f]">
+                            将重新从 MinIO 读取当前 CPT/FRM 的最新结构，用来同步 FineReport 设计器里直接做的修改。
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="rounded-lg bg-[#fffaf0] p-3 text-xs leading-5 text-[#795300] ring-1 ring-[#f1d48a]">
+                        {hasDraft
+                            ? '当前有待应用的小驰修改草稿。同步后画布会以设计器最新文件为准，尚未写入文件的预览修改可能需要重新生成。'
+                            : '同步只刷新平台读取到的结构，不会直接覆盖 FineReport 文件。'}
+                    </div>
+                    <DialogFooter>
+                        <Button type="button" variant="outline" onClick={() => setSyncDialogOpen(false)}>
+                            取消
+                        </Button>
+                        <Button
+                            type="button"
+                            className="bg-[#0f8f7b] text-white hover:bg-[#0b7c6b]"
+                            onClick={() => {
+                                onRefetchStructure();
+                                setSyncDialogOpen(false);
+                            }}
+                        >
+                            确认同步
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </section>
+    );
+}
+
+function ReportStructureDetailDialog({
+    open,
+    onOpenChange,
+    reportStructure,
+}: {
+    open: boolean;
+    onOpenChange: (open: boolean) => void;
+    reportStructure: FrReportFileStructureRead;
+}) {
+    return (
+        <Dialog open={open} onOpenChange={onOpenChange}>
+            <DialogContent className="max-h-[86vh] overflow-hidden rounded-xl border-[#dfe7e5] bg-white p-0 sm:max-w-5xl">
+                <DialogHeader className="border-b border-[#eeeeee] px-5 py-4">
+                    <DialogTitle className="text-base font-semibold text-[#243a35]">报表结构详情</DialogTitle>
+                    <DialogDescription className="text-xs text-[#6d817d]">
+                        这里展示当前在线解析到的工作表、数据集、SQL 和参数，常规聊天区只保留摘要。
+                    </DialogDescription>
+                </DialogHeader>
+                <div className="grid max-h-[68vh] min-h-[520px] grid-cols-[220px_minmax(0,1fr)] overflow-hidden">
+                    <aside className="border-r border-[#eeeeee] bg-[#fafafa] p-4">
+                        <div className="grid gap-2 text-xs">
+                            <InfoItem label="文件名" value={reportStructure.fileName} />
+                            <InfoItem label="工作表" value={`${reportStructure.summary.sheetCount}`} />
+                            <InfoItem label="单元格" value={`${reportStructure.summary.cellCount}`} />
+                            <InfoItem label="合并" value={`${reportStructure.summary.mergeCount}`} />
+                            <InfoItem label="数据集" value={`${reportStructure.summary.datasetCount}`} />
+                            <InfoItem label="SQL" value={`${reportStructure.summary.queryCount}`} />
+                            <InfoItem label="参数" value={`${reportStructure.summary.parameterCount}`} />
+                            <InfoItem
+                                label="FineReport"
+                                value={`${reportStructure.releaseVersion || '未识别'}${reportStructure.xmlVersion ? ` / XML ${reportStructure.xmlVersion}` : ''}`}
+                            />
+                        </div>
+                        {reportStructure.warnings.length > 0 ? (
+                            <div className="mt-3 rounded-lg border border-[#f0dfb8] bg-[#fffaf0] px-3 py-2 text-xs leading-5 text-[#8a6518]">
+                                {reportStructure.warnings.join('；')}
+                            </div>
+                        ) : null}
+                    </aside>
+                    <main className="min-h-0 overflow-auto p-4">
+                        <div className="space-y-3">
+                            {reportStructure.datasets.length > 0 ? (
+                                reportStructure.datasets.map((dataset, index) => (
+                                    <div key={`${dataset.name}-${index}`} className="rounded-lg border border-[#eeeeee] bg-[#fafafa] p-3">
+                                        <div className="mb-2 flex items-center justify-between gap-2">
+                                            <div className="min-w-0">
+                                                <div className="truncate text-xs font-semibold text-[#243a35]">{dataset.name || `未命名数据集 ${index + 1}`}</div>
+                                                <div className="mt-0.5 truncate text-[11px] text-[#7a8a87]">{dataset.databaseName || dataset.className || '无连接信息'}</div>
+                                            </div>
+                                            <span className="shrink-0 rounded-full bg-white px-2 py-0.5 text-[10px] text-[#0c7a68] ring-1 ring-[#dbe9e6]">
+                                                {dataset.parameters.length} 参数
+                                            </span>
+                                        </div>
+                                        {dataset.querySql ? (
+                                            <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-md bg-white p-2 font-mono text-[11px] leading-4 text-[#3f4f4b] ring-1 ring-[#eeeeee]">
+                                                {dataset.querySql}
+                                                {dataset.querySqlTruncated ? '\n...' : ''}
+                                            </pre>
+                                        ) : (
+                                            <div className="rounded-md bg-white p-2 text-[11px] text-[#8a8a8a] ring-1 ring-[#eeeeee]">该数据集暂无 SQL。</div>
+                                        )}
+                                    </div>
+                                ))
+                            ) : (
+                                <div className="rounded-lg border border-[#eeeeee] bg-white px-3 py-8 text-center text-xs text-[#60736f]">没有解析到数据集。</div>
+                            )}
+                        </div>
+                    </main>
+                </div>
+                <DialogFooter className="border-t border-[#eeeeee] px-5 py-3">
+                    <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+                        关闭
+                    </Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
     );
 }
 
@@ -2095,13 +2421,14 @@ function CopilotPanel({
     reportStructure,
     structureLoading,
     structureError,
+    structureFetching,
+    onRefetchStructure,
     selectedCell,
     selectedDatasetName,
     previewColumns,
     aiDraft,
     appliedSnapshotId,
     snapshotCpt,
-    versionItems,
     onDraftReady,
     onApplyDraft,
     onDraftApplied,
@@ -2112,13 +2439,14 @@ function CopilotPanel({
     reportStructure: FrReportFileStructureRead | null;
     structureLoading: boolean;
     structureError: unknown;
+    structureFetching: boolean;
+    onRefetchStructure: () => void;
     selectedCell: string;
     selectedDatasetName: string | null;
     previewColumns: string[];
     aiDraft: FrReportAiOperationDraftResponse | null;
     appliedSnapshotId: string | null;
     snapshotCpt: FrReportAiSnapshotCptResponse | null;
-    versionItems: string[];
     onDraftReady: (draft: FrReportAiOperationDraftResponse) => void;
     onApplyDraft: (draft: FrReportAiOperationDraftResponse) => void;
     onDraftApplied: (result: FrReportAiApplyDraftResponse) => void;
@@ -2127,17 +2455,53 @@ function CopilotPanel({
 }) {
     const [prompt, setPrompt] = useState('');
     const [draftPrompt, setDraftPrompt] = useState('');
+    const [targetObjectPath, setTargetObjectPath] = useState('');
+    const [conflictDialogOpen, setConflictDialogOpen] = useState(false);
+    const [recycleDialogOpen, setRecycleDialogOpen] = useState(false);
+    const [activeTool, setActiveTool] = useState<'structure' | 'draft' | 'commands' | 'versions' | null>(null);
+    const [messages, setMessages] = useState<AssistantMessage[]>([
+        {
+            id: 'welcome',
+            role: 'assistant',
+            content: '我可以帮你改 SQL、样式、填报配置和版本发布。你直接说要改哪里，我会先生成可预览的修改草稿。',
+        },
+    ]);
     const generateDraft = useGenerateFrReportAiOperationDraft();
     const applyDraft = useApplyFrReportAiOperationDraft();
     const generateSnapshotCpt = useGenerateFrReportAiSnapshotCpt();
+    const effectiveTargetObjectPath = targetObjectPath.trim() || snapshotCpt?.cptObjectPath || selectedReport?.objectPath || '';
+    const versionsQuery = useFrReportVersions(effectiveTargetObjectPath || selectedReport?.objectPath);
+    const rollbackFileVersion = useRollbackFrReportFileVersion();
+    const rollbackStructureVersion = useRollbackFrReportStructureVersion();
+    const syncExternalVersion = useSyncFrReportExternalVersion();
+    const recycleReportFile = useRecycleFrReportFile();
+    const conflictDetail = snapshotCpt?.status === 'conflict' ? snapshotCpt.conflict : versionsQuery.data?.externalConflict;
+    useEffect(() => {
+        if (snapshotCpt?.status === 'conflict') {
+            setConflictDialogOpen(true);
+        }
+    }, [snapshotCpt]);
     const handleSubmit = () => {
         if (!selectedReport || !prompt.trim()) {
             return;
         }
+        const requestText = prompt.trim();
+        const pendingMessageId = `assistant-${Date.now()}`;
+        setMessages((current) => [
+            ...current,
+            { id: `user-${Date.now()}`, role: 'user', content: requestText },
+            {
+                id: pendingMessageId,
+                role: 'assistant',
+                status: 'pending',
+                content: '小驰正在读取当前结构、检查选中单元格和数据集字段，并生成可预览的修改草稿...',
+            },
+        ]);
+        setPrompt('');
         generateDraft.mutate(
             {
                 objectPath: selectedReport.objectPath,
-                prompt: prompt.trim(),
+                prompt: requestText,
                 selectedCell,
                 selectedDataset: selectedDatasetName,
                 previewColumns,
@@ -2146,9 +2510,32 @@ function CopilotPanel({
             },
             {
                 onSuccess: (draft) => {
-                    setDraftPrompt(prompt.trim());
+                    setDraftPrompt(requestText);
                     onDraftReady(draft);
-                    setPrompt('');
+                    setMessages((current) =>
+                        current.map((message) =>
+                            message.id === pendingMessageId
+                                ? {
+                                      ...message,
+                                      status: 'success',
+                                      content: draft.assistantMessage || `已生成 ${draft.operations.length} 个修改操作，画布会先展示预览效果。确认后再应用为平台草稿。`,
+                                  }
+                                : message,
+                        ),
+                    );
+                },
+                onError: (error) => {
+                    setMessages((current) =>
+                        current.map((message) =>
+                            message.id === pendingMessageId
+                                ? {
+                                      ...message,
+                                      status: 'error',
+                                      content: error instanceof Error ? `生成失败：${error.message}` : '生成失败：模型或接口暂时没有返回有效结果。',
+                                  }
+                                : message,
+                        ),
+                    );
                 },
             },
         );
@@ -2183,9 +2570,41 @@ function CopilotPanel({
             return;
         }
         generateSnapshotCpt.mutate(
-            { snapshotId: appliedSnapshotId },
+            {
+                snapshotId: appliedSnapshotId,
+                targetObjectPath: effectiveTargetObjectPath,
+                conflictStrategy: 'abort',
+            },
             {
                 onSuccess: onSnapshotCptGenerated,
+            },
+        );
+    };
+    const handleArchiveAndOverwrite = () => {
+        if (!appliedSnapshotId || !effectiveTargetObjectPath) {
+            return;
+        }
+        generateSnapshotCpt.mutate(
+            {
+                snapshotId: appliedSnapshotId,
+                targetObjectPath: effectiveTargetObjectPath,
+                conflictStrategy: 'archive_and_overwrite',
+            },
+            {
+                onSuccess: onSnapshotCptGenerated,
+            },
+        );
+    };
+    const handleImportExternal = () => {
+        if (!effectiveTargetObjectPath) {
+            return;
+        }
+        syncExternalVersion.mutate(
+            effectiveTargetObjectPath,
+            {
+                onSuccess: () => {
+                    setConflictDialogOpen(false);
+                },
             },
         );
     };
@@ -2194,43 +2613,122 @@ function CopilotPanel({
     const cptErrorMessage = generateSnapshotCpt.error instanceof Error ? generateSnapshotCpt.error.message : null;
 
     return (
-        <div className="grid h-full min-h-0 grid-rows-[minmax(0,1fr)_auto] gap-3">
-            <div className="min-h-0 space-y-4 overflow-auto pr-1">
-                <section className="rounded-xl border border-[#e5e5e5] bg-white p-4">
-                    <div className="flex items-center gap-3">
-                        <div className="grid size-10 place-items-center rounded-xl bg-[#0f8f7b] text-white">
-                            <Bot className="size-5" />
-                        </div>
-                        <div>
-                            <h2 className="text-sm font-semibold text-[#203b35]">AI 副驾驶</h2>
-                            <p className="text-xs text-[#60736f]">通过聊天修改 SQL、DSL 和填报配置</p>
+        <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)_auto]">
+            <div className="flex items-center justify-between gap-2 border-b border-[#eeeeee] px-1 pb-3">
+                <div className="flex min-w-0 items-center gap-2">
+                    <div className="grid size-8 shrink-0 place-items-center rounded-lg bg-[#0f8f7b] text-white">
+                        <Bot className="size-4" />
+                    </div>
+                    <div className="min-w-0">
+                        <div className="truncate text-sm font-semibold text-[#203b35]">小驰</div>
+                        <div className="truncate text-[11px] text-[#60736f]">
+                            {selectedReport ? '随时描述你想怎么改这张报表' : '先选择一个报表文件'}
                         </div>
                     </div>
-                </section>
+                </div>
+                {generateDraft.isPending ? (
+                    <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#eef8f5] px-2 py-0.5 text-[11px] text-[#0c7a68]">
+                        <RefreshCw className="size-3 animate-spin" />
+                        处理中
+                    </span>
+                ) : null}
+            </div>
 
-                <ReportStructurePanel
-                    selectedReport={selectedReport}
-                    reportStructure={reportStructure}
-                    loading={structureLoading}
-                    error={structureError}
-                />
-
-                <section className="space-y-3">
-                    <div className="mr-8 rounded-xl border border-[#e5e5e5] bg-[#fafafa] px-3 py-2 text-xs leading-5 text-[#444444]">
-                        {aiDraft?.assistantMessage ?? '当前已接入项目可用模型。输入修改要求后，AI 会生成操作草稿并在画布上实时预览。'}
-                    </div>
+            <div className="min-h-0 overflow-auto px-1 py-4">
+                <div className="space-y-3">
+                    {messages.map((message) => (
+                        <div
+                            key={message.id}
+                            className={cn(
+                                'max-w-[92%] rounded-2xl px-3 py-2 text-sm leading-6',
+                                message.role === 'user'
+                                    ? 'ml-auto bg-[#0f8f7b] text-white'
+                                    : 'mr-auto border border-[#e8eeee] bg-[#f8faf9] text-[#344541]',
+                                message.status === 'pending' && 'border-[#bfe3dc] bg-[#f6fbfa] text-[#0b7c6b]',
+                                message.status === 'error' && 'border-[#ffd6d6] bg-[#fff1f1] text-[#9b3a3a]',
+                            )}
+                        >
+                            {message.content}
+                        </div>
+                    ))}
                     {selectedDatasetName ? (
-                        <div className="ml-8 rounded-xl bg-[#0f8f7b] px-3 py-2 text-xs leading-5 text-white">
+                        <div className="mr-auto max-w-[92%] rounded-2xl border border-[#e8eeee] bg-white px-3 py-2 text-xs leading-5 text-[#60736f]">
                             当前数据集：{selectedDatasetName}，已预览字段 {previewColumns.length} 个。
                         </div>
                     ) : null}
-                </section>
+                </div>
+            </div>
 
-                <section className="rounded-xl border border-[#e5e5e5] bg-white p-4">
-                    <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-[#243a35]">
-                        <WandSparkles className="size-4 text-[#0f8f7b]" />
-                        待应用修改
-                    </div>
+            <div className="space-y-2 border-t border-[#eeeeee] bg-white pt-3">
+                <div className="flex items-center gap-1 px-1">
+                    {[
+                        { key: 'structure' as const, label: '上下文', icon: Database },
+                        { key: 'draft' as const, label: aiDraft ? `草稿 ${aiDraft.operations.length}` : '草稿', icon: WandSparkles },
+                        { key: 'versions' as const, label: '版本', icon: History },
+                        { key: 'commands' as const, label: '指令', icon: MessageSquareText },
+                    ].map((item) => {
+                        const Icon = item.icon;
+                        return (
+                            <Button
+                                key={item.key}
+                                type="button"
+                                variant="ghost"
+                                className="h-8 rounded-lg px-2 text-xs text-[#60736f] hover:bg-[#f6fbfa] hover:text-[#0b7c6b]"
+                                onClick={() => setActiveTool(item.key)}
+                            >
+                                <Icon className="size-3.5" />
+                                {item.label}
+                            </Button>
+                        );
+                    })}
+                </div>
+                <div className="flex items-center gap-2 rounded-xl border border-[#dedede] bg-white p-2 shadow-[0_-8px_20px_rgba(255,255,255,0.92)]">
+                <Plus className="size-4 text-[#0f8f7b]" />
+                <input
+                    className="min-w-0 flex-1 bg-transparent text-sm text-[#333333] outline-none placeholder:text-[#8a8a8a]"
+                    value={prompt}
+                    onChange={(event) => setPrompt(event.target.value)}
+                    onKeyDown={(event) => {
+                        if (event.key === 'Enter' && !event.shiftKey) {
+                            event.preventDefault();
+                            handleSubmit();
+                        }
+                    }}
+                    disabled={!selectedReport || generateDraft.isPending}
+                    placeholder="告诉小驰要如何调整这张报表"
+                />
+                <Button size="icon" className="size-8 bg-[#0f8f7b] text-white hover:bg-[#0b7c6b]" onClick={handleSubmit} disabled={!selectedReport || !prompt.trim() || generateDraft.isPending}>
+                    <SendHorizonal className="size-4" />
+                </Button>
+                </div>
+            </div>
+            <Dialog open={activeTool === 'structure'} onOpenChange={(open) => setActiveTool(open ? 'structure' : null)}>
+                <DialogContent className="max-h-[86vh] overflow-auto rounded-xl border-[#dfe7e5] bg-white sm:max-w-xl">
+                    <DialogHeader>
+                        <DialogTitle className="text-base text-[#243a35]">小驰上下文</DialogTitle>
+                        <DialogDescription className="text-xs text-[#60736f]">
+                            结构、SQL、参数和设计器同步入口默认隐藏，需要时再查看。
+                        </DialogDescription>
+                    </DialogHeader>
+                    <ReportStructurePanel
+                        selectedReport={selectedReport}
+                        reportStructure={reportStructure}
+                        loading={structureLoading}
+                        error={structureError}
+                        fetching={structureFetching}
+                        hasDraft={Boolean(aiDraft)}
+                        onRefetchStructure={onRefetchStructure}
+                    />
+                </DialogContent>
+            </Dialog>
+            <Dialog open={activeTool === 'draft'} onOpenChange={(open) => setActiveTool(open ? 'draft' : null)}>
+                <DialogContent className="max-h-[86vh] overflow-auto rounded-xl border-[#dfe7e5] bg-white sm:max-w-2xl">
+                    <DialogHeader>
+                        <DialogTitle className="text-base text-[#243a35]">待应用修改</DialogTitle>
+                        <DialogDescription className="text-xs text-[#60736f]">
+                            小驰生成的修改会先停在这里，确认后才进入平台草稿和 CPT 版本流程。
+                        </DialogDescription>
+                    </DialogHeader>
                     <div className="space-y-2">
                         {(aiDraft?.operations ?? []).map((item) => (
                             <div key={`${item.operationType}-${item.target}-${item.summary}`} className="flex gap-2 rounded-lg bg-[#fafafa] px-3 py-2 text-xs text-[#555555] ring-1 ring-[#eeeeee]">
@@ -2248,98 +2746,221 @@ function CopilotPanel({
                                 {warning}
                             </div>
                         ))}
-                        {errorMessage ? (
-                            <div className="rounded-lg bg-[#fff1f1] px-3 py-2 text-xs text-[#9b3a3a] ring-1 ring-[#ffd6d6]">{errorMessage}</div>
-                        ) : null}
-                        {applyErrorMessage ? (
-                            <div className="rounded-lg bg-[#fff1f1] px-3 py-2 text-xs text-[#9b3a3a] ring-1 ring-[#ffd6d6]">{applyErrorMessage}</div>
-                        ) : null}
-                        {cptErrorMessage ? (
-                            <div className="rounded-lg bg-[#fff1f1] px-3 py-2 text-xs text-[#9b3a3a] ring-1 ring-[#ffd6d6]">{cptErrorMessage}</div>
-                        ) : null}
+                        {[errorMessage, applyErrorMessage, cptErrorMessage].filter(Boolean).map((message) => (
+                            <div key={message} className="rounded-lg bg-[#fff1f1] px-3 py-2 text-xs text-[#9b3a3a] ring-1 ring-[#ffd6d6]">{message}</div>
+                        ))}
                     </div>
-                    <div className="mt-3 grid grid-cols-2 gap-2">
+                    <div className="grid grid-cols-2 gap-2">
                         <Button variant="outline" className="h-9 border-[#dedede] text-[#333333] hover:bg-[#f5f5f5]" onClick={onClearDraft} disabled={!aiDraft}>
-                            查看差异
+                            清空草稿
                         </Button>
                         <Button className="h-9 bg-[#0f8f7b] text-white hover:bg-[#0b7c6b]" onClick={handleApplyDraft} disabled={!aiDraft || applyDraft.isPending}>
                             {applyDraft.isPending ? '保存中...' : '应用为草稿'}
                         </Button>
                     </div>
-                    <div className="mt-2">
-                        <Button
-                            variant="outline"
-                            className="h-9 w-full border-[#bfe3dc] bg-[#f6fbfa] text-[#0b7c6b] hover:bg-[#eaf7f4]"
-                            onClick={handleGenerateSnapshotCpt}
-                            disabled={!appliedSnapshotId || generateSnapshotCpt.isPending}
-                        >
-                            <Play className="size-4" />
-                            {generateSnapshotCpt.isPending ? '生成预览中...' : '生成预览 CPT'}
-                        </Button>
-                    </div>
+                    <Input
+                        value={targetObjectPath}
+                        onChange={(event) => setTargetObjectPath(event.target.value)}
+                        className="h-9 border-[#dfe7e4] bg-white text-xs"
+                        placeholder={selectedReport?.objectPath ?? '目标 CPT 路径，例如 webroot/APP/reportlets/期货/台账/报表.cpt'}
+                    />
+                    <Button
+                        variant="outline"
+                        className="h-9 w-full border-[#bfe3dc] bg-[#f6fbfa] text-[#0b7c6b] hover:bg-[#eaf7f4]"
+                        onClick={handleGenerateSnapshotCpt}
+                        disabled={!appliedSnapshotId || generateSnapshotCpt.isPending}
+                    >
+                        <Play className="size-4" />
+                        {generateSnapshotCpt.isPending ? '生成预览中...' : '生成预览 CPT'}
+                    </Button>
                     {snapshotCpt ? (
-                        <div className="mt-3 space-y-2 rounded-lg bg-[#f6fbfa] p-3 text-xs text-[#49615c] ring-1 ring-[#dbe9e6]">
+                        <div className="space-y-2 rounded-lg bg-[#f6fbfa] p-3 text-xs text-[#49615c] ring-1 ring-[#dbe9e6]">
                             <div className="font-medium text-[#0b7c6b]">
-                                {snapshotCpt.status === 'generated' ? '预览 CPT 已生成' : '预览 CPT 已上传，但 FineReport 校验未通过'}
+                                {snapshotCpt.status === 'conflict'
+                                    ? '检测到外部修改，已阻止覆盖'
+                                    : snapshotCpt.status === 'generated'
+                                      ? 'CPT 文件版本已生成'
+                                      : 'CPT 已写入版本库，但 FineReport 校验未通过'}
                             </div>
                             <div className="break-all">对象路径：{snapshotCpt.cptObjectPath}</div>
-                            <a className="inline-flex items-center gap-1 font-medium text-[#0b7c6b] hover:underline" href={snapshotCpt.previewUrl} target="_blank" rel="noreferrer">
-                                打开 FineReport 预览
-                                <ExternalLink className="size-3.5" />
-                            </a>
-                            {snapshotCpt.errors.map((error) => (
-                                <div key={error} className="text-[#9b3a3a]">{error}</div>
-                            ))}
+                            {snapshotCpt.status === 'conflict' ? (
+                                <Button size="sm" className="h-8 bg-[#0f8f7b] text-xs text-white hover:bg-[#0b7c6b]" onClick={() => setConflictDialogOpen(true)}>
+                                    处理冲突
+                                </Button>
+                            ) : (
+                                <a className="inline-flex items-center gap-1 font-medium text-[#0b7c6b] hover:underline" href={snapshotCpt.previewUrl} target="_blank" rel="noreferrer">
+                                    打开 FineReport 预览
+                                    <ExternalLink className="size-3.5" />
+                                </a>
+                            )}
                         </div>
                     ) : null}
-                </section>
-
-                <section className="rounded-xl border border-[#e5e5e5] bg-white p-4">
-                    <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-[#243a35]">
-                        <MessageSquareText className="size-4 text-[#0f8f7b]" />
-                        快捷指令
-                    </div>
+                </DialogContent>
+            </Dialog>
+            <Dialog open={activeTool === 'commands'} onOpenChange={(open) => setActiveTool(open ? 'commands' : null)}>
+                <DialogContent className="rounded-xl border-[#dfe7e5] bg-white sm:max-w-md">
+                    <DialogHeader>
+                        <DialogTitle className="text-base text-[#243a35]">快捷指令</DialogTitle>
+                        <DialogDescription className="text-xs text-[#60736f]">点击后会填入输入框，你可以继续补充细节。</DialogDescription>
+                    </DialogHeader>
                     <div className="flex flex-wrap gap-2">
                         {['改 SQL', '调整样式', '新增填报项', '生成预览'].map((item) => (
-                            <button key={item} type="button" className="rounded-full border border-[#dedede] bg-white px-3 py-1.5 text-xs text-[#444444] hover:bg-[#f5f5f5] hover:text-[#0f8f7b]">
+                            <button
+                                key={item}
+                                type="button"
+                                className="rounded-full border border-[#dedede] bg-white px-3 py-1.5 text-xs text-[#444444] hover:bg-[#f5f5f5] hover:text-[#0f8f7b]"
+                                onClick={() => {
+                                    setPrompt(item);
+                                    setActiveTool(null);
+                                }}
+                            >
                                 {item}
                             </button>
                         ))}
                     </div>
-                </section>
-
-                <section className="rounded-xl border border-[#e5e5e5] bg-white p-4">
-                    <div className="mb-3 text-sm font-semibold text-[#243a35]">版本记录</div>
+                </DialogContent>
+            </Dialog>
+            <Dialog open={activeTool === 'versions'} onOpenChange={(open) => setActiveTool(open ? 'versions' : null)}>
+                <DialogContent className="max-h-[86vh] overflow-auto rounded-xl border-[#dfe7e5] bg-white sm:max-w-2xl">
+                    <DialogHeader>
+                        <DialogTitle className="text-base text-[#243a35]">版本中心</DialogTitle>
+                        <DialogDescription className="text-xs text-[#60736f]">这里只展示真实版本、冲突和回档入口。</DialogDescription>
+                    </DialogHeader>
+                    {versionsQuery.data?.externalConflict ? (
+                        <div className="rounded-lg bg-[#fffaf0] px-3 py-2 text-xs leading-5 text-[#795300] ring-1 ring-[#f1d48a]">
+                            {String(versionsQuery.data.externalConflict.message ?? '检测到 FineReport 设计器外部修改')}
+                        </div>
+                    ) : null}
+                    {versionsQuery.data?.project ? (
+                        <div className="rounded-lg bg-[#f6fbfa] px-3 py-2 text-xs leading-5 text-[#49615c] ring-1 ring-[#dbe9e6]">
+                            <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                    <div>当前报表：{versionsQuery.data.project.reportName}</div>
+                                    <div className="break-all">当前文件：{versionsQuery.data.project.currentObjectPath}</div>
+                                </div>
+                                <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-7 shrink-0 border-[#f0c6c6] px-2 text-[11px] text-[#9b3a3a] hover:bg-[#fff1f1]"
+                                    onClick={() => setRecycleDialogOpen(true)}
+                                >
+                                    <Trash2 className="size-3.5" />
+                                    回收
+                                </Button>
+                            </div>
+                        </div>
+                    ) : null}
                     <div className="space-y-2">
-                        {versionItems.map((item, index) => (
-                            <div key={item} className="flex items-center gap-2 text-xs text-[#60736f]">
-                                <span className={cn('size-2 rounded-full', index === 0 ? 'bg-[#0f8f7b]' : 'bg-[#d6d6d6]')} />
-                                {item}
+                        {(versionsQuery.data?.structureVersions ?? []).slice(0, 5).map((item, index) => (
+                            <div key={item.structureVersionId} className="rounded-md bg-white px-2.5 py-2 text-xs text-[#60736f] ring-1 ring-[#e5eeee]">
+                                <div className="flex items-center justify-between gap-2">
+                                    <span className="font-medium text-[#243a35]">结构 V{item.versionNo} · {item.versionName ?? item.sourceType}</span>
+                                    <Button
+                                        size="sm"
+                                        variant="outline"
+                                        className="h-7 border-[#dedede] px-2 text-[11px]"
+                                        disabled={index === 0 || rollbackStructureVersion.isPending}
+                                        onClick={() => rollbackStructureVersion.mutate(item.structureVersionId)}
+                                    >
+                                        回档结构
+                                    </Button>
+                                </div>
+                                <div className="mt-1 text-[11px]">{item.createTime}</div>
                             </div>
                         ))}
+                        {(versionsQuery.data?.fileVersions ?? []).slice(0, 8).map((item, index) => (
+                            <div key={item.fileVersionId} className="rounded-lg border border-[#eeeeee] bg-[#fafafa] px-3 py-2 text-xs text-[#60736f]">
+                                <div className="flex items-center justify-between gap-2">
+                                    <span className="font-medium text-[#243a35]">文件 v{String(item.versionNo).padStart(4, '0')} · {item.versionName ?? item.writeStatus}</span>
+                                    <Button
+                                        size="sm"
+                                        variant="outline"
+                                        className="h-7 border-[#dedede] px-2 text-[11px]"
+                                        disabled={index === 0 || rollbackFileVersion.isPending}
+                                        onClick={() => rollbackFileVersion.mutate(item.fileVersionId)}
+                                    >
+                                        回档
+                                    </Button>
+                                </div>
+                                <div className="mt-1 break-all text-[11px]">{item.archiveObjectPath}</div>
+                                <div className="mt-1 grid gap-1 text-[11px]">
+                                    <span>{item.createTime}</span>
+                                    <span>状态：{item.writeStatus}</span>
+                                </div>
+                            </div>
+                        ))}
+                        {(versionsQuery.data?.fileVersions ?? []).length === 0 && (versionsQuery.data?.structureVersions ?? []).length === 0 ? (
+                            <div className="rounded-lg border border-[#eeeeee] bg-[#fafafa] px-3 py-3 text-xs leading-5 text-[#60736f]">
+                                暂无平台版本记录。第一次应用草稿或生成 CPT 后，会在这里展示可回档的结构版本和文件版本。
+                            </div>
+                        ) : null}
                     </div>
-                </section>
-            </div>
-
-            <div className="flex items-center gap-2 rounded-xl border border-[#dedede] bg-white p-2 shadow-[0_-8px_20px_rgba(255,255,255,0.92)]">
-                <Plus className="size-4 text-[#0f8f7b]" />
-                <input
-                    className="min-w-0 flex-1 bg-transparent text-sm text-[#333333] outline-none placeholder:text-[#8a8a8a]"
-                    value={prompt}
-                    onChange={(event) => setPrompt(event.target.value)}
-                    onKeyDown={(event) => {
-                        if (event.key === 'Enter' && !event.shiftKey) {
-                            event.preventDefault();
-                            handleSubmit();
-                        }
-                    }}
-                    disabled={!selectedReport || generateDraft.isPending}
-                    placeholder="告诉副驾驶要如何调整这张报表"
-                />
-                <Button size="icon" className="size-8 bg-[#0f8f7b] text-white hover:bg-[#0b7c6b]" onClick={handleSubmit} disabled={!selectedReport || !prompt.trim() || generateDraft.isPending}>
-                    <SendHorizonal className="size-4" />
-                </Button>
-            </div>
+                </DialogContent>
+            </Dialog>
+            <Dialog open={conflictDialogOpen} onOpenChange={setConflictDialogOpen}>
+                <DialogContent className="max-w-2xl">
+                    <DialogHeader>
+                        <DialogTitle className="text-base text-[#243a35]">检测到 FineReport 设计器外部修改</DialogTitle>
+                        <DialogDescription className="text-xs leading-5 text-[#60736f]">
+                            平台记录的最新文件版本与 MinIO 当前文件不一致。为了避免覆盖设计器中的人工修改，请选择一种处理方式。
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-3 rounded-lg bg-[#fffaf0] p-3 text-xs leading-5 text-[#795300] ring-1 ring-[#f1d48a]">
+                        <div>{String(conflictDetail?.message ?? '目标文件和平台最新版本不一致。')}</div>
+                        <div className="break-all">目标文件：{effectiveTargetObjectPath || selectedReport?.objectPath || '未选择'}</div>
+                        {conflictDetail?.detectedHash ? <div className="break-all">检测 hash：{String(conflictDetail.detectedHash)}</div> : null}
+                        {conflictDetail?.detectedLastModified ? <div>检测时间：{String(conflictDetail.detectedLastModified)}</div> : null}
+                    </div>
+                    <DialogFooter className="gap-2 sm:justify-between">
+                        <Button type="button" variant="outline" onClick={() => setConflictDialogOpen(false)}>
+                            先不处理
+                        </Button>
+                        <div className="flex gap-2">
+                            <Button type="button" variant="outline" onClick={handleImportExternal} disabled={!effectiveTargetObjectPath || syncExternalVersion.isPending}>
+                                仅同步外部修改为版本
+                            </Button>
+                            <Button type="button" className="bg-[#0f8f7b] text-white hover:bg-[#0b7c6b]" onClick={handleArchiveAndOverwrite} disabled={!appliedSnapshotId || generateSnapshotCpt.isPending}>
+                                归档当前文件并覆盖
+                            </Button>
+                        </div>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+            <Dialog open={recycleDialogOpen} onOpenChange={setRecycleDialogOpen}>
+                <DialogContent className="max-w-xl">
+                    <DialogHeader>
+                        <DialogTitle className="text-base text-[#243a35]">移入回收站</DialogTitle>
+                        <DialogDescription className="text-xs leading-5 text-[#60736f]">
+                            当前 CPT 会被移动到同目录的回收站，并保留现有版本库。操作前会检查是否存在设计器外部修改。
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="break-all rounded-lg bg-[#fffaf0] p-3 text-xs leading-5 text-[#795300] ring-1 ring-[#f1d48a]">
+                        {versionsQuery.data?.project?.currentObjectPath ?? effectiveTargetObjectPath}
+                    </div>
+                    <DialogFooter>
+                        <Button type="button" variant="outline" onClick={() => setRecycleDialogOpen(false)}>
+                            取消
+                        </Button>
+                        <Button
+                            type="button"
+                            className="bg-[#9b3a3a] text-white hover:bg-[#7f2f2f]"
+                            disabled={!versionsQuery.data?.project?.currentObjectPath || recycleReportFile.isPending}
+                            onClick={() => {
+                                const objectPath = versionsQuery.data?.project?.currentObjectPath;
+                                if (!objectPath) {
+                                    return;
+                                }
+                                recycleReportFile.mutate(objectPath, {
+                                    onSuccess: () => setRecycleDialogOpen(false),
+                                });
+                            }}
+                        >
+                            确认移入回收站
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </div>
     );
 }
@@ -2348,128 +2969,388 @@ function NewReportAiDialog({
     open,
     onOpenChange,
     templateObjectPath,
+    reportFiles,
 }: {
     open: boolean;
     onOpenChange: (open: boolean) => void;
     templateObjectPath: string | null;
+    reportFiles: FrReportFileRead[];
 }) {
     const [requirement, setRequirement] = useState('');
+    const [reportName, setReportName] = useState('业务报表');
+    const [targetFolder, setTargetFolder] = useState('webroot/APP/reportlets/AI生成报表');
+    const [sourceTablesText, setSourceTablesText] = useState('');
+    const [folderPickerOpen, setFolderPickerOpen] = useState(false);
+    const [folderKeyword, setFolderKeyword] = useState('');
     const [files, setFiles] = useState<File[]>([]);
-    const [plan, setPlan] = useState<FrReportAiNewReportPlanResponse | null>(null);
     const [review, setReview] = useState<FrAiReportRequirementReviewResponse | null>(null);
-    const generatePlan = useGenerateFrReportAiNewReportPlan();
-    const reviewRequirement = useReviewFrAiReportRequirement();
-    const errorMessage = generatePlan.error instanceof Error ? generatePlan.error.message : null;
-    const reviewErrorMessage = reviewRequirement.error instanceof Error ? reviewRequirement.error.message : null;
-    const handleReview = () => {
-        if (!requirement.trim() && files.length === 0) {
-            return;
+    const [sqlStep, setSqlStep] = useState<GenerateSqlStepResponse | null>(null);
+    const [dslStep, setDslStep] = useState<GenerateDslStepResponse | null>(null);
+    const [cptStep, setCptStep] = useState<GenerateCptStepResponse | null>(null);
+    const [editableCreateTableSql, setEditableCreateTableSql] = useState('');
+    const [editableQuerySql, setEditableQuerySql] = useState('');
+    const [replyText, setReplyText] = useState('');
+    const [builderMessages, setBuilderMessages] = useState<AssistantMessage[]>([
+        {
+            id: 'new-report-welcome',
+            role: 'assistant',
+            content: '直接告诉我你要做什么报表、保存到哪里、有没有现成数据库表，也可以上传资料。你提供表名后，我会受控读取表结构并做只读数据预览；信息不够会继续问，够了就开始生成。',
+        },
+    ]);
+    const agentChat = useFrAiReportAgentChat();
+    const effectiveTemplateObjectPath = templateObjectPath ?? DEFAULT_NEW_REPORT_TEMPLATE_OBJECT_PATH;
+    const errorMessage = agentChat.error instanceof Error ? agentChat.error.message : null;
+    const folderOptions = useMemo(() => listReportFolders(reportFiles), [reportFiles]);
+    const filteredFolderOptions = useMemo(() => {
+        const keyword = folderKeyword.trim().toLowerCase();
+        if (!keyword) {
+            return folderOptions;
         }
-        reviewRequirement.mutate(
+        return folderOptions.filter((folder) => folder.toLowerCase().includes(keyword));
+    }, [folderKeyword, folderOptions]);
+    const appendBuilderMessage = (message: Omit<AssistantMessage, 'id'>) => {
+        setBuilderMessages((current) => [
+            ...current,
+            { ...message, id: `builder-${Date.now()}-${Math.random().toString(16).slice(2)}` },
+        ]);
+    };
+    const buildAgentContext = (overrides?: Partial<FrAiReportAgentContext>): FrAiReportAgentContext => ({
+        reportName,
+        targetFolder,
+        sourceTableName: sourceTablesText.trim() || null,
+        templateObjectPath: effectiveTemplateObjectPath,
+        taskId: dslStep?.taskId ?? sqlStep?.taskId ?? cptStep?.taskId ?? null,
+        conversationId: dslStep?.conversationId ?? sqlStep?.conversationId ?? cptStep?.conversationId ?? null,
+        requirement: requirement.trim() || null,
+        ...overrides,
+    });
+    const applyAgentResponse = (result: FrAiReportAgentChatResponse) => {
+        if (result.context.reportName) {
+            setReportName(result.context.reportName);
+        }
+        if (result.context.targetFolder) {
+            setTargetFolder(result.context.targetFolder);
+        }
+        if (result.context.sourceTableName) {
+            setSourceTablesText(result.context.sourceTableName);
+        }
+        if (result.context.requirement) {
+            setRequirement(result.context.requirement);
+        }
+        if (result.review) {
+            setReview(result.review);
+        }
+        if (result.sqlStep) {
+            setSqlStep(result.sqlStep);
+            setEditableCreateTableSql(result.sqlStep.createTableSql ?? '');
+            setEditableQuerySql(result.sqlStep.querySql ?? '');
+        }
+        if (result.dslStep) {
+            setDslStep(result.dslStep);
+        }
+        if (result.cptStep) {
+            setCptStep(result.cptStep);
+        }
+        const assistantLines = [
+            ...result.events
+                .filter((event) => event.content)
+                .map((event) => {
+                    const prefix = event.toolName ? `【${agentToolLabel(event.toolName)}】` : '';
+                    return `${prefix}${event.content}`;
+                }),
+            ...result.questions.map((question) => `需要确认：${question}`),
+            ...result.errors.map((item) => `问题：${item}`),
+        ].filter(Boolean);
+        if (assistantLines.length > 0) {
+            appendBuilderMessage({ role: 'assistant', content: assistantLines.join('\n') });
+        }
+    };
+    const sendAgentMessage = (message: string, action: 'chat' | 'start_generate' | 'save_cpt' = 'chat', contextOverrides?: Partial<FrAiReportAgentContext>) => {
+        const context = buildAgentContext(contextOverrides);
+        const pendingText =
+            action === 'start_generate'
+                ? '小驰开始执行：需求预检、读取表结构、预览数据、生成 SQL 和 ReportDSL。这个过程可能需要一会儿。'
+                : action === 'save_cpt'
+                  ? '小驰开始保存 CPT：会先检查版本和外部修改，避免覆盖设计器里的改动。'
+                  : '小驰正在分析你的补充内容。';
+        appendBuilderMessage({ role: 'assistant', status: 'pending', content: pendingText });
+        agentChat.mutate(
             {
-                requirement: requirement.trim(),
+                message,
+                action,
+                context,
                 file: files[0] ?? null,
             },
             {
-                onSuccess: setReview,
+                onSuccess: applyAgentResponse,
+                onError: (error) => {
+                    appendBuilderMessage({
+                        role: 'assistant',
+                        status: 'error',
+                        content: error instanceof Error ? `小驰执行失败：${error.message}` : '小驰执行失败：接口没有返回有效结果。',
+                    });
+                },
             },
         );
     };
-    const handleSubmit = () => {
-        if (!requirement.trim()) {
+    const applyChatContext = (text: string) => {
+        const extracted = extractNewReportContext(text);
+        if (extracted.reportName) {
+            setReportName(extracted.reportName);
+        }
+        if (extracted.targetFolder) {
+            setTargetFolder(extracted.targetFolder);
+        }
+        if (extracted.sourceTablesText) {
+            setSourceTablesText((current) => [current.trim(), extracted.sourceTablesText].filter(Boolean).join('\n'));
+        }
+        return extracted;
+    };
+    const mergedRequirement = (extraText?: string) => [requirement.trim(), extraText?.trim()].filter(Boolean).join('\n');
+    const handleReply = (overrideText?: string) => {
+        const text = (overrideText ?? replyText).trim() || (files.length > 0 ? '请根据我上传的资料分析并生成报表方案。' : '');
+        if (!text && files.length === 0) {
             return;
         }
-        generatePlan.mutate(
-            {
-                requirement: requirement.trim(),
-                templateObjectPath,
-                files,
-            },
-            {
-                onSuccess: setPlan,
-            },
-        );
+        const extracted = applyChatContext(text);
+        const freshRequest = isFreshReportRequest(text);
+        const nextRequirement = freshRequest ? text : mergedRequirement(text);
+        const nextSourceTablesText = freshRequest
+            ? (extracted.sourceTablesText ?? '')
+            : [sourceTablesText.trim(), extracted.sourceTablesText].filter(Boolean).join('\n');
+        setRequirement(nextRequirement);
+        setSourceTablesText(nextSourceTablesText);
+        if (freshRequest) {
+            setReview(null);
+            setSqlStep(null);
+            setDslStep(null);
+            setCptStep(null);
+            setEditableCreateTableSql('');
+            setEditableQuerySql('');
+        }
+        appendBuilderMessage({ role: 'user', content: text });
+        setReplyText('');
+        if (isSaveCptCommand(text)) {
+            sendAgentMessage(text, 'save_cpt', {
+                requirement: nextRequirement,
+                sourceTableName: nextSourceTablesText || null,
+            });
+            return;
+        }
+        if (isGenerateReportCommand(text)) {
+            sendAgentMessage(text, 'start_generate', {
+                requirement: nextRequirement,
+                sourceTableName: nextSourceTablesText || null,
+            });
+            return;
+        }
+        sendAgentMessage(text, 'chat', {
+            requirement: nextRequirement,
+            sourceTableName: nextSourceTablesText || null,
+        });
     };
-
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="max-h-[86vh] max-w-3xl overflow-hidden border-[#dfe7e4] bg-white p-0">
+            <DialogContent className="max-h-[86vh] w-[70vw] max-w-[1200px] min-w-[860px] overflow-hidden border-[#dfe7e4] bg-white p-0 max-lg:w-[94vw] max-lg:min-w-0">
                 <DialogHeader className="border-b border-[#edf2f0] px-5 py-4">
                     <DialogTitle className="text-base font-semibold text-[#243a35]">AI 新建报表</DialogTitle>
                     <DialogDescription className="text-xs text-[#60736f]">
-                        上传资料并描述目标，AI 会先生成问题清单和报表方案，不会直接写正式报表目录。
+                        上传资料并描述目标，AI 会先生成问题清单和报表方案；确认生成 CPT 时会按指定目录写入并保留版本。
                     </DialogDescription>
                 </DialogHeader>
                 <div className="grid max-h-[62vh] gap-4 overflow-auto px-5 py-4">
-                    <section className="grid gap-2">
-                        <label className="text-xs font-semibold text-[#243a35]">自然语言需求</label>
-                        <textarea
-                            className="min-h-28 resize-y rounded-lg border border-[#dfe7e4] bg-white px-3 py-2 text-sm text-[#243a35] outline-none focus:border-[#0f8f7b]"
-                            placeholder="例如：做一个大客户订单发货日报，按客户、产品展示月度计划、截止当日完成、实际完成和日计划情况，需要支持填报实际完成值。"
-                            value={requirement}
-                            onChange={(event) => setRequirement(event.target.value)}
-                        />
-                    </section>
-                    <section className="grid gap-2">
-                        <label className="text-xs font-semibold text-[#243a35]">资料上传</label>
-                        <Input
-                            type="file"
-                            multiple
-                            accept=".xlsx,.xls,.csv,.doc,.docx,.png,.jpg,.jpeg,.txt,.md"
-                            onChange={(event) => setFiles(Array.from(event.target.files ?? []))}
-                        />
-                        <div className="text-xs text-[#60736f]">
-                            当前模板：{templateObjectPath ?? '未选择模板'}；已选择 {files.length} 个文件。
+                    <section className="rounded-xl border border-[#edf2f0] bg-[#fafafa] px-3 py-2">
+                        <div className="flex flex-wrap items-center gap-2 text-xs text-[#60736f]">
+                            <span className="rounded-full bg-white px-2.5 py-1 ring-1 ring-[#edf2f0]">报表：{reportName || '待识别'}</span>
+                            <span className="max-w-full truncate rounded-full bg-white px-2.5 py-1 ring-1 ring-[#edf2f0]">
+                                目录：{targetFolder || '待识别'}
+                            </span>
+                            <span className="rounded-full bg-white px-2.5 py-1 ring-1 ring-[#edf2f0]">
+                                资料：{files.length} 个
+                            </span>
+                            <Button
+                                type="button"
+                                variant="ghost"
+                                className="h-7 rounded-full px-2 text-xs text-[#0b7c6b] hover:bg-[#eef8f5]"
+                                onClick={() => setFolderPickerOpen(true)}
+                            >
+                                <Folder className="size-3.5" />
+                                选择目录
+                            </Button>
                         </div>
                     </section>
                     {errorMessage ? (
-                        <div className="rounded-lg bg-[#fff1f1] px-3 py-2 text-xs text-[#9b3a3a] ring-1 ring-[#ffd6d6]">{errorMessage}</div>
+                        <div className="rounded-lg bg-[#fff1f1] px-3 py-2 text-xs text-[#9b3a3a] ring-1 ring-[#ffd6d6]">
+                            {errorMessage}
+                        </div>
                     ) : null}
-                    {reviewErrorMessage ? (
-                        <div className="rounded-lg bg-[#fff1f1] px-3 py-2 text-xs text-[#9b3a3a] ring-1 ring-[#ffd6d6]">{reviewErrorMessage}</div>
-                    ) : null}
-                    {review ? (
-                        <RequirementReviewPanel review={review} />
-                    ) : null}
-                    {plan ? (
-                        <section className="space-y-3 rounded-xl border border-[#dfe7e4] bg-[#f8fbfa] p-4">
-                            <div className="text-sm font-semibold text-[#243a35]">{plan.assistantMessage}</div>
-                            <div>
-                                <div className="mb-2 text-xs font-semibold text-[#60736f]">AI 追问</div>
-                                <div className="space-y-1">
-                                    {plan.questions.map((question) => (
-                                        <div key={question} className="rounded-lg bg-white px-3 py-2 text-xs text-[#344541] ring-1 ring-[#edf2f0]">
-                                            {question}
-                                        </div>
-                                    ))}
+                    <section className="grid gap-3 rounded-xl border border-[#edf2f0] bg-white p-3">
+                        <div className="space-y-3">
+                            {builderMessages.map((message) => (
+                                <div
+                                    key={message.id}
+                                    className={cn(
+                                        'max-w-[92%] whitespace-pre-wrap rounded-2xl px-3 py-2 text-sm leading-6',
+                                        message.role === 'user'
+                                            ? 'ml-auto bg-[#0f8f7b] text-white'
+                                            : 'mr-auto border border-[#e8eeee] bg-[#f8faf9] text-[#344541]',
+                                    )}
+                                >
+                                    {message.content}
                                 </div>
+                            ))}
+                        </div>
+                        {review ? (
+                            <details className="rounded-lg border border-[#edf2f0] bg-[#f8fbfa] p-3 text-xs text-[#344541]">
+                                <summary className="cursor-pointer font-semibold text-[#243a35]">查看需求预检</summary>
+                                <div className="mt-3">
+                                    <RequirementReviewPanel review={review} />
+                                </div>
+                            </details>
+                        ) : null}
+                        {sqlStep ? (
+                            <details className="rounded-lg border border-[#edf2f0] bg-[#f8fbfa] p-3 text-xs text-[#344541]">
+                                <summary className="cursor-pointer font-semibold text-[#243a35]">查看并修改 SQL 和表结构</summary>
+                                <div className="mt-3 grid gap-3">
+                                    <div className="text-xs text-[#60736f]">任务：{sqlStep.taskId} · 状态：{sqlStep.status}</div>
+                                    {sqlStep.createTableSql ? (
+                                        <label className="grid gap-1 text-xs font-semibold text-[#243a35]">
+                                            候选建表 SQL / 字段注释
+                                            <textarea
+                                                value={editableCreateTableSql}
+                                                onChange={(event) => setEditableCreateTableSql(event.target.value)}
+                                                className="min-h-48 resize-y rounded-lg border border-[#edf2f0] bg-white p-3 font-mono text-xs font-normal leading-5 text-[#344541] outline-none focus:border-[#0f8f7b]"
+                                                spellCheck={false}
+                                            />
+                                        </label>
+                                    ) : null}
+                                    {sqlStep.querySql ? (
+                                        <label className="grid gap-1 text-xs font-semibold text-[#243a35]">
+                                            报表查询 SQL
+                                            <textarea
+                                                value={editableQuerySql}
+                                                onChange={(event) => setEditableQuerySql(event.target.value)}
+                                                className="min-h-36 resize-y rounded-lg border border-[#edf2f0] bg-white p-3 font-mono text-xs font-normal leading-5 text-[#344541] outline-none focus:border-[#0f8f7b]"
+                                                spellCheck={false}
+                                            />
+                                        </label>
+                                    ) : null}
+                                </div>
+                            </details>
+                        ) : null}
+                        {dslStep ? (
+                            <div className="rounded-lg bg-[#f6fbfa] px-3 py-2 text-xs leading-5 text-[#0b7c6b] ring-1 ring-[#dbe9e6]">
+                                报表设计已生成：{dslStep.reportName}。现在可以保存成 CPT。
                             </div>
-                            <div>
-                                <div className="mb-2 text-xs font-semibold text-[#60736f]">方案草稿</div>
-                                <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-lg bg-white p-3 text-xs leading-5 text-[#344541] ring-1 ring-[#edf2f0]">
-                                    {JSON.stringify(plan.proposal, null, 2)}
-                                </pre>
+                        ) : null}
+                        {cptStep ? (
+                            <div className="rounded-lg bg-[#f6fbfa] px-3 py-2 text-xs leading-5 text-[#0b7c6b] ring-1 ring-[#dbe9e6]">
+                                CPT 状态：{cptStep.status}
+                                {cptStep.cptObjectPath ? <div className="break-all">路径：{cptStep.cptObjectPath}</div> : null}
+                                {cptStep.previewUrl ? (
+                                    <a className="inline-flex items-center gap-1 font-medium hover:underline" href={cptStep.previewUrl} target="_blank" rel="noreferrer">
+                                        打开预览
+                                        <ExternalLink className="size-3.5" />
+                                    </a>
+                                ) : null}
                             </div>
-                        </section>
-                    ) : null}
+                        ) : null}
+                        {files.length > 0 ? (
+                            <div className="flex flex-wrap gap-2">
+                                {files.map((file) => (
+                                    <span key={`${file.name}-${file.size}`} className="inline-flex items-center gap-1 rounded-full bg-[#f6fbfa] px-2.5 py-1 text-xs text-[#31544d] ring-1 ring-[#dbe9e6]">
+                                        <FileSpreadsheet className="size-3.5" />
+                                        {file.name}
+                                    </span>
+                                ))}
+                            </div>
+                        ) : null}
+                        <div className="flex items-end gap-2 rounded-2xl border border-[#dedede] bg-white p-2">
+                            <input
+                                id="new-report-file-upload"
+                                type="file"
+                                multiple
+                                accept=".xlsx,.xls,.csv,.doc,.docx,.png,.jpg,.jpeg,.txt,.md"
+                                className="hidden"
+                                onChange={(event) => setFiles(Array.from(event.target.files ?? []))}
+                            />
+                            <Button type="button" variant="ghost" size="icon" className="size-9 shrink-0 rounded-full text-[#60736f] hover:bg-[#eef8f5] hover:text-[#0b7c6b]" asChild>
+                                <label htmlFor="new-report-file-upload" aria-label="上传资料">
+                                    <Paperclip className="size-4" />
+                                </label>
+                            </Button>
+                            <textarea
+                                value={replyText}
+                                onChange={(event) => setReplyText(event.target.value)}
+                                onKeyDown={(event) => {
+                                    if (event.key === 'Enter' && !event.shiftKey) {
+                                        event.preventDefault();
+                                        handleReply();
+                                    }
+                                }}
+                                className="max-h-36 min-h-10 min-w-0 flex-1 resize-none bg-transparent px-1 py-2 text-sm leading-5 text-[#333333] outline-none placeholder:text-[#8a8a8a]"
+                                placeholder="直接告诉小驰要做什么报表、保存到哪里、用哪些表；Shift+Enter 换行"
+                            />
+                            <Button type="button" size="icon" className="size-9 shrink-0 rounded-full bg-[#0f8f7b] text-white hover:bg-[#0b7c6b]" onClick={() => handleReply()} disabled={!replyText.trim() && files.length === 0}>
+                                <SendHorizonal className="size-4" />
+                            </Button>
+                        </div>
+                    </section>
                 </div>
                 <DialogFooter className="border-t border-[#edf2f0] px-5 py-4">
                     <Button variant="outline" className="border-[#dedede]" onClick={() => onOpenChange(false)}>
                         关闭
                     </Button>
-                    <Button
-                        variant="outline"
-                        className="border-[#bfe3dc] bg-[#f6fbfa] text-[#0b7c6b] hover:bg-[#eaf7f4]"
-                        onClick={handleReview}
-                        disabled={(!requirement.trim() && files.length === 0) || reviewRequirement.isPending}
-                    >
-                        {reviewRequirement.isPending ? '分析中...' : '分析需求'}
-                    </Button>
-                    <Button className="bg-[#0f8f7b] text-white hover:bg-[#0b7c6b]" onClick={handleSubmit} disabled={!requirement.trim() || generatePlan.isPending}>
-                        {generatePlan.isPending ? '模型生成中...' : '生成方案'}
-                    </Button>
                 </DialogFooter>
             </DialogContent>
+            <Dialog open={folderPickerOpen} onOpenChange={setFolderPickerOpen}>
+                <DialogContent className="max-h-[78vh] overflow-hidden rounded-xl border-[#dfe7e4] bg-white p-0 sm:max-w-xl">
+                    <DialogHeader className="border-b border-[#edf2f0] px-5 py-4">
+                        <DialogTitle className="text-base font-semibold text-[#243a35]">选择生成目录</DialogTitle>
+                        <DialogDescription className="text-xs text-[#60736f]">
+                            从当前可见 reportlets 目录中选择，也可以关闭后手动输入新目录。
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="grid max-h-[54vh] gap-3 overflow-hidden p-4">
+                        <div className="relative">
+                            <Search className="absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-[#8aa19c]" />
+                            <Input
+                                value={folderKeyword}
+                                onChange={(event) => setFolderKeyword(event.target.value)}
+                                className="h-9 border-[#dedede] bg-white pl-8 text-xs"
+                                placeholder="搜索目录"
+                            />
+                        </div>
+                        <div className="min-h-0 overflow-auto rounded-lg border border-[#edf2f0] bg-white p-2">
+                            {filteredFolderOptions.length > 0 ? (
+                                filteredFolderOptions.map((folder) => (
+                                    <button
+                                        key={folder}
+                                        type="button"
+                                        className={cn(
+                                            'block w-full rounded-md px-3 py-2 text-left text-xs transition hover:bg-[#f6fbfa] hover:text-[#0b7c6b]',
+                                            targetFolder === folder ? 'bg-[#eef8f5] font-semibold text-[#0b7c6b]' : 'text-[#344541]',
+                                        )}
+                                        onClick={() => {
+                                            setTargetFolder(folder);
+                                            setFolderPickerOpen(false);
+                                        }}
+                                    >
+                                        {folder}
+                                    </button>
+                                ))
+                            ) : (
+                                <div className="px-3 py-8 text-center text-xs text-[#60736f]">没有找到匹配目录。</div>
+                            )}
+                        </div>
+                    </div>
+                    <DialogFooter className="border-t border-[#edf2f0] px-5 py-3">
+                        <Button type="button" variant="outline" className="border-[#dedede]" onClick={() => setFolderPickerOpen(false)}>
+                            关闭
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </Dialog>
     );
 }
@@ -2499,6 +3380,55 @@ function RequirementReviewPanel({ review }: { review: FrAiReportRequirementRevie
                             </div>
                         ))}
                     </div>
+                </div>
+            ) : null}
+            {review.writeBackPlan?.enabled ? (
+                <div className="rounded-lg bg-white p-3 text-xs ring-1 ring-[#dbe9e6]">
+                    <div className="mb-2 flex items-center justify-between gap-3">
+                        <div className="font-semibold text-[#243a35]">填报生成方案</div>
+                        <span className="rounded-full bg-[#eef7f5] px-2 py-1 text-[11px] text-[#0b7c6b]">
+                            {review.writeBackPlan.allowInsert || review.writeBackPlan.allowDelete ? '支持增删行' : '仅写回'}
+                        </span>
+                    </div>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                        <InfoItem label="写回表" value={review.writeBackPlan.targetTable || '待确认'} />
+                        <InfoItem label="主键" value={review.writeBackPlan.primaryKeys.join('、') || '待确认'} />
+                        <InfoItem label="隐藏主键" value={review.writeBackPlan.hiddenKeys.join('、') || '无'} />
+                        <InfoItem label="控件策略" value={review.writeBackPlan.widgetPolicy} />
+                    </div>
+                    {review.writeBackPlan.editableFields.length > 0 ? (
+                        <div className="mt-3">
+                            <div className="mb-1 text-[11px] font-semibold text-[#60736f]">可编辑字段</div>
+                            <div className="flex flex-wrap gap-1.5">
+                                {review.writeBackPlan.editableFields.slice(0, 18).map((field) => (
+                                    <span key={field} className="rounded-full bg-[#f6fbfa] px-2 py-1 text-[11px] text-[#31544d] ring-1 ring-[#dbe9e6]">
+                                        {field}
+                                    </span>
+                                ))}
+                            </div>
+                        </div>
+                    ) : null}
+                    {review.writeBackPlan.calculatedFields.length > 0 ? (
+                        <div className="mt-3">
+                            <div className="mb-1 text-[11px] font-semibold text-[#60736f]">计算/只读字段</div>
+                            <div className="flex flex-wrap gap-1.5">
+                                {review.writeBackPlan.calculatedFields.slice(0, 12).map((field) => (
+                                    <span key={field} className="rounded-full bg-[#fafafa] px-2 py-1 text-[11px] text-[#6d817d] ring-1 ring-[#eeeeee]">
+                                        {field}
+                                    </span>
+                                ))}
+                            </div>
+                        </div>
+                    ) : null}
+                    {review.writeBackPlan.safetyNotes.length > 0 ? (
+                        <div className="mt-3 space-y-1">
+                            {review.writeBackPlan.safetyNotes.map((note) => (
+                                <div key={note} className="rounded-lg bg-[#fffaf0] px-3 py-2 text-[#6f5200] ring-1 ring-[#f2d99b]">
+                                    {note}
+                                </div>
+                            ))}
+                        </div>
+                    ) : null}
                 </div>
             ) : null}
             {review.questions.length > 0 ? (

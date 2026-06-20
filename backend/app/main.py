@@ -36,20 +36,14 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Set all CORS enabled origins
-if settings.BACKEND_CORS_ORIGINS:
-    # Ensure all origins are strings and stripped of trailing slashes
-    origins = []
-    for origin in settings.BACKEND_CORS_ORIGINS:
-        origins.append(str(origin).rstrip("/"))
-    
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=origins,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+# 开发阶段允许 ecode 从任意泛微地址嵌入调用；生产部署时再按实际域名收紧。
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Middleware
 app.add_middleware(RequestIdMiddleware)

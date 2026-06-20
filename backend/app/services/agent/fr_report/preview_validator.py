@@ -7,8 +7,8 @@ from app.schemas.agent.fr_report.ai_report import PreviewValidationResult
 
 
 class PreviewValidator:
-    async def validate(self, reportlet_path: str) -> PreviewValidationResult:
-        preview_url = self._preview_url(reportlet_path)
+    async def validate(self, reportlet_path: str, write_mode: bool = False) -> PreviewValidationResult:
+        preview_url = self._preview_url(reportlet_path, write_mode)
         warnings: list[str] = []
         errors: list[str] = []
 
@@ -48,14 +48,15 @@ class PreviewValidator:
             warnings=warnings,
         )
 
-    def _preview_url(self, reportlet_path: str) -> str:
+    def _preview_url(self, reportlet_path: str, write_mode: bool = False) -> str:
         base_url = settings.FINEREPORT_PREVIEW_BASE_URL.rstrip("/")
         encoded = quote(reportlet_path, safe="/")
+        mode_query = "op=write&" if write_mode else ""
         if not base_url:
-            return f"/webroot/decision/view/report?viewlet={encoded}"
+            return f"/webroot/decision/view/report?{mode_query}viewlet={encoded}"
         if base_url.endswith("/webroot/decision/view/report"):
-            return f"{base_url}?viewlet={encoded}"
-        return f"{base_url}/webroot/decision/view/report?viewlet={encoded}"
+            return f"{base_url}?{mode_query}viewlet={encoded}"
+        return f"{base_url}/webroot/decision/view/report?{mode_query}viewlet={encoded}"
 
 
 preview_validator = PreviewValidator()

@@ -26,7 +26,7 @@ export function ChartCard({ title, description, chart, compact = false }: ChartC
                 </div>
             ) : null}
             {!hasData ? <ChartEmptyState /> : null}
-            {hasData && chartType === "donut" ? <DonutChart points={points} /> : null}
+            {hasData && chartType === "donut" ? <RingChart points={points} /> : null}
             {hasData && chartType === "line" ? <LineChart points={points} unit={unit} /> : null}
             {hasData && chartType === "list" ? <ListChart points={points} unit={unit} /> : null}
             {hasData && !["donut", "line", "list"].includes(chartType) ? <BarChart points={points} unit={unit} /> : null}
@@ -78,7 +78,7 @@ function BarChart({ points, unit }: { points: InsightReportChartRead["points"]; 
     );
 }
 
-function DonutChart({ points }: { points: InsightReportChartRead["points"] }) {
+function RingChart({ points }: { points: InsightReportChartRead["points"] }) {
     const total = points.reduce((sum, point) => sum + point.value, 0) || 1;
     const gradient = points
         .reduce<{ cursor: number; segments: string[] }>(

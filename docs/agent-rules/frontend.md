@@ -80,6 +80,7 @@ export function ExamplePanel({ className }: Props) {
 - 新页面优先复用 `frontend/src/index.css` 中的 `app-shell`、`app-sidebar`、`app-stage`、`app-panel`、`app-panel-soft`、`app-page`、`app-page-header`、`app-kicker`、`app-subtle-text` 等全局类。
 - 除非用户明确要求，页面内不要生成高饱和渐变或装饰性玻璃卡片；强调信息优先使用白底、浅灰底、轻描边或紧凑列表表达。
 - 状态色可以使用低饱和红、青绿、蓝，但不能让页面变成高饱和色块；青绿色是默认主点缀，不代表整页都要变成单一绿色。
+- 助手类智能区域默认遵循“聊天优先、上下文隐藏”：第一屏只展示对话流和输入框，结构读取、工具结果、版本中心、环境信息、待应用修改和调试详情放入弹窗、抽屉、折叠面板或图标入口中按需打开。
 - 按钮、卡片、列表项应有清晰 hover 和 transition。
 - 路由切换、弹窗、折叠内容应保持平滑。
 - 基础组件优先使用 Shadcn/ui，不做全局样式覆盖。
@@ -119,7 +120,8 @@ pnpm dev
 - 步骤条需要支持点击切换已具备条件的前后步骤；第一步回到 SQL 和数据预览，第二步回到 DSL 设计和 DSL 预览。已有 DSL 时再次点击“重新生成 DSL 并预览”会携带人工修改意见作为 `dsl_feedback`。
 - 工作台左右两侧都应按当前步骤收拢内容：第一步只展示 SQL 输入、SQL 结果、数据预览、需求摘要和模板字段；第二步只展示 DSL 修改意见、DSL 预览和 ReportDSL，避免跨步骤内容混在同一区域。
 - DSL 预览需要识别 `layout.designHints.specialRows`。当存在 `latest_change_row` 时，预览只取最新日期的涨跌指标，作为单独一行放在横向市场列下方、价格明细行上方。
-- 第一步接口优先调用 `POST /api/v1/fr/ai-reports/steps/sql/generate`；第二步接口调用 `POST /api/v1/fr/ai-reports/steps/dsl/generate`；第三步接口调用 `POST /api/v1/fr/ai-reports/steps/cpt/generate` 生成 CPT、上传 MinIO `reportlets/AI生成报表/` 专用预览目录并返回 FineReport 预览地址；完整报表生成接口和后续步骤接口并存。
+- 第一步接口优先调用 `POST /api/v1/fr/ai-reports/steps/sql/generate`；第二步接口调用 `POST /api/v1/fr/ai-reports/steps/dsl/generate`；第三步接口调用 `POST /api/v1/fr/ai-reports/steps/cpt/generate` 或 AI 草稿 CPT 入口生成 CPT，支持用户指定 `webroot/APP/reportlets/` 目标路径，并通过版本中心查看、冲突处理和回档；完整报表生成接口和后续步骤接口并存。
+- 新建报表弹窗优先走 `POST /api/v1/fr/ai-reports/agent/chat`，以聊天驱动需求收集、追问、表结构读取、SQL/DSL 生成和 CPT 保存；报表名、生成目录、上传资料等可作为隐藏上下文编辑区保留，按钮仅作为快捷指令，不再由前端硬编码固定步骤。
 - 路由：用户侧路由 `/fr-ai-reports`，在 `frontend/src/router/index.tsx` 中懒加载。
 - 交互形态：左侧聊天输入自然语言需求和上传 Excel，右侧展示 SQL、DSL 预览、ReportDSL、Excel 字段分析和校验提示；分步骤阶段不默认展示 FineReport `previewUrl` iframe。
 - 当前阶段只支持表格类报表页面，不展示图表类能力入口；需求引导要贴近周报、分组表、交叉表这类业务样式。
@@ -146,15 +148,20 @@ pnpm dev
 
 - Insight 业务域目录为 `frontend/src/app/insight/`，用于“研发营销市场洞察平台”。
 - Insight 页面必须通过 `/insight/*` 路由挂载到独立 `InsightLayout`，不得复用旧系统 `UserLayout`、`AdminLayout` 或页面级 `app-*` 容器样式。
+- Insight AI 助手入口为 `/insight/assistant`，页面直接调用 `/api/v1/insight/assistant/chat` 和 `/api/v1/insight/research/deep`，回答和研究结论必须展示库内引用、情报详情入口和来源 URL，不得用前端静态内容伪造证据。
 - Insight 质量运营入口为 `/insight/quality`，页面读取 `GET /api/v1/insight/quality/overview` 展示真实质量指标；缺数据图表必须展示空状态，不得使用样例点或假指标兜底。
 - Insight 主题通过 `InsightThemeScope` 挂载 `data-app="insight"` 与 `.insight-theme`，并在 `frontend/src/app/insight/theme/tokens.css` 内局部重声明 shadcn/ui CSS variables。
-- 新增 Insight 页面优先复用 `frontend/src/app/insight/components/` 下的页面级组件，例如 `PageTitle`、`SectionCard`、`FilterBar`、`InsightTag`、`DataTableCard`、`ChartCard`。
+- 新增 Insight 页面优先复用 `frontend/src/app/insight/components/` 下的页面级组件，例如 `PageTitle`、`SectionCard`、`FilterBar`、`InsightTag`、`ChartCard`。
 - Insight 风格 token、业务语义色和图表规范分别维护在 `theme/tokens.css`、`theme/semantic-colors.ts`、`theme/chart-theme.ts`，不得通过修改 `:root` 或旧系统全局样式实现换肤。
 - Insight 可复用 shadcn/ui 基础组件，但对外视觉必须由 insight 局部 token 和封装组件控制，避免旧系统紫蓝玻璃风格污染新业务域。
  
 ## 泛微流程AI助手补充
 
 - 泛微嵌入页入口为 `/weaver/assistant/embed`，源码位于 `frontend/src/features/weaver-ai-assistant/`。
+- 泛微流程规则配置嵌入页入口为 `/weaver/assistant/workflow-config`，同样位于 `frontend/src/features/weaver-ai-assistant/`，用于在泛微流程路径设置页维护当前流程的特殊填报要求、提示词和工具/技能说明。
+- 泛微流程 AI 智审嵌入页入口为 `/weaver/assistant/review`，规则配置入口为 `/weaver/assistant/review-config`，用于在审批页展示 AI 预审建议、在流程设置页维护节点/审批人智审口径。
 - 该页面用于 iframe 嵌入泛微流程页，不经过 `ProtectedRoute`，通过 URL 中的 `ai_sign` 调用后端外部接口。
 - 页面与 ecode 父页面通过 `postMessage` 通讯：接收 `WEAVER_AI_CONTEXT`，发送 `WEAVER_AI_APPLY_ACTIONS` 和 `WEAVER_AI_CLOSE`。
+- 发送聊天前应通过 `WEAVER_AI_REQUEST_CONTEXT` 请求 ecode 回传最新表单状态；聊天回答使用 `/api/v1/weaver/ai-assistant/chat/stream` SSE 流式展示，动作到达后才启用“写入表单”确认。
 - 悬浮图标资源优先使用 `frontend/public/ai_logo.svg`，正式环境通过平台前端域名访问 `/ai_logo.svg`。
+- 智审页面只展示风险、建议和检查项，不提供直接审批、退回、提交按钮；如后续做 AI 替审，也必须通过后端审计和泛微 Action 白名单能力实现。

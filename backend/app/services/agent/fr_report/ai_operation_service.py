@@ -30,9 +30,9 @@ from app.schemas.agent.fr_report.report_file import (
     FrReportCellRead,
     FrReportFileStructureRead,
 )
-from app.services.agent.fr_report.minio_staging_service import minio_staging_service
 from app.services.agent.fr_report.preview_validator import preview_validator
 from app.services.agent.fr_report.report_file_service import fr_report_file_service
+from app.services.agent.fr_report.version_control_service import fr_report_version_control_service
 
 
 ALLOWED_OPERATION_TYPES = {
@@ -45,6 +45,7 @@ ALLOWED_OPERATION_TYPES = {
     "set_form_property",
     "create_report_plan",
 }
+DEFAULT_NEW_REPORT_TEMPLATE_OBJECT_PATH = "webroot/APP/reportlets/数据分析/农产品价格平台/大豆/谷物大豆国际海运费报价-周报.cpt"
 
 
 class FrReportAiOperationService:
@@ -71,7 +72,7 @@ class FrReportAiOperationService:
             "safetyRules": [
                 "AI 只允许生成受控 JSON 操作，不允许生成 CPT/XML 原文。",
                 "字段引用必须来自 previewColumns 或当前报表已解析字段。",
-                "写回正式 reportlets 禁止，后续只能进入 staging 和人工确认。",
+                "写回 reportlets 必须经过人工确认、版本归档和外部修改冲突检测。",
                 "SQL 修改只能给出草案和风险说明，不得夹带危险 DDL/DML。",
             ],
             "expectedJson": {
@@ -239,21 +240,49 @@ class FrReportAiOperationService:
         generation_log = [
             f"{datetime.now().isoformat(timespec='seconds')} 从 AI 快照确定性生成 CPT",
             f"snapshot_id={snapshot.snapshot_id}",
-            "target_dir=webroot/APP/reportlets/AI生成报表/快照",
+            "target_dir=用户指定 reportlets 路径，写入前执行版本归档和外部修改检测",
         ]
-        paths = await minio_staging_service.save_ai_generated_report(
-            snapshot_id=snapshot.snapshot_id,
+        target_object_path = fr_report_version_control_service.normalize_target_object_path(
+            report_name=payload.reportName,
+            target_folder=payload.targetFolder,
+            target_object_path=payload.targetObjectPath,
+            fallback_object_path=snapshot.object_path,
+        )
+        reportlet_path = fr_report_version_control_service.reportlet_path(target_object_path)
+        project, structure_version, file_version, conflict = await fr_report_version_control_service.save_snapshot_file_version(
+            db=db,
+            user_id=user_id,
+            snapshot=snapshot,
             cpt_bytes=cpt_bytes,
-            snapshot_payload=snapshot.document_snapshot,
+            dsl_payload=snapshot.document_snapshot,
             operations=operations,
             generation_log=generation_log,
+            target_object_path=target_object_path,
+            conflict_strategy=payload.conflictStrategy,
         )
-        reportlet_path = f"AI生成报表/快照/{snapshot.snapshot_id}/report.cpt"
+        if conflict:
+            return FrReportAiSnapshotCptResponse(
+                snapshotId=snapshot.snapshot_id,
+                status="conflict",
+                cptObjectPath=target_object_path,
+                previewUrl="",
+                reportId=project.report_id,
+                conflict=conflict,
+                warnings=["检测到目标 CPT 存在未纳入平台版本库的外部修改，已阻止覆盖。"],
+                errors=[],
+            )
         validation = await preview_validator.validate(reportlet_path)
         status = "preview_failed" if validation.errors else "generated"
+        if file_version:
+            file_version.preview_url = validation.previewUrl
+            file_version.warnings = validation.warnings
+            file_version.errors = validation.errors
+            file_version.write_status = status
+            file_version.update_time = datetime.now()
+            file_version.update_by = str(user_id)
 
-        snapshot.cpt_object_path = paths["cptObjectPath"]
-        snapshot.meta_object_path = paths["metaObjectPath"]
+        snapshot.cpt_object_path = target_object_path
+        snapshot.meta_object_path = file_version.manifest_object_path if file_version else None
         snapshot.preview_url = validation.previewUrl
         snapshot.generation_errors = validation.errors
         snapshot.generation_warnings = validation.warnings
@@ -266,11 +295,14 @@ class FrReportAiOperationService:
         return FrReportAiSnapshotCptResponse(
             snapshotId=snapshot.snapshot_id,
             status=status,
-            cptObjectPath=paths["cptObjectPath"],
-            metaObjectPath=paths.get("metaObjectPath"),
-            operationsObjectPath=paths.get("operationsObjectPath"),
-            logObjectPath=paths.get("logObjectPath"),
+            cptObjectPath=target_object_path,
+            metaObjectPath=file_version.manifest_object_path if file_version else None,
+            operationsObjectPath=file_version.diff_object_path if file_version else None,
+            logObjectPath=None,
             previewUrl=validation.previewUrl,
+            reportId=project.report_id,
+            fileVersionId=file_version.file_version_id if file_version else None,
+            structureVersionId=structure_version.structure_version_id if structure_version else None,
             warnings=validation.warnings,
             errors=validation.errors,
         )
@@ -281,24 +313,31 @@ class FrReportAiOperationService:
         user_id: int,
         requirement: str,
         template_object_path: str | None,
+        report_name: str | None,
+        target_folder: str | None,
         files: list[UploadFile],
     ) -> FrReportAiNewReportPlanResponse:
+        effective_template_object_path = template_object_path or DEFAULT_NEW_REPORT_TEMPLATE_OBJECT_PATH
         template_summary: dict[str, Any] = {}
-        if template_object_path:
+        if effective_template_object_path:
             structure = await fr_report_file_service.read_report_structure(
                 db=db,
                 user_id=user_id,
-                object_path=template_object_path,
+                object_path=effective_template_object_path,
             )
             template_summary = self._compact_structure(structure, None)
+            template_summary["objectPath"] = effective_template_object_path
 
         uploaded_files = [await self._read_upload_summary(file) for file in files[:8]]
         result = await self._invoke_json(
             system_prompt=self._new_report_system_prompt(),
             payload={
                 "requirement": requirement,
+                "reportName": report_name,
+                "targetFolder": target_folder,
                 "templateSummary": template_summary,
                 "uploadedFiles": [item.model_dump(mode="json") for item in uploaded_files],
+                "businessConstraints": self._new_report_business_constraints(requirement),
                 "expectedJson": {
                     "assistantMessage": "中文说明",
                     "questions": ["是否已有业务数据库表？", "是否需要填报？"],
@@ -318,18 +357,31 @@ class FrReportAiOperationService:
             },
             agent_name="FrReportAiNewReportAgent",
         )
+        proposal = self._normalize_new_report_proposal(requirement, dict(result.get("proposal") or {}))
         operations, warnings = self._normalize_operations(
             result.get("operations"),
             preview_columns=[],
             strict_field_check=False,
         )
         warnings.extend(str(item) for item in result.get("warnings") or [])
+        if self._is_futures_report_requirement(requirement):
+            warnings.append("期货台账方案已归一到平台约定表名，最终 CPT 仍由确定性 ReportDSL/CPT 生成链路输出。")
+        target_object_path = None
+        if report_name or target_folder:
+            target_object_path = fr_report_version_control_service.normalize_target_object_path(
+                report_name=report_name or str(proposal.get("reportName") or "AI生成报表"),
+                target_folder=target_folder,
+                fallback_object_path=effective_template_object_path,
+            )
         return FrReportAiNewReportPlanResponse(
             draftId=f"fr-ai-new-{uuid4().hex[:12]}",
             status="proposal",
             assistantMessage=str(result.get("assistantMessage") or "已生成新建报表方案，请先确认关键问题。"),
+            reportName=report_name or str(proposal.get("reportName") or ""),
+            targetFolder=target_folder,
+            targetObjectPath=target_object_path,
             questions=[str(item) for item in result.get("questions") or []][:8],
-            proposal=dict(result.get("proposal") or {}),
+            proposal=proposal,
             operations=operations,
             templateSummary=template_summary,
             uploadedFiles=uploaded_files,
@@ -389,9 +441,69 @@ class FrReportAiOperationService:
             "你只能返回严格 JSON，不输出 Markdown。"
             "你需要结合自然语言、上传文件摘要和模板结构，先提出必要追问，再形成可执行方案。"
             "方案必须覆盖数据源/SQL、报表布局、样式模板、填报属性、版本流程和安全风险。"
-            "禁止生成 CPT/XML，禁止声称已经写入正式 reportlets。"
+            "如果 payload.businessConstraints 提供了推荐表名、主键、字段或写回规则，proposal 中必须优先使用这些约束，不得自行改名或替换为示例表。"
+            "禁止生成 CPT/XML，禁止声称已经绕过版本控制写入 reportlets。"
             "所有说明使用中文。"
         )
+
+    def _new_report_business_constraints(self, requirement: str) -> dict[str, Any]:
+        if not self._is_futures_report_requirement(requirement):
+            return {}
+        return {
+            "scenario": "futures_operation_ledger",
+            "tables": {
+                "main": "fr_future_trade_ledger",
+                "contractBase": "fr_future_contract_base",
+                "settlementPrice": "fr_future_settlement_price",
+            },
+            "writeBack": {
+                "enabled": True,
+                "targetTable": "fr_future_trade_ledger",
+                "primaryKeys": ["ledger_id"],
+                "businessKeys": ["account_name", "contract_variety", "contract_code"],
+                "allowInsert": True,
+                "allowDelete": True,
+            },
+            "safetyRules": [
+                "单元格控件优先使用轻量 TextEditor/NumberEditor/DateEditor，不绑定大数据集下拉。",
+                "查询筛选参数使用 start_date/end_date/account_name/contract_variety/contract_code。",
+                "平仓数量必须小于等于开仓数量。",
+            ],
+        }
+
+    def _normalize_new_report_proposal(self, requirement: str, proposal: dict[str, Any]) -> dict[str, Any]:
+        if not self._is_futures_report_requirement(requirement):
+            return proposal
+        replacements = {
+            "futures_ledger": "fr_future_trade_ledger",
+            "future_ledger": "fr_future_trade_ledger",
+            "futures_basic": "fr_future_contract_base",
+            "future_basic": "fr_future_contract_base",
+            "futures_settlement_price": "fr_future_settlement_price",
+            "future_settlement_price": "fr_future_settlement_price",
+        }
+
+        def replace_value(value: Any) -> Any:
+            if isinstance(value, str):
+                normalized = value
+                for old, new in replacements.items():
+                    normalized = re.sub(rf"\b{re.escape(old)}\b", new, normalized, flags=re.IGNORECASE)
+                return normalized
+            if isinstance(value, list):
+                return [replace_value(item) for item in value]
+            if isinstance(value, dict):
+                return {key: replace_value(item) for key, item in value.items()}
+            return value
+
+        normalized = replace_value(proposal)
+        if isinstance(normalized, dict):
+            normalized.setdefault("formMode", True)
+            normalized["businessConstraints"] = self._new_report_business_constraints(requirement)
+        return normalized if isinstance(normalized, dict) else proposal
+
+    def _is_futures_report_requirement(self, requirement: str) -> bool:
+        keywords = ("期货", "合约品种", "合约代码", "开仓", "平仓", "持仓", "台账")
+        return sum(1 for keyword in keywords if keyword in requirement) >= 3
 
     def _compact_structure(
         self,

@@ -1,5 +1,5 @@
 from collections import Counter, defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlmodel import select
@@ -31,7 +31,7 @@ class InsightQualityService:
         return InsightQualityOverview(
             collection_metrics=self._collection_metrics(tasks, crawl_results, candidates),
             review_metrics=self._review_metrics(candidates, reviews),
-            ai_metrics=self._ai_metrics(crawl_results, candidates),
+            ai_metrics=self._ai_metrics(tasks, crawl_results, candidates),
             failure_reasons=self._failure_reasons(tasks, crawl_results),
             source_metrics=self._source_metrics(tasks, source_names),
             generated_at=datetime.now().isoformat(),
@@ -50,6 +50,15 @@ class InsightQualityService:
         total_tasks = len(tasks)
         success_tasks = sum(1 for task in tasks if task.status == InsightTaskStatus.SUCCESS)
         failed_tasks = sum(1 for task in tasks if task.status == InsightTaskStatus.FAILED)
+        pending_tasks = sum(1 for task in tasks if task.status == InsightTaskStatus.PENDING)
+        running_tasks = sum(1 for task in tasks if task.status == InsightTaskStatus.RUNNING)
+        stale_unfinished_tasks = sum(
+            1
+            for task in tasks
+            if task.status in {InsightTaskStatus.PENDING, InsightTaskStatus.RUNNING}
+            and task.create_time
+            and task.create_time <= datetime.now() - timedelta(minutes=30)
+        )
         durations = [
             (task.finished_at - task.started_at).total_seconds()
             for task in tasks
@@ -60,6 +69,15 @@ class InsightQualityService:
             InsightQualityMetric(key="task_total", label="采集任务数", value=total_tasks, unit="个"),
             InsightQualityMetric(key="task_success_rate", label="任务成功率", value=self._percent(success_tasks, total_tasks), unit="%"),
             InsightQualityMetric(key="task_failed", label="失败任务数", value=failed_tasks, unit="个"),
+            InsightQualityMetric(key="task_pending", label="等待任务数", value=pending_tasks, unit="个"),
+            InsightQualityMetric(key="task_running", label="运行中任务数", value=running_tasks, unit="个"),
+            InsightQualityMetric(
+                key="task_stale_unfinished",
+                label="超时未完成",
+                value=stale_unfinished_tasks,
+                unit="个",
+                description="超过 30 分钟仍为等待或运行中的任务，应使用遗留任务清理入口处理。",
+            ),
             InsightQualityMetric(key="avg_duration", label="平均执行耗时", value=round(sum(durations) / len(durations), 1) if durations else 0, unit="秒"),
             InsightQualityMetric(key="candidate_rate", label="候选生成率", value=candidate_rate, unit="%"),
         ]
@@ -84,6 +102,7 @@ class InsightQualityService:
 
     def _ai_metrics(
         self,
+        tasks: list[InsightTask],
         crawl_results: list[InsightCrawlResult],
         candidates: list[InsightIntelligenceCandidate],
     ) -> list[InsightQualityMetric]:
@@ -91,11 +110,17 @@ class InsightQualityService:
         scores = [self._float_value(report.get("score")) for report in quality_reports if self._float_value(report.get("score")) is not None]
         auto_ignore_count = sum(1 for report in quality_reports if report.get("auto_ignore"))
         rule_quality_tags = sum(1 for candidate in candidates if self._has_quality_rule_tag(candidate.suggested_tags))
+        llm_filter_tasks = sum(1 for task in tasks if self._task_payload_flag(task, "llm_filter_applied"))
+        search_hit_ai_tasks = sum(1 for task in tasks if self._task_payload_flag(task, "hit_ai_analysis_applied"))
+        search_hit_ai_candidates = sum(1 for candidate in candidates if self._has_search_hit_ai_analysis(candidate.suggested_tags))
         return [
             InsightQualityMetric(key="quality_report_count", label="质量报告数", value=len(quality_reports), unit="份"),
             InsightQualityMetric(key="avg_quality_score", label="平均质量分", value=round(sum(scores) / len(scores) * 100, 1) if scores else 0, unit="%"),
             InsightQualityMetric(key="auto_ignore_count", label="建议忽略数", value=auto_ignore_count, unit="条"),
             InsightQualityMetric(key="quality_rule_tags", label="质量规则标签数", value=rule_quality_tags, unit="条"),
+            InsightQualityMetric(key="llm_filter_tasks", label="LLM筛选任务", value=llm_filter_tasks, unit="个"),
+            InsightQualityMetric(key="search_hit_ai_tasks", label="搜索AI初筛任务", value=search_hit_ai_tasks, unit="个"),
+            InsightQualityMetric(key="search_hit_ai_candidates", label="搜索AI初筛候选", value=search_hit_ai_candidates, unit="条"),
         ]
 
     def _failure_reasons(
@@ -160,6 +185,25 @@ class InsightQualityService:
         if not isinstance(tags, list):
             return False
         return any(isinstance(item, dict) and item.get("source") == "quality_rule" for item in tags)
+
+    def _has_search_hit_ai_analysis(self, tags: Any) -> bool:
+        if not isinstance(tags, list):
+            return False
+        return any(
+            isinstance(item, dict)
+            and item.get("source") == "llm_analysis"
+            and item.get("analysis_scope") == "search_hit"
+            for item in tags
+        )
+
+    def _task_payload_flag(self, task: InsightTask, key: str) -> bool:
+        payload = task.output_payload
+        if not isinstance(payload, dict):
+            return False
+        if payload.get(key) is True:
+            return True
+        summary = payload.get("filter_summary")
+        return isinstance(summary, dict) and summary.get(key) is True
 
     def _classify_reason(self, value: str) -> dict[str, str | None]:
         reason = self._compact_reason(value, limit=240)

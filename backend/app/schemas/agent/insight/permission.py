@@ -14,6 +14,10 @@ class InsightAccessRuleUpsert(BaseModel):
     effective_to: datetime | None = None
 
 
+class InsightAccessRuleBulkUpsert(InsightAccessRuleUpsert):
+    target_ids: list[int] = Field(..., min_length=1, max_length=500)
+
+
 class InsightAccessRuleRead(InsightBaseRead):
     target_type: str
     target_id: int
@@ -29,4 +33,11 @@ class InsightAccessRuleRead(InsightBaseRead):
 class InsightAccessRuleList(BaseModel):
     target_type: str
     target_id: int
+    rules: list[InsightAccessRuleRead] = Field(default_factory=list)
+
+
+class InsightAccessRuleBulkResponse(BaseModel):
+    target_type: str
+    target_count: int
+    rule_count: int
     rules: list[InsightAccessRuleRead] = Field(default_factory=list)

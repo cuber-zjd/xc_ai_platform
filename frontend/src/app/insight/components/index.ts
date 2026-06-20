@@ -1,6 +1,5 @@
 export { AccessRuleDialog } from "./AccessRuleDialog";
 export { ChartCard } from "./ChartCard";
-export { DataTableCard } from "./DataTableCard";
 export * from "./DemoPrimitives";
 export { EmptyState } from "./EmptyState";
 export { FilterBar } from "./FilterBar";

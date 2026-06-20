@@ -2,7 +2,7 @@ import re
 from datetime import date, datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import and_, exists, false, func, or_
+from sqlalchemy import String, and_, cast, exists, false, func, or_
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -31,6 +31,8 @@ from app.schemas.agent.insight.intelligence import (
     InsightCandidatePromoteRequest,
     InsightCandidateReviewRequest,
     InsightCandidateReviewResponse,
+    InsightIntelligenceBulkActionRequest,
+    InsightIntelligenceBulkActionResponse,
     InsightIntelligenceCandidateListItem,
     InsightIntelligenceCandidateRead,
     InsightIntelligenceCreate,
@@ -283,12 +285,20 @@ class InsightIntelligenceService:
         subject_type: str | None,
         intelligence_type: str | None,
         visibility_scope: str | None,
+        company_id: int | None = None,
+        sys_company_id: int | None = None,
+        project_name: str | None = None,
+        sentiment: str | None = None,
+        tag: str | None = None,
+        data_source_id: int | None = None,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
         user_id: int | None,
         is_admin: bool,
     ) -> Page[InsightIntelligenceListItem]:
         page = max(page, 1)
         size = min(max(size, 1), 100)
-        filters = [InsightIntelligence.is_deleted == 0]
+        filters = [InsightIntelligence.is_deleted == 0, InsightIntelligence.status == "active"]
         if keyword:
             like_keyword = f"%{keyword.strip()}%"
             filters.append(
@@ -304,7 +314,29 @@ class InsightIntelligenceService:
             filters.append(InsightIntelligence.intelligence_type == intelligence_type)
         if visibility_scope:
             filters.append(InsightIntelligence.visibility_scope == visibility_scope)
+        if company_id:
+            filters.append(InsightIntelligence.company_id == company_id)
+        if data_source_id:
+            filters.append(InsightIntelligence.data_source_id == data_source_id)
+        if sentiment:
+            filters.append(InsightIntelligence.sentiment == sentiment)
+        if date_from:
+            filters.append(InsightIntelligence.publish_time >= date_from)
+        if date_to:
+            filters.append(InsightIntelligence.publish_time <= date_to)
+        if project_name:
+            filters.append(cast(InsightIntelligence.raw_payload, String).ilike(f"%{project_name.strip()}%"))
+        if tag:
+            filters.append(cast(InsightIntelligence.raw_payload, String).ilike(f"%{tag.strip()}%"))
+        if sys_company_id:
+            filters.append(
+                exists()
+                .where(InsightCompany.id == InsightIntelligence.company_id)
+                .where(InsightCompany.sys_company_id == sys_company_id)
+                .where(InsightCompany.is_deleted == 0)
+            )
         if not is_admin:
+            filters.append(await self._company_isolation_filter(db, user_id=user_id, is_admin=is_admin))
             filters.append(
                 or_(
                     await insight_permission_service.visibility_filter_for_user(
@@ -342,6 +374,142 @@ class InsightIntelligenceService:
         ]
         return Page.create(items=items, total=total, page=page, size=size)
 
+    async def bulk_action(
+        self,
+        db: AsyncSession,
+        payload: InsightIntelligenceBulkActionRequest,
+        *,
+        user_id: int | None,
+        is_admin: bool,
+    ) -> InsightIntelligenceBulkActionResponse:
+        action = payload.action.strip()
+        target_type = payload.target_type.strip() or "intelligence"
+        response = InsightIntelligenceBulkActionResponse(
+            action=action,
+            target_type=target_type,
+            requested_count=len(payload.candidate_ids) if target_type == "candidate" else len(payload.intelligence_ids),
+        )
+        if target_type == "candidate":
+            for candidate_id in payload.candidate_ids:
+                try:
+                    if action == "promote":
+                        result = await self.promote_candidate(
+                            db,
+                            candidate_id,
+                            InsightCandidatePromoteRequest(
+                                review_comment=payload.review_comment,
+                                visibility_scope=payload.visibility_scope or "assigned",
+                                importance_level=payload.importance_level or "medium",
+                                business_domain=payload.business_domain,
+                            ),
+                            user_id,
+                            is_admin=is_admin,
+                        )
+                    elif action == "reject":
+                        result = await self.reject_candidate(
+                            db,
+                            candidate_id,
+                            InsightCandidateReviewRequest(review_comment=payload.review_comment),
+                            user_id,
+                            is_admin=is_admin,
+                        )
+                    elif action == "ignore":
+                        result = await self.ignore_candidate(
+                            db,
+                            candidate_id,
+                            InsightCandidateReviewRequest(review_comment=payload.review_comment),
+                            user_id,
+                            is_admin=is_admin,
+                        )
+                    else:
+                        raise ValueError(f"候选情报批量动作不支持：{action}")
+                    response.items.append(
+                        {
+                            "candidate_id": candidate_id,
+                            "status": "success",
+                            "intelligence_id": result.intelligence.id if result.intelligence else None,
+                        }
+                    )
+                    response.success_count += 1
+                except Exception as exc:
+                    await db.rollback()
+                    response.items.append({"candidate_id": candidate_id, "status": "failed", "message": str(exc)})
+                    response.failed_count += 1
+            return response
+
+        for intelligence_id in payload.intelligence_ids:
+            try:
+                row = await self._get_manageable_intelligence(db, intelligence_id, user_id=user_id, is_admin=is_admin)
+                if action == "add_to_pool":
+                    if user_id is None:
+                        raise ValueError("加入素材池需要登录用户")
+                    pool = await self.upsert_user_pool(
+                        db,
+                        intelligence_id,
+                        InsightPoolUpsertRequest(
+                            pool_type=payload.pool_type or "report_material",
+                            folder_name=payload.folder_name,
+                            note=payload.review_comment,
+                        ),
+                        user_id=user_id,
+                    )
+                    response.items.append({"intelligence_id": intelligence_id, "status": "success", "pool_id": pool.id})
+                    response.success_count += 1
+                    continue
+                if action == "set_visibility":
+                    if not payload.visibility_scope:
+                        raise ValueError("批量设置可见范围时必须提供 visibility_scope")
+                    row.visibility_scope = InsightVisibilityScope(payload.visibility_scope)
+                elif action == "set_tags":
+                    raw_payload = row.raw_payload or {}
+                    raw_payload["suggested_tags"] = payload.tags or []
+                    row.raw_payload = raw_payload
+                elif action == "set_sentiment":
+                    if not payload.sentiment:
+                        raise ValueError("批量设置情感时必须提供 sentiment")
+                    row.sentiment = self._validate_sentiment(payload.sentiment)
+                elif action == "patch_metadata":
+                    changed = False
+                    if payload.tags is not None:
+                        raw_payload = row.raw_payload or {}
+                        raw_payload["suggested_tags"] = payload.tags
+                        row.raw_payload = raw_payload
+                        changed = True
+                    if payload.sentiment:
+                        row.sentiment = self._validate_sentiment(payload.sentiment)
+                        changed = True
+                    if payload.importance_level:
+                        row.importance_level = payload.importance_level
+                        changed = True
+                    if not changed:
+                        raise ValueError("批量修正时至少提供标签、情感或重要性中的一项")
+                elif action == "set_status":
+                    if not payload.status:
+                        raise ValueError("批量设置状态时必须提供 status")
+                    row.status = payload.status
+                elif action == "set_importance":
+                    if not payload.importance_level:
+                        raise ValueError("批量设置重要性时必须提供 importance_level")
+                    row.importance_level = payload.importance_level
+                else:
+                    raise ValueError(f"正式情报批量动作不支持：{action}")
+                row.update_time = datetime.now()
+                row.update_by = str(user_id) if user_id else None
+                await db.commit()
+                response.items.append({"intelligence_id": intelligence_id, "status": "success"})
+                response.success_count += 1
+            except Exception as exc:
+                await db.rollback()
+                response.items.append({"intelligence_id": intelligence_id, "status": "failed", "message": str(exc)})
+                response.failed_count += 1
+        return response
+
+    def _validate_sentiment(self, value: str) -> str:
+        sentiment = value.strip()
+        if sentiment not in {"positive", "neutral", "negative", "mixed"}:
+            raise ValueError("情感仅支持 positive、neutral、negative、mixed")
+        return sentiment
+
     async def get_intelligence_detail(
         self,
         db: AsyncSession,
@@ -353,8 +521,10 @@ class InsightIntelligenceService:
         filters = [
             InsightIntelligence.id == intelligence_id,
             InsightIntelligence.is_deleted == 0,
+            InsightIntelligence.status == "active",
         ]
         if not is_admin:
+            filters.append(await self._company_isolation_filter(db, user_id=user_id, is_admin=is_admin))
             filters.append(
                 or_(
                     await insight_permission_service.visibility_filter_for_user(
@@ -798,6 +968,7 @@ class InsightIntelligenceService:
             InsightIntelligence.is_deleted == 0,
         ]
         if not is_admin:
+            filters.append(await self._company_isolation_filter(db, user_id=user_id, is_admin=is_admin))
             filters.append(
                 or_(
                     InsightIntelligence.owner_user_id == user_id,
@@ -817,6 +988,26 @@ class InsightIntelligenceService:
         if not intelligence:
             raise ValueError("正式情报不存在或无权维护")
         return intelligence
+
+    async def _company_isolation_filter(
+        self,
+        db: AsyncSession,
+        *,
+        user_id: int | None,
+        is_admin: bool,
+    ):
+        if is_admin:
+            return True
+        sys_company_id = await insight_permission_service.resolve_user_sys_company_id(db, user_id)
+        if sys_company_id is None:
+            return InsightIntelligence.company_id.is_(None)
+        return or_(
+            InsightIntelligence.company_id.is_(None),
+            exists()
+            .where(InsightCompany.id == InsightIntelligence.company_id)
+            .where(InsightCompany.sys_company_id == sys_company_id)
+            .where(InsightCompany.is_deleted == 0),
+        )
 
     async def _ensure_data_source_reference_editable(
         self,
@@ -1114,6 +1305,7 @@ class InsightIntelligenceService:
         user_id: int | None,
     ) -> InsightIntelligence:
         now = datetime.now()
+        ai_analysis = self._extract_candidate_ai_analysis(candidate.suggested_tags)
         return InsightIntelligence(
             intelligence_uid=f"intel_{uuid4().hex}",
             title=candidate.candidate_title,
@@ -1126,7 +1318,7 @@ class InsightIntelligenceService:
             intelligence_type=self._normalize_intelligence_type(candidate.intelligence_type),
             business_domain=payload.business_domain,
             importance_level=payload.importance_level,
-            sentiment="neutral",
+            sentiment=ai_analysis.get("sentiment") or "neutral",
             publish_time=crawl_result.published_at,
             capture_time=crawl_result.create_time,
             review_status="approved",
@@ -1140,11 +1332,55 @@ class InsightIntelligenceService:
                 "crawl_result_id": crawl_result.id,
                 "suggested_tags": candidate.suggested_tags,
                 "confidence": candidate.confidence,
+                "ai_analysis": {
+                    "tags": self._candidate_tag_names(candidate.suggested_tags),
+                    "sentiment": ai_analysis.get("sentiment"),
+                    "sentiment_reason": ai_analysis.get("sentiment_reason"),
+                    "opportunities": ai_analysis.get("opportunities", []),
+                    "risks": ai_analysis.get("risks", []),
+                    "source_excerpt": crawl_result.snippet,
+                    "source_summary": candidate.candidate_summary,
+                },
             },
             status="active",
             create_by=str(user_id) if user_id else None,
             update_by=str(user_id) if user_id else None,
         )
+
+    def _candidate_tag_names(self, suggested_tags: list[dict[str, object]] | None) -> list[str]:
+        if not isinstance(suggested_tags, list):
+            return []
+        names: list[str] = []
+        seen: set[str] = set()
+        for item in suggested_tags:
+            if not isinstance(item, dict) or item.get("source") == "llm_analysis":
+                continue
+            name = str(item.get("name") or item.get("tag") or "").strip()
+            if name and name not in seen:
+                seen.add(name)
+                names.append(name)
+        return names
+
+    def _extract_candidate_ai_analysis(self, suggested_tags: list[dict[str, object]] | None) -> dict[str, object]:
+        result: dict[str, object] = {
+            "sentiment": "neutral",
+            "sentiment_reason": None,
+            "opportunities": [],
+            "risks": [],
+        }
+        if not isinstance(suggested_tags, list):
+            return result
+        for item in suggested_tags:
+            if not isinstance(item, dict) or item.get("source") != "llm_analysis":
+                continue
+            sentiment = str(item.get("sentiment") or "neutral")
+            if sentiment in {"positive", "neutral", "negative", "mixed"}:
+                result["sentiment"] = sentiment
+            result["sentiment_reason"] = item.get("sentiment_reason")
+            result["opportunities"] = item.get("opportunities") if isinstance(item.get("opportunities"), list) else []
+            result["risks"] = item.get("risks") if isinstance(item.get("risks"), list) else []
+            return result
+        return result
 
     def _build_source(self, intelligence_id: int, crawl_result: InsightCrawlResult) -> InsightIntelligenceSource:
         return InsightIntelligenceSource(

@@ -17,6 +17,9 @@ from app.models.agent.fr_report.report_task import (
 )
 from app.schemas.agent.fr_report.ai_report import (
     ExcelAnalysisResult,
+    FrAiReportAgentChatResponse,
+    FrAiReportAgentContext,
+    FrAiReportAgentEvent,
     FrAiReportFeedbackCreate,
     FrAiReportFeedbackRead,
     FrAiReportRequirementReviewResponse,
@@ -39,14 +42,311 @@ from app.services.agent.fr_report.agents import (
 from app.services.agent.fr_report.cpt_generator import cpt_generator
 from app.services.agent.fr_report.dsl_validator import DslValidationError, dsl_validator
 from app.services.agent.fr_report.excel_analyzer import excel_analyzer
-from app.services.agent.fr_report.minio_staging_service import minio_staging_service
 from app.services.agent.fr_report.preview_validator import preview_validator
 from app.services.agent.fr_report.requirement_planner import fr_report_requirement_planner
 from app.services.agent.fr_report.sql_react_agent import sql_react_agent
 from app.services.agent.fr_report.sqlserver_query_service import sqlserver_query_service
+from app.services.agent.fr_report.version_control_service import fr_report_version_control_service
 
 
 class FrAiReportService:
+    async def agent_chat(
+        self,
+        session: AsyncSession,
+        *,
+        user_id: int,
+        message: str,
+        action: str,
+        context: FrAiReportAgentContext,
+        file: UploadFile | None = None,
+    ) -> FrAiReportAgentChatResponse:
+        next_context = self._merge_agent_context(context, message)
+        events: list[FrAiReportAgentEvent] = [
+            FrAiReportAgentEvent(type="message", content="小驰已收到，我先判断信息是否足够，再决定是否调用工具。")
+        ]
+        warnings: list[str] = []
+        errors: list[str] = []
+        action = action if action in {"chat", "start_generate", "save_cpt"} else "chat"
+
+        if action == "save_cpt":
+            if not next_context.taskId:
+                return FrAiReportAgentChatResponse(
+                    status="need_input",
+                    context=next_context,
+                    events=events
+                    + [
+                        FrAiReportAgentEvent(
+                            type="need_user_input",
+                            content="还没有可保存的报表任务。请先描述需求并让我生成报表方案。",
+                        )
+                    ],
+                    questions=["请先让我生成 SQL 和报表方案，再保存成 CPT。"],
+                )
+            try:
+                task = await self.get_task(session, next_context.taskId)
+                if task is None:
+                    raise ValueError("任务不存在")
+                dsl_step: GenerateDslStepResponse | None = None
+                if not task.report_dsl:
+                    events.append(
+                        FrAiReportAgentEvent(
+                            type="tool_call_start",
+                            toolName="generate_report_dsl",
+                            content="当前任务还没有 ReportDSL，小驰先生成可确定性落 CPT 的报表结构。",
+                        )
+                    )
+                    dsl_step = await self.generate_dsl_step(session, next_context.taskId)
+                    events.append(
+                        FrAiReportAgentEvent(
+                            type="tool_call_result",
+                            toolName="generate_report_dsl",
+                            content="ReportDSL 已生成。",
+                            payload={"taskId": dsl_step.taskId, "status": dsl_step.status},
+                        )
+                    )
+                events.append(
+                    FrAiReportAgentEvent(
+                        type="tool_call_start",
+                        toolName="generate_cpt",
+                        content="开始生成 CPT，并通过版本控制检查目标文件是否有外部修改。",
+                    )
+                )
+                cpt_step = await self.generate_cpt_step(
+                    session,
+                    next_context.taskId,
+                    user_id=user_id,
+                    report_name=next_context.reportName,
+                    target_folder=next_context.targetFolder,
+                    target_object_path=next_context.targetObjectPath,
+                    conflict_strategy="abort",
+                )
+                next_context.taskId = cpt_step.taskId
+                next_context.conversationId = cpt_step.conversationId
+                events.append(
+                    FrAiReportAgentEvent(
+                        type="cpt_ready",
+                        toolName="generate_cpt",
+                        content="CPT 已生成并写入版本库。若检测到设计器外部修改，会在结果里提示冲突。",
+                        payload={
+                            "taskId": cpt_step.taskId,
+                            "cptObjectPath": cpt_step.cptObjectPath,
+                            "previewUrl": cpt_step.previewUrl,
+                            "status": cpt_step.status,
+                        },
+                    )
+                )
+                return FrAiReportAgentChatResponse(
+                    status="cpt_ready" if not cpt_step.errors else "failed",
+                    conversationId=cpt_step.conversationId,
+                    taskId=cpt_step.taskId,
+                    context=next_context,
+                    events=events,
+                    dslStep=dsl_step,
+                    cptStep=cpt_step,
+                    warnings=cpt_step.warnings,
+                    errors=cpt_step.errors,
+                )
+            except ValueError as exc:
+                errors.append(str(exc))
+                events.append(FrAiReportAgentEvent(type="error", content=str(exc)))
+                return FrAiReportAgentChatResponse(status="failed", context=next_context, events=events, errors=errors)
+
+        merged_requirement = self._build_agent_requirement(next_context, message)
+        missing_items = self._agent_missing_items(next_context, bool(file))
+        if missing_items:
+            events.append(
+                FrAiReportAgentEvent(
+                    type="need_user_input",
+                    content="我还缺少一些关键信息，补齐后就能继续。",
+                    payload={"missingItems": missing_items},
+                )
+            )
+            return FrAiReportAgentChatResponse(
+                status="need_input",
+                context=next_context,
+                events=events,
+                questions=missing_items,
+            )
+
+        events.append(
+            FrAiReportAgentEvent(
+                type="tool_call_start",
+                toolName="review_requirement",
+                content="开始做需求预检，识别报表类型、填报属性、数据来源和需要追问的点。",
+            )
+        )
+        review = await self.review_requirement(
+            requirement=merged_requirement,
+            file=file,
+            table_schema=None,
+            source_table_name=next_context.sourceTableName,
+        )
+        ai_review = await requirement_agent.review_chat(
+            requirement=merged_requirement,
+            analysis=review.excelAnalysis,
+            rule_review=review.model_dump(mode="json", exclude={"excelAnalysis"}),
+        )
+        display_summary = review.summary
+        display_questions = list(review.questions)
+        if ai_review:
+            display_summary = str(ai_review.get("summary") or review.summary)
+            display_questions = [
+                str(question)
+                for question in (ai_review.get("questions") or [])
+                if str(question).strip()
+            ][:6]
+            ai_source_tables = ai_review.get("sourceTables") or []
+            if isinstance(ai_source_tables, list) and ai_source_tables:
+                next_context.sourceTableName = ", ".join(str(item) for item in ai_source_tables if str(item).strip()) or next_context.sourceTableName
+            events.append(
+                FrAiReportAgentEvent(
+                    type="tool_call_result",
+                    toolName="ai_requirement_review",
+                    content=display_summary,
+                    payload={
+                        "scenario": ai_review.get("scenario"),
+                        "reportType": ai_review.get("reportType"),
+                        "nextAction": ai_review.get("nextAction"),
+                        "sourceTables": ai_source_tables,
+                    },
+                )
+            )
+        else:
+            display_summary = self._latest_message_summary(message)
+            display_questions = []
+            events.append(
+                FrAiReportAgentEvent(
+                    type="message",
+                    content="模型需求理解暂时没有返回有效 JSON，小驰先按你最新这条消息做轻量理解；后续生成 SQL/DSL 仍会继续走受控工具。",
+                )
+            )
+        events.append(
+            FrAiReportAgentEvent(
+                type="tool_call_result",
+                toolName="review_requirement",
+                content="规则预检已完成，将作为安全边界和兜底参考。",
+                payload={"status": review.status, "scenario": review.scenario, "questions": review.questions},
+            )
+        )
+        if action == "chat" and display_questions:
+            return FrAiReportAgentChatResponse(
+                status="need_input",
+                context=next_context,
+                events=events
+                + [
+                    FrAiReportAgentEvent(
+                        type="message",
+                        content="现在还不急着生成，我先把关键问题问清楚，避免生成出来又偏。",
+                    )
+                ],
+                questions=display_questions,
+                review=review,
+                warnings=review.warnings,
+            )
+        if action == "chat":
+            return FrAiReportAgentChatResponse(
+                status="ready",
+                context=next_context,
+                events=events
+                + [
+                    FrAiReportAgentEvent(
+                        type="message",
+                        content="信息基本够了。你可以直接说“开始生成报表”，我会读取真实表结构、预览样例数据并生成 SQL 和 ReportDSL。",
+                    )
+                ],
+                review=review,
+                warnings=review.warnings,
+            )
+        if display_questions:
+            warnings.extend([f"未完全确认，按用户已提供信息继续生成：{question}" for question in display_questions])
+            events.append(
+                FrAiReportAgentEvent(
+                    type="message",
+                    content="你已经明确要求开始生成，我会把未完全确认的问题作为假设和风险提示继续执行，生成后可以继续调整。",
+                    payload={"assumptionQuestions": display_questions},
+                )
+            )
+
+        events.append(
+            FrAiReportAgentEvent(
+                type="tool_call_start",
+                toolName="generate_sql_with_preview",
+                content="条件已满足，开始读取真实表结构、预览数据并让 SQL ReAct Agent 生成可执行 SQL。",
+            )
+        )
+        sql_step = await self.generate_sql_step(
+            session=session,
+            requirement=merged_requirement,
+            file=file,
+            table_schema=None,
+            report_name=next_context.reportName,
+            source_table_name=next_context.sourceTableName,
+            conversation_id=next_context.conversationId,
+            user_id=str(user_id),
+            ddl_dialect=next_context.ddlDialect,
+            id_auto_increment=next_context.idAutoIncrement,
+        )
+        next_context.taskId = sql_step.taskId
+        next_context.conversationId = sql_step.conversationId
+        events.append(
+            FrAiReportAgentEvent(
+                type="sql_ready",
+                toolName="generate_sql_with_preview",
+                content="SQL 步骤已完成，已包含只读校验结果和样例数据。",
+                payload={
+                    "taskId": sql_step.taskId,
+                    "status": sql_step.status,
+                    "success": bool(sql_step.sqlValidation and sql_step.sqlValidation.success),
+                    "columns": sql_step.sqlValidation.columns if sql_step.sqlValidation else [],
+                },
+            )
+        )
+        warnings.extend(sql_step.warnings)
+        errors.extend(sql_step.errors)
+        if sql_step.errors:
+            return FrAiReportAgentChatResponse(
+                status="sql_failed",
+                conversationId=sql_step.conversationId,
+                taskId=sql_step.taskId,
+                context=next_context,
+                events=events,
+                review=review,
+                sqlStep=sql_step,
+                warnings=warnings,
+                errors=errors,
+            )
+
+        events.append(
+            FrAiReportAgentEvent(
+                type="tool_call_start",
+                toolName="generate_report_dsl",
+                content="SQL 可用，继续生成 ReportDSL。这里仍然不会让 AI 直接写 CPT/XML。",
+            )
+        )
+        dsl_step = await self.generate_dsl_step(session, sql_step.taskId)
+        events.append(
+            FrAiReportAgentEvent(
+                type="dsl_ready",
+                toolName="generate_report_dsl",
+                content="ReportDSL 已生成，前端可以实时渲染轻量预览。",
+                payload={"taskId": dsl_step.taskId, "status": dsl_step.status},
+            )
+        )
+        warnings.extend(dsl_step.warnings)
+        errors.extend(dsl_step.errors)
+        return FrAiReportAgentChatResponse(
+            status="dsl_ready" if not errors else "dsl_failed",
+            conversationId=dsl_step.conversationId,
+            taskId=dsl_step.taskId,
+            context=next_context,
+            events=events,
+            review=review,
+            sqlStep=sql_step,
+            dslStep=dsl_step,
+            warnings=warnings,
+            errors=errors,
+        )
+
     async def review_requirement(
         self,
         requirement: str | None,
@@ -75,6 +375,9 @@ class FrAiReportService:
         source_table_name: str | None = None,
         conversation_id: str | None = None,
         user_id: str | None = None,
+        ddl_dialect: str | None = None,
+        id_auto_increment: bool = True,
+        table_name_overrides: dict[str, Any] | None = None,
     ) -> GenerateSqlStepResponse:
         await self._ensure_task_columns(session)
         task_id = str(uuid4())
@@ -117,6 +420,13 @@ class FrAiReportService:
                 mode="json",
                 exclude={"excelAnalysis"},
             )
+            requirement_summary["ddlOptions"] = self._build_ddl_options(
+                ddl_dialect=ddl_dialect,
+                id_auto_increment=id_auto_increment,
+                table_name_overrides=table_name_overrides,
+                source_table_name=source_table_name,
+                business_plan=requirement_summary["businessPlan"],
+            )
             logs.append(self._log("需求预检完成，已识别维护表、追问和质量门禁"))
             logs.append(self._log("需求摘要生成完成"))
 
@@ -124,7 +434,15 @@ class FrAiReportService:
                 requirement_summary,
                 file.filename if file else None,
             )
-            resolved_table_schema = await self._resolve_table_schema(table_schema, source_table_name, logs)
+            resolved_table_schema = await self._resolve_table_schema(
+                table_schema,
+                source_table_name,
+                logs,
+                allow_designed_fallback=(
+                    (requirement_summary.get("businessPlan") or {}).get("scenario")
+                    in {"futures_operation_ledger", "option_operation_ledger"}
+                ),
+            )
             data_model = await data_model_agent.design(resolved_table_schema, analysis, requirement_summary)
             parameters = report_designer_agent.build_parameters(data_model)
             sql_react_result = await sql_react_agent.generate_and_validate(
@@ -281,9 +599,13 @@ class FrAiReportService:
         file: UploadFile | None,
         table_schema: dict[str, Any] | None,
         report_name: str | None,
+        target_folder: str | None = None,
+        target_object_path: str | None = None,
+        conflict_strategy: str = "abort",
         source_table_name: str | None = None,
         conversation_id: str | None = None,
         user_id: str | None = None,
+        owner_user_id: int | None = None,
     ) -> GenerateReportResponse:
         await self._ensure_task_columns(session)
         task_id = str(uuid4())
@@ -365,24 +687,8 @@ class FrAiReportService:
             cpt_bytes = cpt_generator.generate(dsl)
             logs.append(self._log("确定性 CPT 生成完成"))
 
-            artifacts = await minio_staging_service.save_artifacts(
-                task_id=task_id,
-                cpt_bytes=cpt_bytes,
-                dsl=dsl.model_dump(mode="json"),
-                query_sql=query_sql,
-                create_table_sql=data_model.createTableSql,
-                generation_log=logs,
-            )
-            reportlet_path = f"AI生成报表/{task_id}/report.cpt"
-            preview_result = await preview_validator.validate(reportlet_path)
-
             task.report_name = final_report_name
             task.report_type = dsl.reportType.value
-            task.status = (
-                FrAiReportTaskStatus.GENERATED
-                if not sql_validation.errors and not preview_result.errors and not supervisor_errors
-                else FrAiReportTaskStatus.VALIDATION_FAILED
-            )
             task.data_source_status = data_model.dataSourceStatus
             task.source_file_name = file.filename if file else None
             task.table_schema = table_schema
@@ -392,12 +698,66 @@ class FrAiReportService:
             task.query_sql = query_sql
             task.sql_validation = sql_validation.model_dump(mode="json")
             task.create_table_sql = data_model.createTableSql
+
+            normalized_target = fr_report_version_control_service.normalize_target_object_path(
+                report_name=final_report_name,
+                target_folder=target_folder,
+                target_object_path=target_object_path,
+                fallback_object_path=task.cpt_object_path,
+            )
+            project, structure_version, file_version, conflict = await fr_report_version_control_service.save_task_file_version(
+                db=session,
+                user_id=owner_user_id or int(user_id or 0),
+                task=task,
+                cpt_bytes=cpt_bytes,
+                dsl_payload=dsl.model_dump(mode="json"),
+                generation_log=logs,
+                target_object_path=normalized_target,
+                conflict_strategy=conflict_strategy,
+                validation_warnings=validation_warnings,
+            )
+            if conflict:
+                task.status = FrAiReportTaskStatus.VALIDATION_FAILED
+                task.cpt_object_path = normalized_target
+                task.generation_log = logs + [self._log(f"检测到目标 CPT 外部修改，已阻止覆盖：{conflict.get('message', '')}")]
+                task.warnings = business_review.warnings + validation_warnings + [conflict.get("message", "检测到目标 CPT 外部修改，已阻止覆盖")]
+                task.errors = []
+                task.update_time = datetime.now()
+                session.add(task)
+                await self._touch_conversation(session, conversation, task)
+                await session.commit()
+                return GenerateReportResponse(
+                    taskId=task.task_id,
+                    conversationId=task.conversation_id,
+                    status="conflict",
+                    reportName=task.report_name,
+                    reportType=task.report_type or "",
+                    warnings=task.warnings,
+                    errors=task.errors,
+                )
+            if not file_version:
+                raise ValueError("文件版本保存失败")
+
+            reportlet_path = fr_report_version_control_service.reportlet_path(normalized_target)
+            preview_result = await preview_validator.validate(reportlet_path, write_mode=dsl.writeBack.enabled)
+
+            file_version.preview_url = preview_result.previewUrl
+            file_version.warnings = validation_warnings + preview_result.warnings
+            file_version.errors = preview_result.errors
+            file_version.write_status = "generated" if not preview_result.errors else "preview_failed"
+            session.add(file_version)
+
+            task.status = (
+                FrAiReportTaskStatus.GENERATED
+                if not sql_validation.errors and not preview_result.errors and not supervisor_errors
+                else FrAiReportTaskStatus.VALIDATION_FAILED
+            )
             task.generation_log = logs
-            task.cpt_object_path = artifacts["cptObjectPath"]
-            task.dsl_object_path = artifacts["dslObjectPath"]
-            task.sql_object_path = artifacts["sqlObjectPath"]
-            task.create_sql_object_path = artifacts["createSqlObjectPath"]
-            task.log_object_path = artifacts["logObjectPath"]
+            task.cpt_object_path = normalized_target
+            task.dsl_object_path = file_version.dsl_object_path
+            task.sql_object_path = None
+            task.create_sql_object_path = None
+            task.log_object_path = file_version.manifest_object_path
             task.preview_url = preview_result.previewUrl
             task.warnings = business_review.warnings + validation_warnings + sql_validation.warnings + supervisor_warnings + preview_result.warnings
             task.errors = sql_validation.errors + supervisor_errors + preview_result.errors
@@ -452,6 +812,11 @@ class FrAiReportService:
         self,
         session: AsyncSession,
         task_id: str,
+        user_id: int,
+        report_name: str | None = None,
+        target_folder: str | None = None,
+        target_object_path: str | None = None,
+        conflict_strategy: str = "abort",
     ) -> GenerateCptStepResponse:
         await self._ensure_task_columns(session)
         task = await self.get_task(session, task_id)
@@ -463,7 +828,7 @@ class FrAiReportService:
             raise ValueError("任务缺少 SQL，无法生成 CPT")
 
         logs = list(task.generation_log or [])
-        logs.append(self._log("开始执行 FineReport AI 报表第三步：生成 CPT 并上传 reportlets 专用目录"))
+        logs.append(self._log("开始执行 FineReport AI 报表第三步：生成 CPT 并写入目标 reportlets 路径"))
         task.status = FrAiReportTaskStatus.GENERATING
         task.generation_log = logs
         task.update_time = datetime.now()
@@ -479,32 +844,67 @@ class FrAiReportService:
             cpt_bytes = cpt_generator.generate(dsl)
             logs.append(self._log("确定性 CPT 生成完成"))
 
-            artifacts = await minio_staging_service.save_artifacts(
-                task_id=task.task_id,
-                cpt_bytes=cpt_bytes,
-                dsl=dsl.model_dump(mode="json"),
-                query_sql=task.query_sql,
-                create_table_sql=task.create_table_sql,
-                generation_log=logs,
+            normalized_target = fr_report_version_control_service.normalize_target_object_path(
+                report_name=report_name or task.report_name,
+                target_folder=target_folder,
+                target_object_path=target_object_path,
+                fallback_object_path=task.cpt_object_path,
             )
-            logs.append(self._log("CPT、DSL、SQL 和生成日志已写入 reportlets/AI生成报表 专用目录"))
+            project, structure_version, file_version, conflict = await fr_report_version_control_service.save_task_file_version(
+                db=session,
+                user_id=user_id,
+                task=task,
+                cpt_bytes=cpt_bytes,
+                dsl_payload=dsl.model_dump(mode="json"),
+                generation_log=logs,
+                target_object_path=normalized_target,
+                conflict_strategy=conflict_strategy,
+                validation_warnings=validation_warnings,
+            )
+            if conflict:
+                logs.append(self._log(f"检测到目标 CPT 外部修改，已阻止覆盖：{conflict.get('message', '')}"))
+                task.status = FrAiReportTaskStatus.VALIDATION_FAILED
+                task.cpt_object_path = normalized_target
+                task.warnings = validation_warnings + [conflict.get("message", "检测到目标 CPT 外部修改，已阻止覆盖")]
+                task.errors = []
+                task.generation_log = logs
+                task.update_time = datetime.now()
+                session.add(task)
+                await session.commit()
+                await session.refresh(task)
+                response = self.to_cpt_step_schema(task)
+                response.status = "conflict"
+                response.reportId = project.report_id
+                response.conflict = conflict
+                return response
 
-            reportlet_path = f"AI生成报表/{task.task_id}/report.cpt"
-            preview_result = await preview_validator.validate(reportlet_path)
+            if not file_version:
+                raise ValueError("文件版本保存失败")
+
+            logs.append(self._log("CPT、DSL、manifest 和 diff 已写入目标路径并归档到版本库"))
+
+            reportlet_path = fr_report_version_control_service.reportlet_path(normalized_target)
+            preview_result = await preview_validator.validate(reportlet_path, write_mode=dsl.writeBack.enabled)
             if preview_result.errors:
                 logs.append(self._log("FineReport 预览校验未通过"))
             else:
                 logs.append(self._log("FineReport 预览地址生成完成"))
 
+            file_version.preview_url = preview_result.previewUrl
+            file_version.warnings = validation_warnings + preview_result.warnings
+            file_version.errors = preview_result.errors
+            file_version.write_status = "generated" if not preview_result.errors else "preview_failed"
+            session.add(file_version)
+
             sql_validation = task.sql_validation or {}
             sql_errors = list(sql_validation.get("errors", []))
             sql_warnings = list(sql_validation.get("warnings", []))
             task.report_type = dsl.reportType.value
-            task.cpt_object_path = artifacts["cptObjectPath"]
-            task.dsl_object_path = artifacts["dslObjectPath"]
-            task.sql_object_path = artifacts["sqlObjectPath"]
-            task.create_sql_object_path = artifacts["createSqlObjectPath"]
-            task.log_object_path = artifacts["logObjectPath"]
+            task.cpt_object_path = normalized_target
+            task.dsl_object_path = file_version.dsl_object_path
+            task.sql_object_path = None
+            task.create_sql_object_path = None
+            task.log_object_path = file_version.manifest_object_path
             task.preview_url = preview_result.previewUrl
             task.warnings = validation_warnings + sql_warnings + preview_result.warnings
             task.errors = sql_errors + preview_result.errors
@@ -524,7 +924,11 @@ class FrAiReportService:
                     await self._touch_conversation(session, conversation, task)
             await session.commit()
             await session.refresh(task)
-            return self.to_cpt_step_schema(task)
+            response = self.to_cpt_step_schema(task)
+            response.reportId = project.report_id
+            response.fileVersionId = file_version.file_version_id
+            response.structureVersionId = structure_version.structure_version_id if structure_version else None
+            return response
         except DslValidationError as exc:
             task.status = FrAiReportTaskStatus.FAILED
             task.errors = exc.errors
@@ -646,8 +1050,13 @@ class FrAiReportService:
         session.add(task)
         await session.commit()
 
-        reportlet_path = f"AI生成报表/{task_id}/report.cpt"
-        result = await preview_validator.validate(reportlet_path)
+        if not task.cpt_object_path:
+            raise ValueError("任务尚未生成 CPT 文件")
+        reportlet_path = fr_report_version_control_service.reportlet_path(task.cpt_object_path)
+        write_mode = False
+        if task.report_dsl:
+            write_mode = ReportDSL.model_validate(task.report_dsl).writeBack.enabled
+        result = await preview_validator.validate(reportlet_path, write_mode=write_mode)
         sql_validation = task.sql_validation or {}
         task.preview_url = result.previewUrl
         task.errors = list(sql_validation.get("errors", [])) + result.errors
@@ -663,7 +1072,7 @@ class FrAiReportService:
         if task is None:
             raise ValueError("任务不存在")
         warnings = list(task.warnings or [])
-        warnings.append("安全策略：publish 仅标记任务已发布，CPT 仍保留在 reportlets/AI生成报表 专用目录，不覆盖正式报表")
+        warnings.append("安全策略：publish 仅标记任务已发布；真实 CPT 写入、覆盖和回档必须继续通过版本控制与外部修改检测。")
         task.status = FrAiReportTaskStatus.PUBLISHED
         task.warnings = warnings
         task.update_time = datetime.now()
@@ -716,11 +1125,142 @@ class FrAiReportService:
             excelAnalysis=task.excel_analysis,
             querySql=task.query_sql,
             sqlValidation=SqlValidationResult.model_validate(task.sql_validation) if task.sql_validation else None,
+            createTableSql=task.create_table_sql,
             warnings=task.warnings or [],
             errors=task.errors or [],
             createTime=task.create_time,
             updateTime=task.update_time,
         )
+
+    def _merge_agent_context(self, context: FrAiReportAgentContext, message: str) -> FrAiReportAgentContext:
+        next_context = context.model_copy(deep=True)
+        text_value = message.strip()
+        if text_value:
+            if self._is_fresh_report_request(text_value):
+                next_context.requirement = text_value
+                next_context.taskId = None
+                next_context.conversationId = None
+                next_context.sourceTableName = None
+            elif next_context.requirement:
+                if text_value not in next_context.requirement:
+                    next_context.requirement = f"{next_context.requirement}\n{text_value}".strip()
+            else:
+                next_context.requirement = text_value
+        extracted_report_name = self._match_agent_text(
+            message,
+            [
+                r"(?:报表名|报表名称|名称)\s*[：:]\s*([^\n，,。；;]+)",
+                r"(?:生成|新建|做)(?:一个|一张)?\s*([^\n，,。；;]{2,40}?报表)",
+            ],
+        )
+        if extracted_report_name:
+            next_context.reportName = extracted_report_name.strip().removesuffix(".cpt")
+        extracted_folder = self._match_agent_text(
+            message,
+            [
+                r"(?:目录|路径|保存到|放到|生成到|存放位置)\s*[：:]\s*([^\n，。；;]+)",
+                r"(webroot/APP/reportlets/[^\s，。；;]+)",
+            ],
+        )
+        if extracted_folder:
+            next_context.targetFolder = self._normalize_agent_folder(extracted_folder)
+        extracted_tables = self._match_agent_text(
+            message,
+            [
+                r"(?:已有表|数据表|来源表|相关表|用表|表名)\s*[：:]\s*([A-Za-z0-9_\.\[\]，,、；;\s]+)",
+                r"(?:使用|读取|基于)\s*([A-Za-z0-9_\.\[\]，,、；;\s]{3,})\s*(?:这些表|这几个表|做报表)",
+            ],
+        )
+        if extracted_tables:
+            next_context.sourceTableName = extracted_tables.strip(" ，,、；;")
+        if not next_context.ddlDialect:
+            next_context.ddlDialect = "sqlserver"
+        return next_context
+
+    def _build_agent_requirement(self, context: FrAiReportAgentContext, message: str) -> str:
+        parts = []
+        if context.requirement:
+            parts.append(context.requirement.strip())
+        if message.strip() and message.strip() not in parts:
+            parts.append(message.strip())
+        if context.templateObjectPath:
+            parts.append(f"参考模板：{context.templateObjectPath}")
+        if context.targetFolder:
+            parts.append(f"生成目录：{context.targetFolder}")
+        if context.sourceTableName:
+            parts.append(f"用户指定已有数据表：{context.sourceTableName}")
+        return "\n".join(part for part in parts if part).strip()
+
+    def _agent_missing_items(self, context: FrAiReportAgentContext, has_file: bool) -> list[str]:
+        missing_items: list[str] = []
+        if not context.reportName:
+            missing_items.append("请告诉我报表名称，或者直接说“报表名：xxx”。")
+        if not context.targetFolder:
+            missing_items.append("请指定生成目录，例如 webroot/APP/reportlets/数据分析/AI生成报表。")
+        if not context.requirement and not has_file:
+            missing_items.append("请描述要生成的报表内容，或上传 Excel、Word、图片等参考资料。")
+        return missing_items
+
+    def _match_agent_text(self, text_value: str, patterns: list[str]) -> str | None:
+        for pattern in patterns:
+            match = re.search(pattern, text_value, flags=re.IGNORECASE)
+            if match and match.group(1).strip():
+                return match.group(1).strip()
+        return None
+
+    def _is_fresh_report_request(self, text_value: str) -> bool:
+        normalized = re.sub(r"\s+", "", text_value)
+        return bool(
+            re.search(r"^(帮我|我要|请|直接)?(做|新建|生成|创建|设计)(一个|一张)?", normalized)
+            or re.search(r"报表名[：:]", text_value)
+        )
+
+    def _latest_message_summary(self, text_value: str) -> str:
+        text = re.sub(r"\s+", " ", text_value).strip()
+        return f"我理解你的最新需求是：{text[:220]}{'...' if len(text) > 220 else ''}"
+
+    def _normalize_agent_folder(self, value: str) -> str:
+        folder = value.strip().replace("\\", "/").strip("/")
+        if folder.endswith(".cpt"):
+            folder = folder.rsplit("/", 1)[0]
+        if folder.startswith("APP/reportlets/"):
+            folder = f"webroot/{folder}"
+        if folder.startswith("reportlets/"):
+            folder = f"webroot/APP/{folder}"
+        if not folder.startswith("webroot/APP/reportlets"):
+            folder = f"webroot/APP/reportlets/{folder}"
+        return re.sub(r"/+", "/", folder)
+
+    def _build_ddl_options(
+        self,
+        ddl_dialect: str | None,
+        id_auto_increment: bool,
+        table_name_overrides: dict[str, Any] | None,
+        source_table_name: str | None,
+        business_plan: dict[str, Any],
+    ) -> dict[str, Any]:
+        dialect = (ddl_dialect or "sqlserver").strip().lower()
+        if dialect in {"mssql", "sql_server"}:
+            dialect = "sqlserver"
+        if dialect not in {"sqlserver", "mysql", "postgresql"}:
+            dialect = "sqlserver"
+        overrides = {
+            str(key): str(value).strip()
+            for key, value in (table_name_overrides or {}).items()
+            if str(key).strip() and str(value).strip()
+        }
+        scenario = business_plan.get("scenario")
+        if source_table_name and scenario == "option_operation_ledger":
+            overrides.setdefault("fr_option_trade_ledger", source_table_name.strip())
+        elif source_table_name and scenario == "futures_operation_ledger":
+            overrides.setdefault("fr_future_trade_ledger", source_table_name.strip())
+        elif source_table_name and source_table_name.strip():
+            overrides.setdefault("primary", source_table_name.strip())
+        return {
+            "dialect": dialect,
+            "idAutoIncrement": bool(id_auto_increment),
+            "tableNames": overrides,
+        }
 
     def to_dsl_step_schema(self, task: FrAiReportTask) -> GenerateDslStepResponse:
         return GenerateDslStepResponse(
@@ -861,6 +1401,7 @@ class FrAiReportService:
         table_schema: dict[str, Any] | None,
         source_table_name: str | None,
         logs: list[str],
+        allow_designed_fallback: bool = False,
     ) -> dict[str, Any] | None:
         table_names = self._parse_source_table_names(source_table_name)
         if not table_names and (table_schema or {}).get("tableName"):
@@ -876,6 +1417,13 @@ class FrAiReportService:
             logs.append(self._log(f"已根据表名查询 SQL Server 表结构：{', '.join(table_names)}"))
             return resolved_schema
         detail = "；".join(errors + warnings) or "未查询到字段结构"
+        if allow_designed_fallback:
+            logs.append(
+                self._log(
+                    f"未查询到真实表结构，已按沉淀场景候选模型继续生成：{', '.join(table_names)}。{detail}"
+                )
+            )
+            return None
         raise ValueError(f"无法根据表名查询 SQL Server 表结构：{', '.join(table_names)}。{detail}")
 
     def _merge_dsl_feedback(

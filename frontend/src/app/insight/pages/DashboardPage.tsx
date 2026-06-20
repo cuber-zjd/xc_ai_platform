@@ -167,12 +167,14 @@ function MetricCard({
 }
 
 function TrendChart({ points }: { points: InsightDashboardTrendPoint[] }) {
-    const safePoints = points.length > 1 ? points : buildEmptyTrend();
-    const values = safePoints.map((point) => point.count);
+    if (points.length < 2) {
+        return <EmptyHint text="暂无足够趋势数据" />;
+    }
+    const values = points.map((point) => point.count);
     const max = Math.max(...values, 5);
     const width = 560;
     const height = 220;
-    const step = width / (safePoints.length - 1);
+    const step = width / (points.length - 1);
     const coords = values.map((value, index) => [index * step, height - (value / max) * (height - 32) - 12]);
     const line = coords.map(([x, y]) => `${x},${y}`).join(" ");
     const area = `0,${height} ${line} ${width},${height}`;
@@ -201,7 +203,7 @@ function TrendChart({ points }: { points: InsightDashboardTrendPoint[] }) {
                 </defs>
             </svg>
             <div className="mt-2 grid grid-cols-7 text-center text-xs text-slate-500">
-                {safePoints.map((point) => (
+                {points.map((point) => (
                     <span key={point.label}>{point.label}</span>
                 ))}
             </div>
@@ -210,9 +212,11 @@ function TrendChart({ points }: { points: InsightDashboardTrendPoint[] }) {
 }
 
 function SourceDonut({ slices }: { slices: InsightDashboardSourceSlice[] }) {
+    if (slices.length === 0) {
+        return <EmptyHint text="暂无来源分布数据" />;
+    }
     const total = slices.reduce((sum, item) => sum + item.count, 0);
-    const segments = slices.length > 0 ? slices : [{ source_type: "empty", label: "暂无来源", count: 1, percent: 100 }];
-    const gradient = segments
+    const gradient = slices
         .reduce<{ cursor: number; stops: string[] }>(
             (state, item, index) => {
             const percent = item.percent || 0;
@@ -237,7 +241,7 @@ function SourceDonut({ slices }: { slices: InsightDashboardSourceSlice[] }) {
                 </div>
             </div>
             <div className="w-full space-y-3 text-sm sm:w-auto">
-                {segments.map((item, index) => (
+                {slices.map((item, index) => (
                     <div key={item.source_type} className="flex items-center gap-3">
                         <span className="size-2.5 rounded-sm" style={{ backgroundColor: sourceColors[index % sourceColors.length] }} />
                         <span className="min-w-20 text-slate-700">{item.label}</span>
@@ -282,10 +286,6 @@ function LatestRow({ row }: { row: InsightIntelligenceListItem }) {
 
 function EmptyHint({ text }: { text: string }) {
     return <div className="flex h-full min-h-36 items-center justify-center rounded-xl border border-dashed border-slate-200 text-sm font-semibold text-slate-500">{text}</div>;
-}
-
-function buildEmptyTrend(): InsightDashboardTrendPoint[] {
-    return Array.from({ length: 7 }, (_, index) => ({ date: "", label: `${index + 1}`, count: 0 }));
 }
 
 function normalizeTags(value: InsightIntelligenceListItem["suggested_tags"]): string[] {

@@ -12,6 +12,7 @@ export default defineConfig({
     },
   },
   server: {
+    cors: true,
     proxy: {
       '/api': {
         target: 'http://localhost:8000',

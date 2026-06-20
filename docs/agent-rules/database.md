@@ -52,8 +52,11 @@
 - FineReport AI 历史任务第一版新增 `fr_ai_report_conversation`、`fr_ai_report_feedback`，并为 `fr_ai_report_task` 补充 `conversation_id`、`parent_task_id`、`revision_no`；当前通过 `init_db.py` 和服务启动时的 `ADD COLUMN IF NOT EXISTS` 兼容旧库。
 - FineReport 报表文件用户可见范围使用 `fr_report_visibility_preference` 保存当前用户选择显示的文件夹或报表路径列表；空列表表示显示全部，不保存全量报表清单。
 - 当前项目启动时会通过 `SQLModel.metadata.create_all` 创建表。
+- 泛微流程 AI 智审使用 `weaver_ai_review_rule` 保存规则，使用 `weaver_ai_review_record` 保存每次预审的表单快照、规则快照和模型结论；当前随 `SQLModel.metadata.create_all` 创建。
+- Insight 定时报告计划使用 `insight_report_subscription`，保存报告模板、素材范围、周期、下次执行时间、上次生成报告、上次企业微信通知和接收人 JSON；该表已通过模型包入口注册，随 `SQLModel.metadata.create_all` 创建。
 - FineReport 报表数据集预览使用 `fr_report_database_driver` 保存平台级数据库驱动字典，驱动不按用户隔离；当前种子数据包含 `sqlserver` 和 `mysql8`。
 - FineReport 报表数据库连接使用 `fr_report_database_connection` 保存用户级连接信息，连接引用平台级 `driver_key`，用于数据集预览和后续 AI SQL/报表调整。
+- FineReport 报表版本控制使用 `fr_report_project`、`fr_report_structure_version`、`fr_report_file_version` 和 `fr_report_external_change_log`：平台结构版本和真实 CPT 文件版本分开保存，文件版本需记录当前对象路径、版本库归档路径、hash、ETag、lastModified、manifest 和回档状态。
 - 生产环境禁止依赖手动改表。
 - 如果后续引入 Alembic，表结构变化必须生成迁移脚本。
 - 种子数据放在 `backend/app/db/init_db.py` 或明确的脚本中，并保持幂等。

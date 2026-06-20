@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { CheckCircle2, EyeOff, ExternalLink, FileText, Plus, RefreshCw, Search, SlidersHorizontal, XCircle } from "lucide-react";
+import { CheckCircle2, EyeOff, ExternalLink, FileText, Loader2, Plus, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Star, Tags, XCircle } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 
@@ -15,8 +15,19 @@ import type {
     InsightIntelligenceListParams,
 } from "../api";
 import { DemoCard, DemoTag, RankList, SectionHeader, type TagTone } from "../components/DemoPrimitives";
+import { AccessRuleDialog } from "../components";
 import { InsightSelect } from "../components/InsightSelect";
-import { useInsightCandidateReview, useInsightCandidates, useInsightCreateIntelligence, useInsightIntelligences, useInsightUpsertPool } from "../hooks";
+import {
+    useInsightBulkActionIntelligence,
+    useInsightCandidateReview,
+    useInsightCandidates,
+    useInsightCompanies,
+    useInsightCreateIntelligence,
+    useInsightDataSources,
+    useInsightIntelligences,
+    useInsightSystemCompanies,
+    useInsightUpsertPool,
+} from "../hooks";
 import { PageContainer } from "../layout/PageContainer";
 import { formatInsightDate, formatInsightType } from "../utils/display";
 
@@ -47,6 +58,22 @@ const sourceOptions = [
     { value: "bocha_news", label: "博查资讯" },
 ];
 
+const sentimentOptions = [
+    { value: "", label: "全部情感" },
+    { value: "positive", label: "正向" },
+    { value: "neutral", label: "中性" },
+    { value: "negative", label: "负向" },
+    { value: "mixed", label: "混合" },
+];
+
+const bulkSentimentOptions = [
+    { value: "", label: "不调整" },
+    { value: "positive", label: "正向" },
+    { value: "neutral", label: "中性" },
+    { value: "negative", label: "负向" },
+    { value: "mixed", label: "混合" },
+];
+
 export function IntelligenceCenterPage() {
     const [searchParams, setSearchParams] = useSearchParams();
     const dataSourceIdParam = Number(searchParams.get("data_source_id") || 0) || undefined;
@@ -55,8 +82,20 @@ export function IntelligenceCenterPage() {
     const [subjectType, setSubjectType] = useState("");
     const [intelligenceType, setIntelligenceType] = useState("");
     const [sourceType, setSourceType] = useState("");
-    const [viewMode, setViewMode] = useState<"official" | "candidate">(searchParams.get("mode") === "official" ? "official" : "candidate");
+    const [sysCompanyId, setSysCompanyId] = useState("");
+    const [companyId, setCompanyId] = useState("");
+    const [projectName, setProjectName] = useState("");
+    const [sentiment, setSentiment] = useState("");
+    const [tag, setTag] = useState("");
+    const [dataSourceId, setDataSourceId] = useState(dataSourceIdParam ? String(dataSourceIdParam) : "");
+    const [dateFrom, setDateFrom] = useState("");
+    const [dateTo, setDateTo] = useState("");
+    const [viewMode, setViewMode] = useState<"official" | "candidate">(searchParams.get("mode") === "candidate" ? "candidate" : "official");
     const [createOpen, setCreateOpen] = useState(false);
+    const [selectedOfficialIds, setSelectedOfficialIds] = useState<number[]>([]);
+    const [selectedCandidateIds, setSelectedCandidateIds] = useState<number[]>([]);
+    const [bulkAccessOpen, setBulkAccessOpen] = useState(false);
+    const [bulkEditOpen, setBulkEditOpen] = useState(false);
 
     const officialParams = useMemo<InsightIntelligenceListParams>(
         () => ({
@@ -65,8 +104,16 @@ export function IntelligenceCenterPage() {
             keyword: keyword || undefined,
             subject_type: subjectType || undefined,
             intelligence_type: intelligenceType || undefined,
+            sys_company_id: parseOptionalNumber(sysCompanyId) ?? undefined,
+            company_id: parseOptionalNumber(companyId) ?? undefined,
+            project_name: projectName.trim() || undefined,
+            sentiment: sentiment || undefined,
+            tag: tag.trim() || undefined,
+            data_source_id: parseOptionalNumber(dataSourceId) ?? dataSourceIdParam,
+            date_from: dateFrom || undefined,
+            date_to: dateTo || undefined,
         }),
-        [intelligenceType, keyword, subjectType],
+        [companyId, dataSourceId, dataSourceIdParam, dateFrom, dateTo, intelligenceType, keyword, projectName, sentiment, subjectType, sysCompanyId, tag],
     );
     const candidateParams = useMemo<InsightCandidateListParams>(
         () => ({
@@ -76,25 +123,77 @@ export function IntelligenceCenterPage() {
             review_status: "pending",
             subject_type: subjectType || undefined,
             intelligence_type: intelligenceType || undefined,
-            data_source_id: dataSourceIdParam,
+            data_source_id: parseOptionalNumber(dataSourceId) ?? dataSourceIdParam,
         }),
-        [dataSourceIdParam, intelligenceType, keyword, subjectType],
+        [dataSourceId, dataSourceIdParam, intelligenceType, keyword, subjectType],
     );
 
     const intelligencesQuery = useInsightIntelligences(officialParams);
     const candidatesQuery = useInsightCandidates(candidateParams);
+    const companiesQuery = useInsightCompanies({ page: 1, size: 500, sys_company_id: parseOptionalNumber(sysCompanyId) ?? undefined });
+    const dataSourcesQuery = useInsightDataSources({ page: 1, size: 500, status: "enabled" });
+    const systemCompaniesQuery = useInsightSystemCompanies();
     const reviewMutation = useInsightCandidateReview();
     const createMutation = useInsightCreateIntelligence();
     const poolMutation = useInsightUpsertPool();
+    const bulkMutation = useInsightBulkActionIntelligence();
     const intelligences = useMemo(() => intelligencesQuery.data?.items ?? [], [intelligencesQuery.data?.items]);
     const candidates = useMemo(
         () => (candidatesQuery.data?.items ?? []).filter((item) => !sourceType || item.source_channel === sourceType),
         [candidatesQuery.data?.items, sourceType],
     );
+    const companyOptions = useMemo(
+        () => [
+            { value: "", label: "全部企业" },
+            ...(companiesQuery.data?.items ?? []).map((company) => ({ value: String(company.id), label: company.short_name || company.name })),
+        ],
+        [companiesQuery.data?.items],
+    );
+    const dataSourceOptions = useMemo(
+        () => [
+            { value: "", label: "全部数据源" },
+            ...(dataSourcesQuery.data?.items ?? []).map((source) => ({ value: String(source.id), label: source.source_name })),
+        ],
+        [dataSourcesQuery.data?.items],
+    );
+    const systemCompanyOptions = useMemo(
+        () => [
+            { value: "", label: "全部所属公司" },
+            ...(systemCompaniesQuery.data ?? []).map((company) => ({ value: String(company.id), label: company.code ? `${company.name}（${company.code}）` : company.name })),
+        ],
+        [systemCompaniesQuery.data],
+    );
     const hotItems = useMemo(
         () => (viewMode === "official" ? intelligences.slice(0, 5).map((item) => item.title) : candidates.slice(0, 5).map((item) => item.candidate_title)),
         [candidates, intelligences, viewMode],
     );
+    const tagItems = useMemo(() => {
+        const counts = new Map<string, number>();
+        const addTag = (name?: string) => {
+            const key = name?.trim();
+            if (!key) return;
+            counts.set(key, (counts.get(key) ?? 0) + 1);
+        };
+        intelligences.forEach((item) => item.suggested_tags?.forEach((tag) => addTag(typeof tag.name === "string" ? tag.name : undefined)));
+        candidates.forEach((item) => item.suggested_tags?.forEach((tag) => addTag(typeof tag.name === "string" ? tag.name : undefined)));
+        return Array.from(counts.entries())
+            .sort((left, right) => right[1] - left[1])
+            .slice(0, 12)
+            .map(([name, count]) => `${name} ${count}`);
+    }, [candidates, intelligences]);
+    const advancedFilterCount = [
+        subjectType,
+        intelligenceType,
+        sourceType,
+        sysCompanyId,
+        companyId,
+        projectName.trim(),
+        sentiment,
+        tag.trim(),
+        dataSourceId,
+        dateFrom,
+        dateTo,
+    ].filter(Boolean).length;
 
     const search = () => setKeyword(keywordInput.trim());
     const reset = () => {
@@ -103,7 +202,17 @@ export function IntelligenceCenterPage() {
         setSubjectType("");
         setIntelligenceType("");
         setSourceType("");
+        setSysCompanyId("");
+        setCompanyId("");
+        setProjectName("");
+        setSentiment("");
+        setTag("");
+        setDataSourceId("");
+        setDateFrom("");
+        setDateTo("");
         setSearchParams({});
+        setSelectedOfficialIds([]);
+        setSelectedCandidateIds([]);
     };
 
     const handleReview = (candidateId: number, action: "promote" | "reject" | "ignore") => {
@@ -136,14 +245,99 @@ export function IntelligenceCenterPage() {
         );
     };
 
+    const selectedCount = viewMode === "official" ? selectedOfficialIds.length : selectedCandidateIds.length;
+    const toggleOfficial = (id: number) => setSelectedOfficialIds((current) => toggleId(current, id));
+    const toggleCandidate = (id: number) => setSelectedCandidateIds((current) => toggleId(current, id));
+    const selectCurrentOfficial = () => setSelectedOfficialIds(intelligences.map((item) => item.id));
+    const selectCurrentCandidates = () => setSelectedCandidateIds(candidates.map((item) => item.id));
+    const clearSelection = () => {
+        setSelectedOfficialIds([]);
+        setSelectedCandidateIds([]);
+    };
+
+    const handleBulkCandidate = (action: "promote" | "reject" | "ignore") => {
+        if (selectedCandidateIds.length === 0) return;
+        bulkMutation.mutate(
+            {
+                target_type: "candidate",
+                candidate_ids: selectedCandidateIds,
+                action,
+                visibility_scope: "assigned",
+                importance_level: "medium",
+                review_comment: "前端批量审核",
+            },
+            {
+                onSuccess: (result) => {
+                    toast.success(`批量操作完成：成功 ${result.success_count} 条，失败 ${result.failed_count} 条`);
+                    setSelectedCandidateIds([]);
+                },
+                onError: () => toast.error("批量审核失败，请稍后重试"),
+            },
+        );
+    };
+
+    const handleBulkOfficial = (action: "add_to_pool" | "hide" | "set_high_importance") => {
+        if (selectedOfficialIds.length === 0) return;
+        const payload =
+            action === "add_to_pool"
+                ? { action: "add_to_pool", pool_type: "report_material", folder_name: "默认报告素材", review_comment: "前端批量加入报告素材" }
+                : action === "hide"
+                    ? { action: "set_status", status: "inactive", review_comment: "前端批量隐藏" }
+                    : { action: "set_importance", importance_level: "high", review_comment: "前端批量标记重点" };
+        bulkMutation.mutate(
+            {
+                target_type: "intelligence",
+                intelligence_ids: selectedOfficialIds,
+                ...payload,
+            },
+            {
+                onSuccess: (result) => {
+                    toast.success(`批量操作完成：成功 ${result.success_count} 条，失败 ${result.failed_count} 条`);
+                    setSelectedOfficialIds([]);
+                },
+                onError: () => toast.error("批量操作失败，请稍后重试"),
+            },
+        );
+    };
+
+    const handleBulkMetadata = (payload: { tags?: string; sentiment?: string; importanceLevel?: string }) => {
+        if (selectedOfficialIds.length === 0) return;
+        const tags = payload.tags
+            ?.split(/[,，\n]/)
+            .map((item) => item.trim())
+            .filter(Boolean)
+            .map((name) => ({ name, source: "manual_bulk" }));
+        bulkMutation.mutate(
+            {
+                target_type: "intelligence",
+                intelligence_ids: selectedOfficialIds,
+                action: "patch_metadata",
+                tags,
+                sentiment: payload.sentiment || undefined,
+                importance_level: payload.importanceLevel || undefined,
+                review_comment: "前端批量修正标签、情感和重要性",
+            },
+            {
+                onSuccess: (result) => {
+                    toast.success(`批量修正完成：成功 ${result.success_count} 条，失败 ${result.failed_count} 条`);
+                    setSelectedOfficialIds([]);
+                    setBulkEditOpen(false);
+                },
+                onError: () => toast.error("批量修正失败，请检查填写内容"),
+            },
+        );
+    };
+
     return (
         <PageContainer>
             <div className="insight-page-heading">
                 <h1 className="text-2xl font-black leading-tight tracking-tight text-slate-950 md:text-3xl">情报中心</h1>
-                <Button className="h-10 rounded-xl px-5" onClick={() => setCreateOpen(true)}>
-                    <Plus className="size-4" />
-                    新增情报
-                </Button>
+                <div className="insight-actions">
+                    <Button className="h-10 rounded-xl px-5" onClick={() => setCreateOpen(true)}>
+                        <Plus className="size-4" />
+                        新增情报
+                    </Button>
+                </div>
             </div>
 
             <DemoCard className="p-3 md:hidden">
@@ -188,13 +382,21 @@ export function IntelligenceCenterPage() {
                                 高级筛选
                             </span>
                             <span className="text-xs font-bold text-slate-400">
-                                {[subjectType, intelligenceType, sourceType].filter(Boolean).length} 项
+                                {advancedFilterCount} 项
                             </span>
                         </summary>
                         <div className="mt-3 grid gap-3">
                             <InsightSelect label="主题类型" value={subjectType} options={subjectOptions} onChange={setSubjectType} />
                             <InsightSelect label="情报类型" value={intelligenceType} options={intelligenceTypeOptions} onChange={setIntelligenceType} />
-                            <InsightSelect label="来源" value={sourceType} options={sourceOptions} onChange={setSourceType} />
+                            <InsightSelect label="所属公司" value={sysCompanyId} options={systemCompanyOptions} onChange={setSysCompanyId} />
+                            <InsightSelect label="企业" value={companyId} options={companyOptions} onChange={setCompanyId} />
+                            <InsightSelect label="情感" value={sentiment} options={sentimentOptions} onChange={setSentiment} />
+                            <InsightSelect label="数据源" value={dataSourceId} options={dataSourceOptions} onChange={setDataSourceId} />
+                            <InsightSelect label="候选来源" value={sourceType} options={sourceOptions} onChange={setSourceType} />
+                            <FilterInput label="课题" value={projectName} onChange={setProjectName} placeholder="课题/项目名称" />
+                            <FilterInput label="标签" value={tag} onChange={setTag} placeholder="例如：功能糖" />
+                            <FilterInput label="开始日期" value={dateFrom} onChange={setDateFrom} type="date" />
+                            <FilterInput label="结束日期" value={dateTo} onChange={setDateTo} type="date" />
                             {dataSourceIdParam ? (
                                 <Button variant="outline" className="h-10 rounded-xl bg-white" onClick={() => setSearchParams({ mode: viewMode })}>
                                     清除数据源筛选
@@ -234,7 +436,7 @@ export function IntelligenceCenterPage() {
                     </label>
                     <InsightSelect label="主题类型" value={subjectType} options={subjectOptions} onChange={setSubjectType} />
                     <InsightSelect label="情报类型" value={intelligenceType} options={intelligenceTypeOptions} onChange={setIntelligenceType} />
-                    <InsightSelect label="来源" value={sourceType} options={sourceOptions} onChange={setSourceType} />
+                    <InsightSelect label="所属公司" value={sysCompanyId} options={systemCompanyOptions} onChange={setSysCompanyId} />
                     <div className="flex items-end md:col-span-2 xl:col-span-1">
                         <div className="insight-action-cluster w-full justify-start xl:justify-end">
                             <Button className="h-11 rounded-xl px-7" onClick={search}>搜索</Button>
@@ -243,6 +445,21 @@ export function IntelligenceCenterPage() {
                                 重置
                             </Button>
                         </div>
+                    </div>
+                </div>
+                <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-6 xl:items-end">
+                    <InsightSelect label="企业" value={companyId} options={companyOptions} onChange={setCompanyId} />
+                    <InsightSelect label="情感" value={sentiment} options={sentimentOptions} onChange={setSentiment} />
+                    <InsightSelect label="数据源" value={dataSourceId} options={dataSourceOptions} onChange={setDataSourceId} />
+                    <InsightSelect label="候选来源" value={sourceType} options={sourceOptions} onChange={setSourceType} />
+                    <FilterInput label="课题" value={projectName} onChange={setProjectName} placeholder="项目/课题" />
+                    <FilterInput label="标签" value={tag} onChange={setTag} placeholder="标签关键词" />
+                </div>
+                <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-[180px_180px_minmax(0,1fr)] xl:items-end">
+                    <FilterInput label="开始日期" value={dateFrom} onChange={setDateFrom} type="date" />
+                    <FilterInput label="结束日期" value={dateTo} onChange={setDateTo} type="date" />
+                    <div className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2 text-xs font-semibold leading-5 text-slate-500">
+                        正式情报筛选会传到后端权限过滤后再分页；候选审核当前支持关键词、主题、类型、数据源和候选来源筛选。
                     </div>
                 </div>
             </DemoCard>
@@ -255,11 +472,36 @@ export function IntelligenceCenterPage() {
                     </div>
                 </div>
                 <div className="space-y-4 p-3 sm:p-4">
+                    <BulkActionBar
+                        mode={viewMode}
+                        selectedCount={selectedCount}
+                        pending={bulkMutation.isPending}
+                        onSelectPage={viewMode === "official" ? selectCurrentOfficial : selectCurrentCandidates}
+                        onClear={clearSelection}
+                        onCandidateAction={handleBulkCandidate}
+                        onOfficialAction={handleBulkOfficial}
+                        onOpenBulkAccess={() => setBulkAccessOpen(true)}
+                        onOpenBulkEdit={() => setBulkEditOpen(true)}
+                    />
                     <div className="min-h-0 min-w-0 overflow-y-auto rounded-xl border border-slate-200 bg-white xl:max-h-[calc(100dvh-23rem)]">
                         {viewMode === "official" ? (
-                            <OfficialFeed rows={intelligences} loading={intelligencesQuery.isLoading} pending={poolMutation.isPending} onAddReportMaterial={handleAddReportMaterial} />
+                            <OfficialFeed
+                                rows={intelligences}
+                                loading={intelligencesQuery.isLoading}
+                                pending={poolMutation.isPending}
+                                selectedIds={selectedOfficialIds}
+                                onToggleSelected={toggleOfficial}
+                                onAddReportMaterial={handleAddReportMaterial}
+                            />
                         ) : (
-                            <CandidateFeed rows={candidates} loading={candidatesQuery.isLoading} pending={reviewMutation.isPending} onReview={handleReview} />
+                            <CandidateFeed
+                                rows={candidates}
+                                loading={candidatesQuery.isLoading}
+                                pending={reviewMutation.isPending}
+                                selectedIds={selectedCandidateIds}
+                                onToggleSelected={toggleCandidate}
+                                onReview={handleReview}
+                            />
                         )}
                     </div>
 
@@ -271,11 +513,12 @@ export function IntelligenceCenterPage() {
                         <DemoCard className="p-4">
                             <SectionHeader title="标签云" />
                             <div className="flex flex-wrap gap-2">
-                                {["新品 156", "财报 98", "行业资讯 142", "应用方案 87", "蛋白 73", "茶饮 64", "咖啡 58", "膳食纤维 45", "法规政策 28", "包装创新 27"].map((tag, index) => (
+                                {tagItems.map((tag, index) => (
                                     <DemoTag key={tag} tone={index % 4 === 0 ? "blue" : index % 4 === 1 ? "green" : index % 4 === 2 ? "orange" : "purple"} className="whitespace-nowrap">
                                         {tag}
                                     </DemoTag>
                                 ))}
+                                {tagItems.length === 0 ? <span className="text-sm font-semibold text-slate-500">暂无标签</span> : null}
                             </div>
                         </DemoCard>
                     </div>
@@ -297,7 +540,159 @@ export function IntelligenceCenterPage() {
                     });
                 }}
             />
+            <AccessRuleDialog
+                open={bulkAccessOpen}
+                onOpenChange={setBulkAccessOpen}
+                targetType="intelligence"
+                targetId={selectedOfficialIds[0] ?? null}
+                targetIds={selectedOfficialIds}
+                targetName={`已选择 ${selectedOfficialIds.length} 条正式情报`}
+            />
+            <BulkMetadataDialog
+                open={bulkEditOpen}
+                count={selectedOfficialIds.length}
+                pending={bulkMutation.isPending}
+                onOpenChange={setBulkEditOpen}
+                onSubmit={handleBulkMetadata}
+            />
         </PageContainer>
+    );
+}
+
+function BulkActionBar({
+    mode,
+    selectedCount,
+    pending,
+    onSelectPage,
+    onClear,
+    onCandidateAction,
+    onOfficialAction,
+    onOpenBulkAccess,
+    onOpenBulkEdit,
+}: {
+    mode: "official" | "candidate";
+    selectedCount: number;
+    pending: boolean;
+    onSelectPage: () => void;
+    onClear: () => void;
+    onCandidateAction: (action: "promote" | "reject" | "ignore") => void;
+    onOfficialAction: (action: "add_to_pool" | "hide" | "set_high_importance") => void;
+    onOpenBulkAccess: () => void;
+    onOpenBulkEdit: () => void;
+}) {
+    return (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50/80 px-3 py-3">
+            <div className="flex flex-wrap items-center gap-2 text-sm font-bold text-slate-600">
+                <Button type="button" variant="outline" className="h-9 rounded-lg bg-white" onClick={onSelectPage}>
+                    选择本页
+                </Button>
+                <Button type="button" variant="ghost" className="h-9 rounded-lg text-slate-600" disabled={selectedCount === 0} onClick={onClear}>
+                    清空选择
+                </Button>
+                <span>已选择 {selectedCount} 条</span>
+            </div>
+            {mode === "candidate" ? (
+                <div className="insight-action-cluster">
+                    <Button type="button" className="h-9 rounded-lg" disabled={pending || selectedCount === 0} onClick={() => onCandidateAction("promote")}>
+                        {pending ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
+                        批量通过
+                    </Button>
+                    <Button type="button" variant="outline" className="h-9 rounded-lg bg-white" disabled={pending || selectedCount === 0} onClick={() => onCandidateAction("ignore")}>
+                        <EyeOff className="size-4" />
+                        批量忽略
+                    </Button>
+                    <Button type="button" variant="outline" className="h-9 rounded-lg bg-white text-red-600 hover:text-red-700" disabled={pending || selectedCount === 0} onClick={() => onCandidateAction("reject")}>
+                        <XCircle className="size-4" />
+                        批量拒绝
+                    </Button>
+                </div>
+            ) : (
+                <div className="insight-action-cluster">
+                    <Button type="button" className="h-9 rounded-lg" disabled={pending || selectedCount === 0} onClick={() => onOfficialAction("add_to_pool")}>
+                        {pending ? <Loader2 className="size-4 animate-spin" /> : <FileText className="size-4" />}
+                        加入素材池
+                    </Button>
+                    <Button type="button" variant="outline" className="h-9 rounded-lg bg-white" disabled={pending || selectedCount === 0} onClick={() => onOfficialAction("set_high_importance")}>
+                        <Star className="size-4" />
+                        标记重点
+                    </Button>
+                    <Button type="button" variant="outline" className="h-9 rounded-lg bg-white" disabled={pending || selectedCount === 0} onClick={onOpenBulkEdit}>
+                        <Tags className="size-4" />
+                        批量修正
+                    </Button>
+                    <Button type="button" variant="outline" className="h-9 rounded-lg bg-white" disabled={pending || selectedCount === 0} onClick={onOpenBulkAccess}>
+                        <ShieldCheck className="size-4" />
+                        批量授权
+                    </Button>
+                    <Button type="button" variant="outline" className="h-9 rounded-lg bg-white" disabled={pending || selectedCount === 0} onClick={() => onOfficialAction("hide")}>
+                        <EyeOff className="size-4" />
+                        批量隐藏
+                    </Button>
+                </div>
+            )}
+        </div>
+    );
+}
+
+function BulkMetadataDialog({
+    open,
+    count,
+    pending,
+    onOpenChange,
+    onSubmit,
+}: {
+    open: boolean;
+    count: number;
+    pending: boolean;
+    onOpenChange: (open: boolean) => void;
+    onSubmit: (payload: { tags?: string; sentiment?: string; importanceLevel?: string }) => void;
+}) {
+    const [tags, setTags] = useState("");
+    const [sentiment, setSentiment] = useState("");
+    const [importanceLevel, setImportanceLevel] = useState("");
+    const hasChange = Boolean(tags.trim() || sentiment || importanceLevel);
+    const submit = () => {
+        if (!hasChange) {
+            toast.error("请至少填写标签、情感或重要性中的一项");
+            return;
+        }
+        onSubmit({ tags, sentiment, importanceLevel });
+    };
+    return (
+        <Dialog open={open} onOpenChange={onOpenChange}>
+            <DialogContent className="sm:max-w-xl">
+                <DialogHeader>
+                    <DialogTitle>批量修正情报</DialogTitle>
+                    <DialogDescription>
+                        将对已选择的 {count} 条正式情报批量写入。留空的项目不会覆盖原值，标签支持逗号或换行分隔。
+                    </DialogDescription>
+                </DialogHeader>
+                <div className="grid gap-4">
+                    <TextAreaField label="标签" value={tags} onChange={setTags} rows={4} />
+                    <div className="grid gap-3 md:grid-cols-2">
+                        <InsightSelect label="情感" value={sentiment} options={bulkSentimentOptions} onChange={setSentiment} />
+                        <InsightSelect
+                            label="重要性"
+                            value={importanceLevel}
+                            options={[
+                                { value: "", label: "不调整" },
+                                { value: "high", label: "高" },
+                                { value: "medium", label: "中" },
+                                { value: "low", label: "低" },
+                            ]}
+                            onChange={setImportanceLevel}
+                        />
+                    </div>
+                </div>
+                <DialogFooter>
+                    <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>取消</Button>
+                    <Button type="button" disabled={pending || count === 0 || !hasChange} onClick={submit}>
+                        {pending ? <Loader2 className="size-4 animate-spin" /> : <Tags className="size-4" />}
+                        应用修正
+                    </Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
     );
 }
 
@@ -305,11 +700,15 @@ function OfficialFeed({
     rows,
     loading,
     pending,
+    selectedIds,
+    onToggleSelected,
     onAddReportMaterial,
 }: {
     rows: InsightIntelligenceListItem[];
     loading: boolean;
     pending: boolean;
+    selectedIds: number[];
+    onToggleSelected: (id: number) => void;
     onAddReportMaterial: (intelligenceId: number) => void;
 }) {
     return (
@@ -317,6 +716,9 @@ function OfficialFeed({
             {rows.map((row) => (
                 <article key={row.id} className="group px-5 py-4 transition hover:bg-blue-50/40">
                     <div className="flex flex-wrap items-start justify-between gap-3">
+                        <label className="mt-1 inline-flex size-6 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white">
+                            <input className="size-4 accent-blue-600" type="checkbox" checked={selectedIds.includes(row.id)} onChange={() => onToggleSelected(row.id)} />
+                        </label>
                         <div className="min-w-0 flex-1">
                             <a
                                 href={row.primary_source_url || `/insight/intelligence/${row.id}`}
@@ -330,6 +732,7 @@ function OfficialFeed({
                                 <span>{row.primary_source_title || sourceChannelText[row.primary_source_type ?? ""] || "来源未识别"}</span>
                                 <span>{formatInsightDate(row.publish_time, row.capture_time ?? row.create_time)}</span>
                                 <DemoTag tone="blue">{formatInsightType(row.intelligence_type)}</DemoTag>
+                                <DemoTag tone={sentimentTone[row.sentiment] ?? "slate"}>{sentimentText[row.sentiment] ?? row.sentiment}</DemoTag>
                                 <DemoTag tone={row.visibility_scope === "public" ? "green" : "slate"}>{visibilityText[row.visibility_scope] ?? row.visibility_scope}</DemoTag>
                             </div>
                         </div>
@@ -365,11 +768,15 @@ function CandidateFeed({
     rows,
     loading,
     pending,
+    selectedIds,
+    onToggleSelected,
     onReview,
 }: {
     rows: InsightIntelligenceCandidateListItem[];
     loading: boolean;
     pending: boolean;
+    selectedIds: number[];
+    onToggleSelected: (id: number) => void;
     onReview: (candidateId: number, action: "promote" | "reject" | "ignore") => void;
 }) {
     return (
@@ -377,6 +784,9 @@ function CandidateFeed({
             {rows.map((row) => (
                 <article key={row.id} className="group px-5 py-4 transition hover:bg-blue-50/40">
                     <div className="flex flex-wrap items-start justify-between gap-3">
+                        <label className="mt-1 inline-flex size-6 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white">
+                            <input className="size-4 accent-blue-600" type="checkbox" checked={selectedIds.includes(row.id)} onChange={() => onToggleSelected(row.id)} />
+                        </label>
                         <div className="min-w-0 flex-1">
                             {row.source_url ? (
                                 <a href={row.source_url} target="_blank" rel="noreferrer" className="line-clamp-2 text-lg font-black leading-7 text-slate-900 group-hover:text-blue-600">
@@ -421,8 +831,8 @@ function QualitySummary({ row }: { row: InsightIntelligenceCandidateListItem }) 
         <div className="mt-3 flex flex-wrap items-center gap-2 text-xs font-semibold">
             {qualityPercent !== null ? <DemoTag tone={qualityPercent >= 70 ? "green" : qualityPercent >= 45 ? "orange" : "red"}>质量 {qualityPercent}%</DemoTag> : null}
             {row.quality_auto_ignore ? <DemoTag tone="red">建议忽略</DemoTag> : null}
-            {issues.map((issue) => (
-                <DemoTag key={issue} tone="orange">{issue}</DemoTag>
+            {issues.map((issue, index) => (
+                <DemoTag key={`${issue}-${index}`} tone="orange">{issue}</DemoTag>
             ))}
         </div>
     );
@@ -452,7 +862,7 @@ function TagList({ tags, fallback }: { tags?: Array<{ name?: string } & Record<s
     const visibleTags = (tags ?? []).map((tag) => tag.name).filter(Boolean).slice(0, 3) as string[];
     return (
         <div className="flex flex-wrap items-start gap-2">
-            {visibleTags.map((tag) => <DemoTag key={tag} tone="cyan" className="whitespace-nowrap">{tag}</DemoTag>)}
+            {visibleTags.map((tag, index) => <DemoTag key={`${tag}-${index}`} tone="cyan" className="whitespace-nowrap">{tag}</DemoTag>)}
             {fallback ? <DemoTag tone="slate" className="whitespace-nowrap">{fallback}</DemoTag> : null}
         </div>
     );
@@ -470,6 +880,33 @@ function SourceLink({ url }: { url: string }) {
 function EmptyState({ text }: { text: string }) {
     return (
         <div className="px-4 py-12 text-center text-sm font-semibold text-slate-500">{text}</div>
+    );
+}
+
+function FilterInput({
+    label,
+    value,
+    onChange,
+    placeholder,
+    type = "text",
+}: {
+    label: string;
+    value: string;
+    onChange: (value: string) => void;
+    placeholder?: string;
+    type?: "text" | "date";
+}) {
+    return (
+        <label className="grid gap-2">
+            <span className="text-sm font-bold text-slate-700">{label}</span>
+            <Input
+                type={type}
+                className="h-11 rounded-xl border-slate-200 bg-white shadow-none"
+                value={value}
+                onChange={(event) => onChange(event.target.value)}
+                placeholder={placeholder}
+            />
+        </label>
     );
 }
 
@@ -611,6 +1048,20 @@ const visibilityText: Record<string, string> = {
     public: "公开",
 };
 
+const sentimentText: Record<string, string> = {
+    positive: "正向",
+    neutral: "中性",
+    negative: "负向",
+    mixed: "混合",
+};
+
+const sentimentTone: Record<string, TagTone> = {
+    positive: "green",
+    neutral: "slate",
+    negative: "red",
+    mixed: "purple",
+};
+
 const sourceChannelText: Record<string, string> = {
     firecrawl: "网页抓取",
     baidu_news: "百度资讯",
@@ -685,4 +1136,13 @@ function CandidateActionButtons({ rowStatus, pending, onReview }: { rowStatus: s
 
 function compactText(value: string) {
     return value.replace(/!\[[^\]]*\]\([^)]+\)/g, " ").replace(/\[([^\]]{1,80})\]\([^)]+\)/g, "$1").replace(/https?:\/\/\S+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function toggleId(ids: number[], id: number) {
+    return ids.includes(id) ? ids.filter((item) => item !== id) : [...ids, id];
+}
+
+function parseOptionalNumber(value: string) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }

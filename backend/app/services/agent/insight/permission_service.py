@@ -6,9 +6,11 @@ from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.models.agent.insight import InsightVisibilityRule
+from app.models.system.sys_company import SysCompany
+from app.models.system.sys_dept import SysDept
 from app.models.system.sys_role import SysUserRole
 from app.models.system.sys_user import SysUser
-from app.schemas.agent.insight.permission import InsightAccessRuleRead, InsightAccessRuleUpsert
+from app.schemas.agent.insight.permission import InsightAccessRuleBulkResponse, InsightAccessRuleBulkUpsert, InsightAccessRuleRead, InsightAccessRuleUpsert
 
 
 class InsightPermissionService:
@@ -93,6 +95,7 @@ class InsightPermissionService:
             )
         ).first()
         dept_id = self.parse_int(user.dept_id if user else None)
+        sys_company_id = await self._resolve_user_sys_company_id(db, user)
         permissions = self.editable_permissions if permission == "edit" else self.readable_permissions
 
         clauses = []
@@ -119,6 +122,13 @@ class InsightPermissionService:
                 and_(
                     InsightVisibilityRule.principal_type == "dept",
                     InsightVisibilityRule.principal_id == dept_id,
+                )
+            )
+        if sys_company_id is not None:
+            principal_conditions.append(
+                and_(
+                    InsightVisibilityRule.principal_type == "sys_company",
+                    InsightVisibilityRule.principal_id == sys_company_id,
                 )
             )
 
@@ -168,6 +178,7 @@ class InsightPermissionService:
             )
         ).first()
         dept_id = self.parse_int(user.dept_id if user else None)
+        sys_company_id = await self._resolve_user_sys_company_id(db, user)
         permissions = self.editable_permissions if permission == "edit" else self.readable_permissions
 
         principal_conditions = [
@@ -186,6 +197,13 @@ class InsightPermissionService:
                 and_(
                     InsightVisibilityRule.principal_type == "dept",
                     InsightVisibilityRule.principal_id == dept_id,
+                )
+            )
+        if sys_company_id is not None:
+            principal_conditions.append(
+                and_(
+                    InsightVisibilityRule.principal_type == "sys_company",
+                    InsightVisibilityRule.principal_id == sys_company_id,
                 )
             )
 
@@ -214,6 +232,42 @@ class InsightPermissionService:
             return int(str(value))
         except ValueError:
             return None
+
+    async def resolve_user_sys_company_id(self, db: AsyncSession, user_id: int | None) -> int | None:
+        if not user_id:
+            return None
+        user = (
+            await db.exec(
+                select(SysUser).where(
+                    SysUser.id == user_id,
+                    SysUser.is_deleted == 0,
+                )
+            )
+        ).first()
+        return await self._resolve_user_sys_company_id(db, user)
+
+    async def _resolve_user_sys_company_id(self, db: AsyncSession, user: SysUser | None) -> int | None:
+        if not user or not user.dept_id:
+            return None
+        dept = (
+            await db.exec(
+                select(SysDept).where(
+                    SysDept.sync_id == str(user.dept_id),
+                    SysDept.is_deleted == 0,
+                )
+            )
+        ).first()
+        if not dept or not dept.company_id:
+            return None
+        company = (
+            await db.exec(
+                select(SysCompany).where(
+                    SysCompany.sync_id == str(dept.company_id),
+                    SysCompany.is_deleted == 0,
+                )
+            )
+        ).first()
+        return company.id if company and company.id is not None else None
 
     async def grant_rule(
         self,
@@ -256,6 +310,57 @@ class InsightPermissionService:
         await db.commit()
         await db.refresh(row)
         return self._to_read(row)
+
+    async def grant_rules_bulk(
+        self,
+        db: AsyncSession,
+        *,
+        target_type: str,
+        payload: InsightAccessRuleBulkUpsert,
+        user_id: int | None,
+    ) -> InsightAccessRuleBulkResponse:
+        rows: list[InsightVisibilityRule] = []
+        target_ids = list(dict.fromkeys(payload.target_ids))
+        for target_id in target_ids:
+            row = (
+                await db.exec(
+                    select(InsightVisibilityRule).where(
+                        InsightVisibilityRule.target_type == target_type,
+                        InsightVisibilityRule.target_id == target_id,
+                        InsightVisibilityRule.principal_type == payload.principal_type,
+                        InsightVisibilityRule.principal_id == payload.principal_id,
+                        InsightVisibilityRule.permission == payload.permission,
+                        InsightVisibilityRule.is_deleted == 0,
+                    )
+                )
+            ).first()
+            if not row:
+                row = InsightVisibilityRule(
+                    target_type=target_type,
+                    target_id=target_id,
+                    principal_type=payload.principal_type,
+                    principal_id=payload.principal_id,
+                    permission=payload.permission,
+                    create_by=str(user_id) if user_id else None,
+                    update_by=str(user_id) if user_id else None,
+                )
+                db.add(row)
+            row.grant_type = payload.grant_type
+            row.effective_from = payload.effective_from
+            row.effective_to = payload.effective_to
+            row.status = "active"
+            row.update_by = str(user_id) if user_id else None
+            row.update_time = datetime.now()
+            rows.append(row)
+        await db.commit()
+        for row in rows:
+            await db.refresh(row)
+        return InsightAccessRuleBulkResponse(
+            target_type=target_type,
+            target_count=len(target_ids),
+            rule_count=len(rows),
+            rules=[self._to_read(row) for row in rows],
+        )
 
     async def list_rules(self, db: AsyncSession, *, target_type: str, target_id: int) -> list[InsightAccessRuleRead]:
         rows = list(

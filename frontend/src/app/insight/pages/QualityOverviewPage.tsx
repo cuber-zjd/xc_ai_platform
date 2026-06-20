@@ -82,7 +82,7 @@ export function QualityOverviewPage() {
 
                         <SectionCard
                             title="数据源质量排行"
-                            description="按失败任务数和任务总量排序，便于定位不稳定来源。"
+                            description="按失败任务数和任务总量排序，点击数据源可直接查看执行日志。"
                             action={<LinkButton to="/insight/data-sources">数据源配置</LinkButton>}
                         >
                             {(overview?.source_metrics ?? []).length > 0 ? <SourceQualityTable rows={overview?.source_metrics ?? []} /> : <EmptyPanel text="暂无数据源任务记录" />}
@@ -146,7 +146,7 @@ function MetricGrid({ metrics }: { metrics: InsightQualityMetric[] }) {
 function SourceQualityTable({ rows }: { rows: InsightQualitySourceMetric[] }) {
     return (
         <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
-            <table className="w-full min-w-[680px] text-left text-sm">
+            <table className="w-full min-w-[760px] text-left text-sm">
                 <thead className="bg-slate-50 text-xs font-black text-slate-500">
                     <tr>
                         <th className="px-4 py-3">数据源</th>
@@ -154,16 +154,34 @@ function SourceQualityTable({ rows }: { rows: InsightQualitySourceMetric[] }) {
                         <th className="px-4 py-3">成功</th>
                         <th className="px-4 py-3">失败</th>
                         <th className="px-4 py-3">成功率</th>
+                        <th className="px-4 py-3">操作</th>
                     </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                     {rows.map((row) => (
                         <tr key={`${row.data_source_id ?? "none"}-${row.data_source_name}`} className="hover:bg-blue-50/50">
-                            <td className="px-4 py-3 font-bold text-slate-800">{row.data_source_name}</td>
+                            <td className="px-4 py-3 font-bold text-slate-800">
+                                {row.data_source_id ? (
+                                    <Link className="text-blue-700 hover:text-blue-800 hover:underline" to={`/insight/data-sources?data_source_id=${row.data_source_id}`}>
+                                        {row.data_source_name}
+                                    </Link>
+                                ) : (
+                                    row.data_source_name
+                                )}
+                            </td>
                             <td className="px-4 py-3 text-slate-600">{row.total_tasks}</td>
                             <td className="px-4 py-3 text-emerald-600">{row.success_tasks}</td>
                             <td className="px-4 py-3 text-rose-600">{row.failed_tasks}</td>
                             <td className="px-4 py-3 font-black text-slate-800">{row.success_rate}%</td>
+                            <td className="px-4 py-3">
+                                {row.data_source_id ? (
+                                    <Link className="text-xs font-black text-blue-700 hover:text-blue-800 hover:underline" to={`/insight/data-sources?data_source_id=${row.data_source_id}`}>
+                                        查看日志
+                                    </Link>
+                                ) : (
+                                    <span className="text-xs font-semibold text-slate-400">无关联源</span>
+                                )}
+                            </td>
                         </tr>
                     ))}
                 </tbody>

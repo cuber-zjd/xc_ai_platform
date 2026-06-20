@@ -1,3 +1,5 @@
+import hashlib
+
 from fastapi import Depends, HTTPException, status, Header
 from fastapi.security import OAuth2PasswordBearer
 from jose import jwt, JWTError
@@ -7,6 +9,7 @@ from sqlmodel import select
 
 from app.core import security
 from app.core.config import settings
+from app.core.logger import logger
 from app.db.session import get_db
 from app.models.system.sys_user import SysUser
 
@@ -78,8 +81,20 @@ async def verify_external_ai_sign(
     ai_sign: str = Header(..., alias="ai-sign", description="外部调用的认证密钥")
 ) -> str:
     if ai_sign not in settings.EXTERNAL_API_KEYS:
+        logger.warning(
+            "外部接口 ai-sign 认证失败: "
+            f"received={_mask_external_key(ai_sign)}, configured_count={len(settings.EXTERNAL_API_KEYS)}, "
+            f"configured={[_mask_external_key(item) for item in settings.EXTERNAL_API_KEYS]}"
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing ai-sign header",
         )
     return ai_sign
+
+
+def _mask_external_key(value: str | None) -> str:
+    if not value:
+        return "<empty>"
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
+    return f"len={len(value)},sha256={digest},prefix={value[:6]}***"

@@ -2,6 +2,7 @@ import { BarChart3, Building2, Database, FileBarChart, FileText, Home, Settings 
 import { NavLink } from "react-router-dom";
 
 import { cn } from "@/lib/utils";
+import { useAuthStore } from "@/store/useAuthStore";
 
 import sidebarLandscape from "../assets/sidebar-landscape.png";
 
@@ -11,11 +12,14 @@ const insightNavItems = [
     { label: "企业档案", path: "/insight/companies", icon: Building2 },
     { label: "报告中心", path: "/insight/reports", icon: FileBarChart },
     { label: "数据源配置", path: "/insight/data-sources", icon: Database },
-    { label: "质量运营", path: "/insight/quality", icon: BarChart3 },
-    { label: "系统设置", path: "/insight/settings", icon: Settings },
+    { label: "质量运营", path: "/insight/quality", icon: BarChart3, adminOnly: true },
+    { label: "系统设置", path: "/insight/settings", icon: Settings, adminOnly: true },
 ];
 
 export function InsightSidebar() {
+    const isAdmin = useAuthStore((state) => state.user?.role === "admin");
+    const visibleItems = insightNavItems.filter((item) => !item.adminOnly || isAdmin);
+
     return (
         <aside className="relative hidden h-screen overflow-hidden border-r border-slate-200 bg-white text-slate-800 lg:flex lg:flex-col">
             <div className="pointer-events-none absolute inset-x-0 bottom-0 h-[46%]">
@@ -35,7 +39,7 @@ export function InsightSidebar() {
             </div>
 
             <nav className="relative z-10 mt-4 flex flex-1 flex-col gap-2 px-3">
-                {insightNavItems.map((item) => {
+                {visibleItems.map((item) => {
                     const Icon = item.icon;
                     return (
                         <NavLink
@@ -71,10 +75,13 @@ export function InsightSidebar() {
 }
 
 export function InsightMobileNav() {
+    const isAdmin = useAuthStore((state) => state.user?.role === "admin");
+    const visibleItems = insightNavItems.filter((item) => !item.adminOnly || isAdmin);
+
     return (
         <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-slate-200 bg-white/95 px-2 py-2 shadow-[0_-12px_32px_rgba(30,74,120,0.08)] backdrop-blur-xl lg:hidden">
-            <div className="mx-auto grid max-w-3xl grid-cols-7 gap-1">
-                {insightNavItems.map((item) => {
+            <div className="mx-auto flex max-w-3xl gap-1 overflow-x-auto">
+                {visibleItems.map((item) => {
                     const Icon = item.icon;
                     return (
                         <NavLink
@@ -83,7 +90,7 @@ export function InsightMobileNav() {
                             end={item.path === "/insight"}
                             className={({ isActive }) =>
                                 cn(
-                                    "flex h-12 min-w-0 flex-col items-center justify-center gap-1 rounded-xl px-1 text-[10px] font-black leading-none text-slate-500 transition-colors",
+                                    "flex h-12 min-w-16 shrink-0 flex-col items-center justify-center gap-1 rounded-xl px-1 text-[10px] font-black leading-none text-slate-500 transition-colors",
                                     "hover:bg-blue-50 hover:text-blue-700",
                                     isActive && "bg-blue-600 text-white shadow-[0_10px_24px_rgba(29,116,255,0.22)] hover:bg-blue-600 hover:text-white",
                                 )

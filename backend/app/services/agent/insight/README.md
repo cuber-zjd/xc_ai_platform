@@ -14,8 +14,8 @@
 - 配置项：`INSIGHT_FIRECRAWL_BASE_URL`、`INSIGHT_FIRECRAWL_API_KEY`、`INSIGHT_FIRECRAWL_TIMEOUT_SECONDS`。
 - 接口：`POST /api/v1/insight/crawler/manual-url`。
 - 行为：创建采集任务，调用 Firecrawl 抽取正文，写入 `insight_crawl_result` 和 `insight_intelligence_candidate`。
-- 搜索发现：`POST /api/v1/insight/crawler/search-discovery` 支持百度和 Bocha/博查 API，发现 URL 后复用 Firecrawl 抓正文。
-- 清洗入库：抓取结果会做 URL 归一、追踪参数清理、标题/摘要清洗、发布时间解析、去重判断和候选主题/类型/标签规则识别。
+- 搜索发现：`POST /api/v1/insight/crawler/search-discovery` 支持百度和 Bocha/博查 API；启用 `enable_llm_filter` 时会先调用平台 LLM 对搜索结果判分筛选。`crawl_top_n=0` 的轻量模式不抓正文，但会对搜索命中执行 AI 初筛，候选入库即带摘要、标签、情感、机会点、风险点、相关性分和置信度。
+- 清洗入库：抓取结果会做 URL 归一、追踪参数清理、标题/摘要清洗、发布时间解析、去重判断和候选主题/类型/标签识别；正文抓取模式继续复用 Firecrawl 和正文级 LLM 摘要。
 - 候选查询：`GET /api/v1/insight/intelligence/candidates` 返回候选情报分页列表，供情报中心和后续审核流程使用。
 - 候选审核：`POST /api/v1/insight/intelligence/candidates/{candidate_id}/promote`、`/reject`、`/ignore` 支持通过、驳回和忽略；通过后写入正式情报、来源证据和审核记录。
 - 正式情报：`GET /api/v1/insight/intelligence` 和 `GET /api/v1/insight/intelligence/{intelligence_id}` 提供正式情报分页列表、详情正文和来源证据读取。

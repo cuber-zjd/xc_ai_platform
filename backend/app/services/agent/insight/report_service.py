@@ -11,7 +11,7 @@ from uuid import uuid4
 from xml.etree import ElementTree as ET
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from sqlalchemy import func, or_
+from sqlalchemy import exists, func, or_
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -111,6 +111,84 @@ REPORT_TEMPLATES: list[InsightReportTemplateRead] = [
             InsightReportTemplateSection(section_key="next_week", heading="四、下周跟进建议", description="形成可执行的监测和业务跟进清单。"),
         ],
     ),
+    InsightReportTemplateRead(
+        template_code="competitor_dynamic_report",
+        template_name="竞对动态报告",
+        description="围绕竞对企业的新品、产能、渠道、专利、价格和风险动作形成可跟踪报告。",
+        report_type="竞对报告",
+        default_prompt="生成一份竞对动态报告，要求按竞对动作、业务影响、机会风险和后续监测重点组织，所有判断必须基于引用素材。",
+        sections=[
+            InsightReportTemplateSection(section_key="summary", heading="一、竞对动态摘要", description="概括本期高价值竞对信号和结论边界。"),
+            InsightReportTemplateSection(section_key="moves", heading="二、重点竞对动作", description="按企业或主题梳理新品、渠道、产能、技术、资本等动作。"),
+            InsightReportTemplateSection(section_key="impact", heading="三、对我方业务的影响", description="分析对研发、销售、客户维护和产品策略的影响。"),
+            InsightReportTemplateSection(section_key="watchlist", heading="四、后续监测清单", description="列出需要继续跟踪的企业、关键词、来源和验证事项。"),
+        ],
+    ),
+    InsightReportTemplateRead(
+        template_code="customer_new_product_opportunity",
+        template_name="客户新品机会报告",
+        description="聚焦客户新品、配方、渠道和消费趋势，辅助研发营销识别合作切入点。",
+        report_type="机会报告",
+        default_prompt="生成一份客户新品机会报告，把公开新品与渠道动态转化为产品方案、样品推荐和客户拜访建议。",
+        sections=[
+            InsightReportTemplateSection(section_key="signals", heading="一、新品与渠道信号", description="汇总客户和下游品牌的新品、渠道、传播和消费趋势。"),
+            InsightReportTemplateSection(section_key="needs", heading="二、潜在需求判断", description="结合素材判断甜味、功能、风味、成本、合规等潜在需求。"),
+            InsightReportTemplateSection(section_key="opportunities", heading="三、合作机会与方案建议", description="提出可跟进客户、产品方向和销售动作。"),
+            InsightReportTemplateSection(section_key="risks", heading="四、风险与待验证问题", description="说明需要业务或研发进一步验证的假设。"),
+        ],
+    ),
+    InsightReportTemplateRead(
+        template_code="rd_topic_trend_report",
+        template_name="研发课题趋势报告",
+        description="面向研发课题、技术路线、专利和配方趋势，沉淀可验证的研发方向。",
+        report_type="研发报告",
+        default_prompt="生成一份研发课题趋势报告，突出技术路线、专利信号、产品应用场景、机会风险和待验证实验方向。",
+        sections=[
+            InsightReportTemplateSection(section_key="topic_scope", heading="一、课题范围与证据口径", description="说明课题边界、素材来源和证据强弱。"),
+            InsightReportTemplateSection(section_key="trend", heading="二、技术与应用趋势", description="归纳技术、专利、配方、应用场景和客户需求变化。"),
+            InsightReportTemplateSection(section_key="rd_actions", heading="三、研发启发与验证建议", description="输出可落地的研发验证、样品开发或情报补采方向。"),
+            InsightReportTemplateSection(section_key="uncertainty", heading="四、不确定性与补充数据", description="列出证据缺口和需要补充的实验或市场数据。"),
+        ],
+    ),
+    InsightReportTemplateRead(
+        template_code="policy_regulation_brief",
+        template_name="政策/法规简报",
+        description="汇总政策、法规、标准、监管与政府项目动态，适合法务、质量和市场同步。",
+        report_type="政策简报",
+        default_prompt="生成一份政策/法规简报，要求区分正式政策、征求意见、行业标准和政府项目信息，并说明影响范围。",
+        sections=[
+            InsightReportTemplateSection(section_key="policy_summary", heading="一、政策法规摘要", description="概括本期政策、法规、标准和监管重点。"),
+            InsightReportTemplateSection(section_key="impact_scope", heading="二、影响范围分析", description="说明影响到的产品、客户、区域、合规或质量管理事项。"),
+            InsightReportTemplateSection(section_key="actions", heading="三、应对建议", description="形成业务、研发、质量和客户沟通建议。"),
+            InsightReportTemplateSection(section_key="monitoring", heading="四、后续关注", description="列出仍需跟踪的政策节点和信息来源。"),
+        ],
+    ),
+    InsightReportTemplateRead(
+        template_code="ecommerce_new_product_monitor",
+        template_name="电商新品监测报告",
+        description="跟踪电商平台新品、价格、卖点、配料和消费者反馈，服务市场与产品判断。",
+        report_type="电商监测",
+        default_prompt="生成一份电商新品监测报告，聚焦新品卖点、价格带、配料信号、消费者反馈和可借鉴机会。",
+        sections=[
+            InsightReportTemplateSection(section_key="new_products", heading="一、电商新品概览", description="按品牌或品类汇总新品、卖点、价格和渠道信息。"),
+            InsightReportTemplateSection(section_key="product_signals", heading="二、产品与配方信号", description="提炼甜味、功能、风味、健康化、成本和包装趋势。"),
+            InsightReportTemplateSection(section_key="opportunities", heading="三、市场机会与竞品启发", description="输出对研发、销售和客户方案的启发。"),
+            InsightReportTemplateSection(section_key="risks", heading="四、风险与持续监测", description="说明证据局限、疑似营销信息和后续监测关键词。"),
+        ],
+    ),
+    InsightReportTemplateRead(
+        template_code="deep_research_report",
+        template_name="深度研究报告",
+        description="针对开放式研究问题，基于库内情报形成证据矩阵、结论、机会风险和后续验证问题。",
+        report_type="深度研究",
+        default_prompt="生成一份深度研究报告，必须先给结论，再列证据矩阵、机会风险、反证和后续待验证问题，禁止脱离素材编造。",
+        sections=[
+            InsightReportTemplateSection(section_key="answer", heading="一、研究结论", description="直接回答研究问题并说明置信边界。"),
+            InsightReportTemplateSection(section_key="evidence_matrix", heading="二、证据矩阵", description="按证据主题列出情报、来源、日期和支撑关系。"),
+            InsightReportTemplateSection(section_key="opportunity_risk", heading="三、机会与风险", description="综合机会点、风险点和业务影响。"),
+            InsightReportTemplateSection(section_key="next_questions", heading="四、后续待验证问题", description="列出需要继续采集、访谈或内部验证的问题。"),
+        ],
+    ),
 ]
 
 for template in REPORT_TEMPLATES:
@@ -118,7 +196,7 @@ for template in REPORT_TEMPLATES:
     template.market_status = "listed"
     template.market_category = "系统内置"
     template.template_kind = "html"
-    template.export_formats = ["pdf"]
+    template.export_formats = ["html", "pdf", "docx"]
     template.visibility_scope = "public"
 
 
@@ -249,7 +327,7 @@ class InsightReportService:
             sections_json=[section.model_dump(mode="json") for section in sections],
             structure_json=parsed,
             template_kind="document",
-            export_formats=[],
+            export_formats=["html", "pdf", "docx"],
             source_file_name=file_name[:300],
             source_file_type=suffix,
             source_file_size=len(file_bytes),
@@ -427,6 +505,8 @@ class InsightReportService:
             filters.append(InsightReport.report_type == report_type)
         if status:
             filters.append(InsightReport.status == status)
+        if not is_admin:
+            filters.append(await self._report_company_isolation_filter(db, user_id=user_id, is_admin=is_admin))
         filters.append(
             await insight_permission_service.visibility_filter_for_user(
                 db,
@@ -459,7 +539,7 @@ class InsightReportService:
         user_id: int,
         is_admin: bool,
     ) -> InsightReportDetail:
-        report = await self._get_report(db, report_id, user_id=user_id, is_admin=is_admin, permission="edit")
+        report = await self._get_report(db, report_id, user_id=user_id, is_admin=is_admin, permission="view")
         materials = await self._list_materials(db, report_id)
         versions = await self._list_versions(db, report_id)
         charts = await self._build_report_charts(db, materials)
@@ -500,6 +580,7 @@ class InsightReportService:
             content_json, generation_mode = await self._generate_content(payload, material_payload, template)
             content_json["template_code"] = template.template_code
             content_json["template_name"] = template.template_name
+            content_json["generation_mode"] = generation_mode
             title = payload.title or content_json.get("title") or self._default_title(payload, material_payload)
             summary = self._short_text(content_json.get("executive_summary") or content_json.get("summary"), 1200)
             primary_company = self._primary_company(material_payload)
@@ -615,8 +696,8 @@ class InsightReportService:
         is_admin: bool,
     ) -> InsightReportExportRead:
         export_format = export_format.lower().strip()
-        if export_format not in {"html"}:
-            raise ValueError("当前阶段仅支持导出 HTML；PDF、DOCX、XLSX 套版导出将在后续阶段接入")
+        if export_format not in {"html", "pdf", "docx"}:
+            raise ValueError("当前阶段仅支持导出 HTML、PDF 和 DOCX；XLSX 套版导出将在后续阶段接入")
 
         report = await self._get_report(db, report_id, user_id=user_id, is_admin=is_admin, permission="view")
         export = InsightReportExport(
@@ -639,14 +720,19 @@ class InsightReportService:
             html = self._render_report_html(detail)
             export_dir = self.export_storage_root / str(report.id)
             export_dir.mkdir(parents=True, exist_ok=True)
-            file_name = self._export_file_name(report, export.id or 0)
+            file_name = self._export_file_name(report, export.id or 0, export_format)
             file_path = export_dir / file_name
-            file_path.write_text(html, encoding="utf-8")
+            if export_format == "pdf":
+                self._write_report_pdf(detail, file_path)
+            elif export_format == "docx":
+                self._write_report_docx(detail, file_path)
+            else:
+                file_path.write_text(html, encoding="utf-8")
             export.status = "success"
             export.file_name = file_name
             export.file_path = str(file_path)
             export.file_size = file_path.stat().st_size
-            export.content_type = "text/html; charset=utf-8"
+            export.content_type = self._export_content_type(export_format)
             export.finished_at = datetime.now()
             export.update_time = datetime.now()
             export.update_by = str(user_id)
@@ -732,6 +818,7 @@ class InsightReportService:
         if payload.period_end:
             filters.append(or_(InsightIntelligence.publish_time <= payload.period_end, InsightIntelligence.create_time <= payload.period_end))
         if not is_admin:
+            filters.append(await self._intelligence_company_isolation_filter(db, user_id=user_id, is_admin=is_admin))
             filters.append(
                 await insight_permission_service.visibility_filter_for_user(
                     db,
@@ -1281,11 +1368,8 @@ class InsightReportService:
         return f"{stem[:80]} 模板"
 
     def _default_export_formats(self, template_kind: str | None) -> list[str]:
-        if template_kind == "html":
-            return ["pdf"]
-        if template_kind == "excel":
-            return ["xlsx"]
-        return ["docx"]
+        _ = template_kind
+        return ["html", "pdf", "docx"]
 
     async def _get_custom_template_by_id(
         self,
@@ -1366,6 +1450,8 @@ class InsightReportService:
         permission: str = "view",
     ) -> InsightReport:
         filters = [InsightReport.id == report_id, InsightReport.is_deleted == 0]
+        if not is_admin:
+            filters.append(await self._report_company_isolation_filter(db, user_id=user_id, is_admin=is_admin))
         filters.append(
             await insight_permission_service.visibility_filter_for_user(
                 db,
@@ -1380,6 +1466,46 @@ class InsightReportService:
         if not report:
             raise ValueError("报告不存在或无权访问")
         return report
+
+    async def _report_company_isolation_filter(
+        self,
+        db: AsyncSession,
+        *,
+        user_id: int | None,
+        is_admin: bool,
+    ):
+        if is_admin:
+            return True
+        sys_company_id = await insight_permission_service.resolve_user_sys_company_id(db, user_id)
+        if sys_company_id is None:
+            return InsightReport.company_id.is_(None)
+        return or_(
+            InsightReport.company_id.is_(None),
+            exists()
+            .where(InsightCompany.id == InsightReport.company_id)
+            .where(InsightCompany.sys_company_id == sys_company_id)
+            .where(InsightCompany.is_deleted == 0),
+        )
+
+    async def _intelligence_company_isolation_filter(
+        self,
+        db: AsyncSession,
+        *,
+        user_id: int | None,
+        is_admin: bool,
+    ):
+        if is_admin:
+            return True
+        sys_company_id = await insight_permission_service.resolve_user_sys_company_id(db, user_id)
+        if sys_company_id is None:
+            return InsightIntelligence.company_id.is_(None)
+        return or_(
+            InsightIntelligence.company_id.is_(None),
+            exists()
+            .where(InsightCompany.id == InsightIntelligence.company_id)
+            .where(InsightCompany.sys_company_id == sys_company_id)
+            .where(InsightCompany.is_deleted == 0),
+        )
 
     async def _list_primary_sources(
         self,
@@ -1746,9 +1872,478 @@ class InsightReportService:
             finished_at=row.finished_at,
         )
 
-    def _export_file_name(self, report: InsightReport, export_id: int) -> str:
+    def _export_file_name(self, report: InsightReport, export_id: int, export_format: str = "html") -> str:
         title = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff_-]+", "_", report.title).strip("_")[:80] or "insight_report"
-        return f"{title}_v{report.version_no}_export_{export_id}.html"
+        suffix = export_format if export_format in {"html", "pdf", "docx"} else "html"
+        return f"{title}_v{report.version_no}_export_{export_id}.{suffix}"
+
+    def _export_content_type(self, export_format: str) -> str:
+        if export_format == "pdf":
+            return "application/pdf"
+        if export_format == "docx":
+            return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        return "text/html; charset=utf-8"
+
+    def _write_report_pdf(self, report: InsightReportDetail, file_path: Path) -> None:
+        try:
+            from reportlab.lib import colors
+            from reportlab.lib.enums import TA_LEFT
+            from reportlab.lib.pagesizes import A4
+            from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+            from reportlab.lib.units import mm
+            from reportlab.pdfbase import pdfmetrics
+            from reportlab.pdfbase.ttfonts import TTFont
+            from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+        except ImportError as exc:
+            raise RuntimeError("缺少 reportlab 依赖，无法生成 PDF") from exc
+
+        font_name = self._register_pdf_font(pdfmetrics, TTFont)
+        styles = getSampleStyleSheet()
+        base = ParagraphStyle(
+            "InsightBase",
+            parent=styles["Normal"],
+            fontName=font_name,
+            fontSize=10.5,
+            leading=18,
+            textColor=colors.HexColor("#344846"),
+            alignment=TA_LEFT,
+            wordWrap="CJK",
+            spaceAfter=8,
+        )
+        title_style = ParagraphStyle(
+            "InsightTitle",
+            parent=base,
+            fontSize=22,
+            leading=30,
+            textColor=colors.HexColor("#10201f"),
+            spaceAfter=12,
+        )
+        h2_style = ParagraphStyle(
+            "InsightHeading",
+            parent=base,
+            fontSize=15,
+            leading=22,
+            textColor=colors.HexColor("#0f3f3a"),
+            spaceBefore=14,
+            spaceAfter=8,
+        )
+        meta_style = ParagraphStyle(
+            "InsightMeta",
+            parent=base,
+            fontSize=9,
+            leading=14,
+            textColor=colors.HexColor("#667a77"),
+        )
+        small_style = ParagraphStyle(
+            "InsightSmall",
+            parent=base,
+            fontSize=9,
+            leading=14,
+            textColor=colors.HexColor("#506461"),
+        )
+        content = report.content_json or {}
+        chapters = content.get("chapters") if isinstance(content, dict) else []
+        if not isinstance(chapters, list):
+            chapters = []
+        materials = report.materials or []
+        material_map = {item.intelligence_id: item for item in materials}
+        story: list[Any] = [
+            Paragraph(self._pdf_escape(report.title), title_style),
+            Paragraph(
+                self._pdf_escape(
+                    f"报告类型：{report.report_type} · 版本：第 {report.version_no} 版 · "
+                    f"素材：{report.material_count} 条 · 导出时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                ),
+                meta_style,
+            ),
+            Spacer(1, 8),
+            self._pdf_info_box(
+                "摘要",
+                self._strip_inline_evidence_ids(str(content.get("executive_summary") or report.summary or "暂无摘要。")),
+                font_name,
+                base,
+                Table,
+                TableStyle,
+                colors,
+            ),
+        ]
+        for chapter in chapters:
+            if not isinstance(chapter, dict):
+                continue
+            story.append(Paragraph(self._pdf_escape(str(chapter.get("heading") or chapter.get("title") or "未命名章节")), h2_style))
+            for paragraph in self._chapter_paragraphs(chapter):
+                story.append(Paragraph(self._pdf_escape(self._strip_inline_evidence_ids(paragraph)), base))
+            story.extend(self._pdf_evidence_flowables(chapter.get("evidence_ids"), material_map, font_name, small_style, Table, TableStyle, colors))
+        story.extend([PageBreak(), Paragraph("参考素材", h2_style)])
+        if materials:
+            for index, item in enumerate(materials, start=1):
+                story.append(
+                    self._pdf_info_box(
+                        f"来源 {index}：{item.source_title or item.intelligence_title or f'素材 {item.intelligence_id}'}",
+                        "\n".join(
+                            value
+                            for value in [
+                                item.quote_text or item.intelligence_summary or "",
+                                f"原文：{item.source_url}" if item.source_url else "",
+                            ]
+                            if value
+                        ),
+                        font_name,
+                        small_style,
+                        Table,
+                        TableStyle,
+                        colors,
+                    )
+                )
+                story.append(Spacer(1, 6))
+        else:
+            story.append(Paragraph("暂无引用素材。", base))
+
+        doc = SimpleDocTemplate(
+            str(file_path),
+            pagesize=A4,
+            leftMargin=20 * mm,
+            rightMargin=20 * mm,
+            topMargin=18 * mm,
+            bottomMargin=18 * mm,
+            title=report.title,
+            author="研发营销市场洞察平台",
+        )
+        doc.build(story)
+
+    def _write_report_docx(self, report: InsightReportDetail, file_path: Path) -> None:
+        try:
+            from docx import Document
+            from docx.enum.text import WD_ALIGN_PARAGRAPH
+            from docx.oxml import OxmlElement
+            from docx.oxml.ns import qn
+            from docx.shared import Cm, Pt, RGBColor
+        except ImportError as exc:
+            raise RuntimeError("缺少 python-docx 依赖，无法生成 DOCX") from exc
+
+        doc = Document()
+        section = doc.sections[0]
+        section.top_margin = Cm(2.2)
+        section.bottom_margin = Cm(2.0)
+        section.left_margin = Cm(2.2)
+        section.right_margin = Cm(2.2)
+
+        font_name = "微软雅黑"
+        self._docx_set_style_font(doc.styles["Normal"], font_name, Pt(10.5), RGBColor(52, 72, 70), qn)
+        self._docx_set_style_font(doc.styles["Heading 1"], font_name, Pt(16), RGBColor(15, 63, 58), qn)
+        self._docx_set_style_font(doc.styles["Heading 2"], font_name, Pt(13), RGBColor(15, 63, 58), qn)
+
+        content = report.content_json or {}
+        chapters = content.get("chapters") if isinstance(content, dict) else []
+        if not isinstance(chapters, list):
+            chapters = []
+        materials = report.materials or []
+        material_map = {item.intelligence_id: item for item in materials}
+
+        title = doc.add_paragraph()
+        title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        title_run = title.add_run(report.title)
+        self._docx_set_run_font(title_run, font_name, Pt(20), RGBColor(16, 32, 31), qn, bold=True)
+        self._docx_set_paragraph_spacing(title, after=Pt(10))
+
+        meta = doc.add_paragraph()
+        meta.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        meta_text = (
+            f"报告类型：{report.report_type}  |  版本：第 {report.version_no} 版  |  "
+            f"素材：{report.material_count} 条  |  导出时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        meta_run = meta.add_run(meta_text)
+        self._docx_set_run_font(meta_run, font_name, Pt(9), RGBColor(102, 122, 119), qn)
+        self._docx_set_paragraph_spacing(meta, after=Pt(14))
+
+        self._docx_add_info_box(
+            doc,
+            "摘要",
+            self._strip_inline_evidence_ids(str(content.get("executive_summary") or report.summary or "暂无摘要。")),
+            font_name,
+            qn,
+            OxmlElement,
+            Pt,
+            RGBColor,
+        )
+
+        for chapter in chapters:
+            if not isinstance(chapter, dict):
+                continue
+            heading = str(chapter.get("heading") or chapter.get("title") or "未命名章节")
+            doc.add_heading(heading, level=1)
+            for paragraph_text in self._chapter_paragraphs(chapter):
+                self._docx_add_body_paragraph(
+                    doc,
+                    self._strip_inline_evidence_ids(paragraph_text),
+                    font_name,
+                    qn,
+                    Pt,
+                    RGBColor,
+                )
+            self._docx_add_evidence_boxes(
+                doc,
+                chapter.get("evidence_ids"),
+                material_map,
+                font_name,
+                qn,
+                OxmlElement,
+                Pt,
+                RGBColor,
+            )
+
+        doc.add_page_break()
+        doc.add_heading("参考素材", level=1)
+        if materials:
+            for index, item in enumerate(materials, start=1):
+                source_title = item.source_title or item.intelligence_title or f"素材 {item.intelligence_id}"
+                body = "\n".join(
+                    value
+                    for value in [
+                        item.quote_text or item.intelligence_summary or "",
+                        f"原文：{item.source_url}" if item.source_url else "",
+                    ]
+                    if value
+                )
+                self._docx_add_info_box(
+                    doc,
+                    f"来源 {index}：{source_title}",
+                    body,
+                    font_name,
+                    qn,
+                    OxmlElement,
+                    Pt,
+                    RGBColor,
+                    fill="F7FBFA",
+                )
+        else:
+            self._docx_add_body_paragraph(doc, "暂无引用素材。", font_name, qn, Pt, RGBColor)
+
+        doc.core_properties.title = report.title
+        doc.core_properties.author = "研发营销市场洞察平台"
+        doc.save(str(file_path))
+
+    def _docx_set_style_font(self, style: Any, font_name: str, size: Any, color: Any, qn: Any) -> None:
+        style.font.name = font_name
+        style.font.size = size
+        style.font.color.rgb = color
+        style._element.get_or_add_rPr().get_or_add_rFonts().set(qn("w:eastAsia"), font_name)
+
+    def _docx_set_run_font(
+        self,
+        run: Any,
+        font_name: str,
+        size: Any,
+        color: Any,
+        qn: Any,
+        *,
+        bold: bool = False,
+    ) -> None:
+        run.font.name = font_name
+        run.font.size = size
+        run.font.color.rgb = color
+        run.bold = bold
+        run._element.get_or_add_rPr().get_or_add_rFonts().set(qn("w:eastAsia"), font_name)
+
+    def _docx_set_paragraph_spacing(self, paragraph: Any, *, before: Any | None = None, after: Any | None = None) -> None:
+        if before is not None:
+            paragraph.paragraph_format.space_before = before
+        if after is not None:
+            paragraph.paragraph_format.space_after = after
+        paragraph.paragraph_format.line_spacing = 1.35
+
+    def _docx_add_body_paragraph(self, doc: Any, text: str, font_name: str, qn: Any, pt_cls: Any, rgb_cls: Any) -> None:
+        paragraph = doc.add_paragraph()
+        run = paragraph.add_run(text)
+        self._docx_set_run_font(run, font_name, pt_cls(10.5), rgb_cls(52, 72, 70), qn)
+        self._docx_set_paragraph_spacing(paragraph, after=pt_cls(6))
+
+    def _docx_add_info_box(
+        self,
+        doc: Any,
+        title: str,
+        body: str,
+        font_name: str,
+        qn: Any,
+        oxml_element_cls: Any,
+        pt_cls: Any,
+        rgb_cls: Any,
+        *,
+        fill: str = "F3FBFA",
+    ) -> None:
+        table = doc.add_table(rows=1, cols=1)
+        table.autofit = True
+        cell = table.cell(0, 0)
+        self._docx_shade_cell(cell, fill, qn, oxml_element_cls)
+        title_paragraph = cell.paragraphs[0]
+        title_run = title_paragraph.add_run(title)
+        self._docx_set_run_font(title_run, font_name, pt_cls(10.5), rgb_cls(15, 118, 110), qn, bold=True)
+        self._docx_set_paragraph_spacing(title_paragraph, after=pt_cls(4))
+        for line in self._split_pdf_lines(body):
+            paragraph = cell.add_paragraph()
+            run = paragraph.add_run(line)
+            self._docx_set_run_font(run, font_name, pt_cls(9.5), rgb_cls(80, 100, 97), qn)
+            self._docx_set_paragraph_spacing(paragraph, after=pt_cls(3))
+        spacer = doc.add_paragraph()
+        self._docx_set_paragraph_spacing(spacer, after=pt_cls(6))
+
+    def _docx_shade_cell(self, cell: Any, fill: str, qn: Any, oxml_element_cls: Any) -> None:
+        tc_pr = cell._tc.get_or_add_tcPr()
+        shading = oxml_element_cls("w:shd")
+        shading.set(qn("w:fill"), fill)
+        tc_pr.append(shading)
+
+    def _docx_add_evidence_boxes(
+        self,
+        doc: Any,
+        evidence_ids: Any,
+        material_map: dict[int, InsightReportMaterialRead],
+        font_name: str,
+        qn: Any,
+        oxml_element_cls: Any,
+        pt_cls: Any,
+        rgb_cls: Any,
+    ) -> None:
+        if not isinstance(evidence_ids, list):
+            return
+        seen: set[int] = set()
+        for raw_id in evidence_ids[:8]:
+            try:
+                intelligence_id = int(raw_id)
+            except (TypeError, ValueError):
+                continue
+            if intelligence_id in seen:
+                continue
+            seen.add(intelligence_id)
+            item = material_map.get(intelligence_id)
+            if not item:
+                continue
+            self._docx_add_info_box(
+                doc,
+                f"证据：{item.source_title or item.intelligence_title or f'素材 {intelligence_id}'}",
+                item.quote_text or item.intelligence_summary or "",
+                font_name,
+                qn,
+                oxml_element_cls,
+                pt_cls,
+                rgb_cls,
+                fill="EEF7FF",
+            )
+
+    def _register_pdf_font(self, pdfmetrics: Any, ttfont_cls: Any) -> str:
+        font_candidates = [
+            Path("C:/Windows/Fonts/NotoSansSC-VF.ttf"),
+            Path("C:/Windows/Fonts/msyh.ttc"),
+            Path("C:/Windows/Fonts/simhei.ttf"),
+            Path("C:/Windows/Fonts/simsun.ttc"),
+        ]
+        for font_path in font_candidates:
+            if font_path.exists():
+                font_name = "InsightCJK"
+                try:
+                    pdfmetrics.getFont(font_name)
+                except KeyError:
+                    pdfmetrics.registerFont(ttfont_cls(font_name, str(font_path)))
+                return font_name
+        return "Helvetica"
+
+    def _pdf_info_box(
+        self,
+        title: str,
+        body: str,
+        font_name: str,
+        paragraph_style: Any,
+        table_cls: Any,
+        table_style_cls: Any,
+        colors_module: Any,
+    ) -> Any:
+        from reportlab.lib.styles import ParagraphStyle
+        from reportlab.lib.units import mm
+        from reportlab.platypus import Paragraph
+
+        heading_style = ParagraphStyle(
+            f"InsightBoxHeading{abs(hash(title))}",
+            parent=paragraph_style,
+            fontName=font_name,
+            fontSize=10,
+            leading=15,
+            textColor=colors_module.HexColor("#0f766e"),
+            spaceAfter=4,
+        )
+        content = [
+            Paragraph(self._pdf_escape(title), heading_style),
+            *[Paragraph(self._pdf_escape(part), paragraph_style) for part in self._split_pdf_lines(body)],
+        ]
+        table = table_cls([[content]], colWidths=[170 * mm])
+        table.setStyle(
+            table_style_cls(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), colors_module.HexColor("#f5fbfa")),
+                    ("BOX", (0, 0), (-1, -1), 0.5, colors_module.HexColor("#dbe7e5")),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+                    ("TOPPADDING", (0, 0), (-1, -1), 8),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+                ]
+            )
+        )
+        return table
+
+    def _pdf_evidence_flowables(
+        self,
+        evidence_ids: Any,
+        material_map: dict[int, InsightReportMaterialRead],
+        font_name: str,
+        paragraph_style: Any,
+        table_cls: Any,
+        table_style_cls: Any,
+        colors_module: Any,
+    ) -> list[Any]:
+        if not isinstance(evidence_ids, list):
+            return []
+        flowables: list[Any] = []
+        seen: set[int] = set()
+        for raw_id in evidence_ids[:8]:
+            try:
+                intelligence_id = int(raw_id)
+            except (TypeError, ValueError):
+                continue
+            if intelligence_id in seen:
+                continue
+            seen.add(intelligence_id)
+            item = material_map.get(intelligence_id)
+            if not item:
+                continue
+            from reportlab.platypus import Spacer
+
+            flowables.append(
+                self._pdf_info_box(
+                    f"证据：{item.source_title or item.intelligence_title or f'素材 {intelligence_id}'}",
+                    item.quote_text or item.intelligence_summary or "",
+                    font_name,
+                    paragraph_style,
+                    table_cls,
+                    table_style_cls,
+                    colors_module,
+                )
+            )
+            flowables.append(Spacer(1, 5))
+        return flowables
+
+    def _chapter_paragraphs(self, chapter: dict[str, Any]) -> list[str]:
+        body = chapter.get("body") or chapter.get("content") or chapter.get("paragraphs") or ""
+        if isinstance(body, list):
+            paragraphs = [str(item).strip() for item in body if str(item).strip()]
+        else:
+            paragraphs = [part.strip() for part in str(body).split("\n") if part.strip()]
+        return paragraphs or ["暂无正文。"]
+
+    def _split_pdf_lines(self, text: str) -> list[str]:
+        parts = [part.strip() for part in str(text or "").split("\n") if part.strip()]
+        return parts or ["暂无内容。"]
+
+    def _pdf_escape(self, text: str) -> str:
+        return escape(str(text or "")).replace("\n", "<br/>")
 
     def _render_report_html(self, report: InsightReportDetail) -> str:
         content = report.content_json or {}

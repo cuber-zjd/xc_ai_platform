@@ -56,6 +56,20 @@ class DslValidator:
             if rule.field not in dataset_fields:
                 errors.append(f"条件格式字段 {rule.field} 不存在于数据集")
 
+        if dsl.writeBack.enabled:
+            if not dsl.writeBack.tableName:
+                errors.append("填报写回已启用，但未配置 tableName")
+            if not dsl.writeBack.columns:
+                errors.append("填报写回已启用，但未配置写回字段")
+            if dsl.writeBack.columns and not any(column.isKey for column in dsl.writeBack.columns):
+                errors.append("填报写回至少需要一个主键字段")
+            for widget in dsl.writeBack.widgets:
+                if widget.field not in dataset_fields:
+                    errors.append(f"填报控件字段 {widget.field} 不存在于数据集 {dataset.name}")
+            for column in dsl.writeBack.columns:
+                if column.field and column.field not in dataset_fields:
+                    errors.append(f"填报写回字段 {column.field} 不存在于数据集 {dataset.name}")
+
         unsafe_sql = re.search(r"\b(drop|truncate|delete|update|insert|alter|create)\b", dataset.sql, re.IGNORECASE)
         if unsafe_sql:
             errors.append("数据集 SQL 只允许查询语句，不允许 DDL/DML")

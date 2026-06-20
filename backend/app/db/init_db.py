@@ -25,6 +25,7 @@ async def init_db():
         await _ensure_insight_access_control_columns(conn)
         await _ensure_insight_report_template_columns(conn)
         await _ensure_insight_crawler_channel_values(conn)
+        await _ensure_weaver_ai_workflow_rule_indexes(conn)
     
     # 初始化种子数据
     await _seed_contract_rules()
@@ -36,8 +37,19 @@ async def init_db():
 
 def _register_models():
     """导入新分层模型，确保 SQLModel.metadata 能发现表。"""
+    import_module("app.models.agent.weaver_ai_assistant")
     import_module("app.models.agent.fr_report")
     import_module("app.models.agent.insight")
+
+
+async def _ensure_weaver_ai_workflow_rule_indexes(conn):
+    """补齐泛微流程 AI 规则查询索引。"""
+    await conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_weaver_ai_workflow_rule_lookup "
+            "ON weaver_ai_workflow_rule (env, workflow_id, enabled, is_deleted, priority)"
+        )
+    )
 
 
 async def _ensure_fr_ai_report_task_columns(conn):

@@ -66,10 +66,11 @@
 
 ## 9. FineReport AI 报表安全规则
 
-- 用户上传 Excel 和生成的 CPT/DSL/SQL/日志统一写入 MinIO 的 `webroot/APP/reportlets/AI生成报表/` 专用预览目录。
+- 用户上传 Excel 可继续使用受控临时目录；AI 生成或修改后的 CPT/DSL/版本文件可写入用户指定的 `webroot/APP/reportlets/` 子路径，但必须走版本控制服务，禁止无版本覆盖。
 - AI 不允许直接生成 CPT/XML，只允许生成 ReportDSL；CPT 必须由确定性程序生成。
-- `publish` 不得绕过审核覆盖正式 reportlets，第一版仅标记发布状态并保留专用预览目录路径。
-- 第三步只做 `reportlets/AI生成报表/` 专用目录预览，不复制或覆盖其他正式报表目录；帆软 MinIO `FR_AI_MINIO_SECRET_KEY` 必须来自本地 `.env`、服务器配置或专用 Access Key，不得写入仓库文档。
+- `publish` 或确认写入不得绕过审核和版本控制覆盖目标 reportlets；写入前必须比较 MinIO 当前对象 hash/lastModified，检测到 FineReport 设计器外部修改时默认阻止，并要求用户选择同步外部修改或归档后覆盖。
+- 第三步可写入用户指定 reportlets 路径并覆盖目标 CPT；写入前必须检查 hash/lastModified，写入时必须归档当前/目标文件版本。帆软 MinIO `FR_AI_MINIO_SECRET_KEY` 必须来自本地 `.env`、服务器配置或专用 Access Key，不得写入仓库文档。
+- 版本写入、同步外部修改、回档和回收必须受 `FR_AI_REPORT_FILE_PREFIXES` 允许范围约束，并使用同一路径锁串行处理；回收站只做移动归档，不做永久删除。
 - 帆软报表文件读取和写回必须使用专用 `FR_AI_MINIO_*`，不得复用平台通用 `MINIO_*`，避免把平台文件权限扩大到帆软 bucket 或反向污染。
 - 读取现有 FineReport 报表文件时只能访问 `FR_AI_REPORT_FILE_PREFIXES` 配置的允许目录，不得开放任意 bucket 路径浏览；结构读取接口只能返回后端解析出的元信息、结构摘要、数据集、参数、截断 SQL 和可渲染的结构化报表文档，不返回完整 CPT/XML 原文，不提供默认下载能力。
 - 预览校验调用外部 FineReport URL 时不得携带真实密钥，不得在日志中输出敏感参数值。
@@ -102,5 +103,9 @@
 
 - 泛微 ecode 接入 AI 平台时不得在前端保存模型 Key，只允许携带外部接口签名 `ai-sign`。
 - `/api/v1/weaver/ai-assistant/*` 接口必须校验 `ai-sign`，签名值来自 `EXTERNAL_API_KEYS`，生产环境需要替换默认示例值。
+- 泛微 MySQL8 连接信息通过 `WEAVER_DB_CONFIGS` 按环境 key 配置，生产环境必须使用只读账号，不得使用泛微业务库高权限账号。
+- ecode 传入的 `env` 只能作为环境选择 key 使用，后端必须在 `WEAVER_DB_CONFIGS` 白名单中查找，不得把它拼接为任意数据库地址。
 - ecode 只执行平台返回的结构化白名单动作，不允许执行 AI 生成的任意 JavaScript。
 - 第一版不允许 AI 自动保存、提交、审批、删除流程，写入字段前需要用户在嵌入助手页点击确认。
+- AI 智审第一版只允许生成预审建议和风险提示；即使规则中存在 `autoReviewMode=auto`，也只能输出 `canAutoApprove` 审计标记，不得绕过泛微权限直接审批。
+- 泛微 Java Action 调用智审接口时必须使用 `ai-sign`，默认不得因平台不可用阻断生产流程；如启用高风险阻断，需要先在测试流程验证并保留审计记录。

@@ -8,6 +8,8 @@ from app.api.deps import get_current_user, get_db
 from app.models.system.sys_user import SysUser
 from app.schemas.agent.fr_report.ai_report import (
     CptPublishResponse,
+    FrAiReportAgentChatResponse,
+    FrAiReportAgentContext,
     GenerateCptStepResponse,
     FrAiReportFeedbackCreate,
     FrAiReportFeedbackRead,
@@ -27,6 +29,15 @@ from app.schemas.agent.fr_report.report_ai_operation import (
     FrReportAiOperationRequest,
     FrReportAiSnapshotCptRequest,
     FrReportAiSnapshotCptResponse,
+    FrReportExternalSyncRequest,
+    FrReportExternalSyncResponse,
+    FrReportRecycleRequest,
+    FrReportRecycleResponse,
+    FrReportVersionListResponse,
+    FrReportVersionRollbackRequest,
+    FrReportVersionRollbackResponse,
+    FrReportStructureRollbackRequest,
+    FrReportStructureRollbackResponse,
 )
 from app.schemas.agent.fr_report.report_file import (
     FrReportDatabaseConnectionCreate,
@@ -44,6 +55,7 @@ from app.schemas.result import Result
 from app.services.agent.fr_report.report_file_service import fr_report_file_service
 from app.services.agent.fr_report.ai_operation_service import fr_report_ai_operation_service
 from app.services.agent.fr_report.report_generation_service import fr_ai_report_service
+from app.services.agent.fr_report.version_control_service import fr_report_version_control_service
 
 router = APIRouter()
 
@@ -198,6 +210,8 @@ async def create_report_ai_new_report_plan(
     current_user: SysUser = Depends(get_current_user),
     requirement: str = Form(...),
     template_object_path: str | None = Form(default=None),
+    report_name: str | None = Form(default=None),
+    target_folder: str | None = Form(default=None),
     files: list[UploadFile] | None = File(default=None),
 ) -> Result[FrReportAiNewReportPlanResponse]:
     if not requirement.strip():
@@ -208,6 +222,8 @@ async def create_report_ai_new_report_plan(
             user_id=current_user.id,
             requirement=requirement,
             template_object_path=template_object_path,
+            report_name=report_name,
+            target_folder=target_folder,
             files=files or [],
         )
     except PermissionError as exc:
@@ -241,6 +257,100 @@ async def apply_report_ai_operation_draft(
     return Result.success(result)
 
 
+@router.get("/versions", response_model=Result[FrReportVersionListResponse])
+async def list_report_versions(
+    *,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+    object_path: str,
+) -> Result[FrReportVersionListResponse]:
+    try:
+        result = await fr_report_version_control_service.list_versions(db, current_user.id, object_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Result.success(result)
+
+
+@router.post("/versions/rollback", response_model=Result[FrReportVersionRollbackResponse])
+async def rollback_report_file_version(
+    *,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+    payload: FrReportVersionRollbackRequest,
+) -> Result[FrReportVersionRollbackResponse]:
+    try:
+        result = await fr_report_version_control_service.rollback_file_version(
+            db=db,
+            user_id=current_user.id,
+            file_version_id=payload.fileVersionId,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return Result.success(result)
+
+
+@router.post("/versions/structure/rollback", response_model=Result[FrReportStructureRollbackResponse])
+async def rollback_report_structure_version(
+    *,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+    payload: FrReportStructureRollbackRequest,
+) -> Result[FrReportStructureRollbackResponse]:
+    try:
+        result = await fr_report_version_control_service.rollback_structure_version(
+            db=db,
+            user_id=current_user.id,
+            structure_version_id=payload.structureVersionId,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Result.success(result)
+
+
+@router.post("/versions/external/sync", response_model=Result[FrReportExternalSyncResponse])
+async def sync_report_external_file_version(
+    *,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+    payload: FrReportExternalSyncRequest,
+) -> Result[FrReportExternalSyncResponse]:
+    try:
+        result = await fr_report_version_control_service.sync_external_file_version(
+            db=db,
+            user_id=current_user.id,
+            object_path=payload.objectPath,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Result.success(result)
+
+
+@router.post("/versions/recycle", response_model=Result[FrReportRecycleResponse])
+async def recycle_report_file(
+    *,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+    payload: FrReportRecycleRequest,
+) -> Result[FrReportRecycleResponse]:
+    try:
+        result = await fr_report_version_control_service.recycle_report_file(
+            db=db,
+            user_id=current_user.id,
+            object_path=payload.objectPath,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return Result.success(result)
+
+
 @router.post("/requirements/review", response_model=Result[FrAiReportRequirementReviewResponse])
 async def review_report_requirement(
     *,
@@ -262,6 +372,32 @@ async def review_report_requirement(
         table_schema=table_schema,
         source_table_name=source_table_name,
     )
+    return Result.success(result)
+
+
+@router.post("/agent/chat", response_model=Result[FrAiReportAgentChatResponse])
+async def chat_with_report_agent(
+    *,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+    message: str = Form(...),
+    action: str = Form(default="chat"),
+    context_json: str | None = Form(default=None),
+    file: UploadFile | None = File(default=None),
+) -> Result[FrAiReportAgentChatResponse]:
+    context_payload = _parse_json_object(context_json, "context_json") if context_json else {}
+    try:
+        context = FrAiReportAgentContext.model_validate(context_payload)
+        result = await fr_ai_report_service.agent_chat(
+            db,
+            user_id=current_user.id,
+            message=message,
+            action=action,
+            context=context,
+            file=file,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return Result.success(result)
 
 
@@ -297,10 +433,14 @@ async def generate_sql_step(
     source_table_name: str | None = Form(default=None),
     conversation_id: str | None = Form(default=None),
     table_schema_json: str | None = Form(default=None),
+    ddl_dialect: str | None = Form(default=None),
+    id_auto_increment: bool = Form(default=True),
+    table_name_overrides_json: str | None = Form(default=None),
     file: UploadFile | None = File(default=None),
 ) -> Result[GenerateSqlStepResponse]:
     _ = current_user
     table_schema = _parse_table_schema(table_schema_json)
+    table_name_overrides = _parse_json_object(table_name_overrides_json, "table_name_overrides_json")
     if not requirement and not file and not source_table_name:
         raise HTTPException(status_code=400, detail="请提供业务 Excel 文件、数据表名或自然语言需求")
     result = await fr_ai_report_service.generate_sql_step(
@@ -312,6 +452,9 @@ async def generate_sql_step(
         source_table_name,
         conversation_id,
         str(current_user.id) if current_user.id is not None else None,
+        ddl_dialect=ddl_dialect,
+        id_auto_increment=id_auto_increment,
+        table_name_overrides=table_name_overrides,
     )
     return Result.success(result)
 
@@ -338,10 +481,21 @@ async def generate_cpt_step(
     db: AsyncSession = Depends(get_db),
     current_user: SysUser = Depends(get_current_user),
     task_id: str = Form(...),
+    report_name: str | None = Form(default=None),
+    target_folder: str | None = Form(default=None),
+    target_object_path: str | None = Form(default=None),
+    conflict_strategy: str = Form(default="abort"),
 ) -> Result[GenerateCptStepResponse]:
-    _ = current_user
     try:
-        result = await fr_ai_report_service.generate_cpt_step(db, task_id)
+        result = await fr_ai_report_service.generate_cpt_step(
+            db,
+            task_id,
+            user_id=current_user.id,
+            report_name=report_name,
+            target_folder=target_folder,
+            target_object_path=target_object_path,
+            conflict_strategy=conflict_strategy,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return Result.success(result)
@@ -354,6 +508,9 @@ async def generate_report(
     current_user: SysUser = Depends(get_current_user),
     requirement: str | None = Form(default=None),
     report_name: str | None = Form(default=None),
+    target_folder: str | None = Form(default=None),
+    target_object_path: str | None = Form(default=None),
+    conflict_strategy: str = Form(default="abort"),
     source_table_name: str | None = Form(default=None),
     conversation_id: str | None = Form(default=None),
     table_schema_json: str | None = Form(default=None),
@@ -369,9 +526,13 @@ async def generate_report(
         file,
         table_schema,
         report_name,
+        target_folder,
+        target_object_path,
+        conflict_strategy,
         source_table_name,
         conversation_id,
         str(current_user.id) if current_user.id is not None else None,
+        current_user.id,
     )
     return Result.success(result)
 
@@ -464,13 +625,17 @@ async def publish_report_task(
     )
 
 
-def _parse_table_schema(table_schema_json: str | None) -> dict[str, Any] | None:
-    if not table_schema_json:
+def _parse_json_object(value_json: str | None, field_name: str) -> dict[str, Any] | None:
+    if not value_json:
         return None
     try:
-        value = json.loads(table_schema_json)
+        value = json.loads(value_json)
     except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=400, detail="table_schema_json 不是合法 JSON") from exc
+        raise HTTPException(status_code=400, detail=f"{field_name} 不是合法 JSON") from exc
     if not isinstance(value, dict):
-        raise HTTPException(status_code=400, detail="table_schema_json 必须是 JSON 对象")
+        raise HTTPException(status_code=400, detail=f"{field_name} 必须是 JSON 对象")
     return value
+
+
+def _parse_table_schema(table_schema_json: str | None) -> dict[str, Any] | None:
+    return _parse_json_object(table_schema_json, "table_schema_json")

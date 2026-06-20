@@ -15,6 +15,7 @@ from app.models.agent.insight import (
     InsightIntelligenceCandidate,
     InsightIntelligenceSource,
 )
+from app.models.system.sys_company import SysCompany
 from app.schemas.agent.insight.company import (
     InsightCompanyCreate,
     InsightCompanyDataSourceSummary,
@@ -34,6 +35,8 @@ from app.services.agent.insight.permission_service import insight_permission_ser
 
 COMPANY_IMPORT_HEADER_ALIASES = {
     "company_code": {"企业编码", "公司编码", "客户编码", "编码", "company_code", "code"},
+    "sys_company_id": {"所属公司ID", "系统公司ID", "sys_company_id"},
+    "sys_company_name": {"所属公司", "所属公司名称", "归属公司", "sys_company_name"},
     "name": {"企业名称", "公司名称", "客户名称", "名称", "企业", "公司", "客户", "name"},
     "short_name": {"简称", "企业简称", "公司简称", "客户简称", "short_name"},
     "industry": {"行业", "所属行业", "行业分类", "industry"},
@@ -44,7 +47,7 @@ COMPANY_IMPORT_HEADER_ALIASES = {
     "description": {"描述", "说明", "企业描述", "备注", "description"},
 }
 
-COMPANY_IMPORT_TEMPLATE_COLUMNS = "企业名称、简称、行业、企业类型、区域、官网、监控级别、描述"
+COMPANY_IMPORT_TEMPLATE_COLUMNS = "企业名称、简称、所属公司ID、所属公司、行业、企业类型、区域、官网、监控级别、描述"
 COMPANY_IMPORT_MAX_ROWS = 1000
 COMPANY_IMPORT_MAX_BYTES = 5 * 1024 * 1024
 
@@ -57,6 +60,7 @@ class InsightCompanyService:
         page: int,
         size: int,
         keyword: str | None,
+        sys_company_id: int | None,
         industry: str | None,
         monitor_level: str | None,
         status: str | None,
@@ -64,7 +68,7 @@ class InsightCompanyService:
         is_admin: bool,
     ) -> Page[InsightCompanyListItem]:
         page = max(page, 1)
-        size = min(max(size, 1), 100)
+        size = min(max(size, 1), 500)
         filters = [InsightCompany.is_deleted == 0]
         if keyword:
             like_keyword = f"%{keyword.strip()}%"
@@ -77,6 +81,8 @@ class InsightCompanyService:
             )
         if industry:
             filters.append(InsightCompany.industry == industry)
+        if sys_company_id is not None:
+            filters.append(InsightCompany.sys_company_id == sys_company_id)
         if monitor_level:
             filters.append(InsightCompany.monitor_level == monitor_level)
         if status:
@@ -184,6 +190,8 @@ class InsightCompanyService:
         for row_no, row in rows:
             try:
                 payload = self._company_payload_from_import_row(row)
+                if payload.sys_company_id is None and row.get("sys_company_name"):
+                    payload.sys_company_id = await self._resolve_sys_company_id(db, row.get("sys_company_name"))
                 if not payload.name.strip():
                     response.skipped_count += 1
                     response.errors.append(InsightCompanyImportError(row_no=row_no, reason="企业名称不能为空"))
@@ -288,6 +296,7 @@ class InsightCompanyService:
                 select(InsightCompany).where(
                     InsightCompany.name == payload.name,
                     InsightCompany.owner_user_id == user_id,
+                    InsightCompany.sys_company_id == payload.sys_company_id,
                     InsightCompany.is_deleted == 0,
                 )
             )
@@ -338,6 +347,7 @@ class InsightCompanyService:
     def _company_payload_from_import_row(self, row: dict[str, str]) -> InsightCompanyCreate:
         return InsightCompanyCreate(
             company_code=self._empty_to_none(row.get("company_code")),
+            sys_company_id=self._parse_optional_int(row.get("sys_company_id")),
             name=(row.get("name") or "").strip(),
             short_name=self._empty_to_none(row.get("short_name")),
             industry=self._empty_to_none(row.get("industry")),
@@ -379,6 +389,26 @@ class InsightCompanyService:
     def _empty_to_none(self, value: str | None) -> str | None:
         text = (value or "").strip()
         return text or None
+
+    def _parse_optional_int(self, value: str | None) -> int | None:
+        text = (value or "").strip()
+        if not text:
+            return None
+        try:
+            return int(text)
+        except ValueError:
+            return None
+
+    async def _resolve_sys_company_id(self, db: AsyncSession, value: str | None) -> int | None:
+        text = (value or "").strip()
+        if not text:
+            return None
+        statement = select(SysCompany).where(
+            SysCompany.is_deleted == 0,
+            or_(SysCompany.name == text, SysCompany.code == text, SysCompany.sync_id == text),
+        )
+        row = (await db.exec(statement)).first()
+        return row.id if row and row.id is not None else None
 
     def _normalize_header(self, value: str) -> str:
         return value.strip().lower().replace(" ", "").replace("_", "").replace("-", "")

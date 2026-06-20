@@ -1,4 +1,5 @@
 from io import BytesIO
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
@@ -22,12 +23,20 @@ from app.schemas.agent.insight.company import (
 )
 from app.schemas.agent.insight.dashboard import InsightDashboardSummary
 from app.schemas.agent.insight.data_source import (
+    InsightDataSourceBulkActionRequest,
+    InsightDataSourceBulkActionResponse,
+    InsightDataSourceBatchCreateRequest,
+    InsightDataSourceBatchCreateResponse,
     InsightDataSourceCreate,
     InsightDataSourceExecuteRequest,
     InsightDataSourceExecuteResponse,
+    InsightDataSourceGroupRead,
+    InsightDataSourceImportResponse,
     InsightDataSourceRead,
     InsightDataSourceScheduleRunResponse,
     InsightDataSourceUpdate,
+    InsightRequirementSeedRequest,
+    InsightRequirementSeedResponse,
     InsightSchedulerStatusRead,
     InsightStaleTaskCleanupResponse,
 )
@@ -43,6 +52,12 @@ from app.schemas.agent.insight.intelligence import (
     InsightCandidatePromoteRequest,
     InsightCandidateReviewRequest,
     InsightCandidateReviewResponse,
+    InsightAssistantChatRequest,
+    InsightAssistantChatResponse,
+    InsightDeepResearchRequest,
+    InsightDeepResearchResponse,
+    InsightIntelligenceBulkActionRequest,
+    InsightIntelligenceBulkActionResponse,
     InsightIntelligenceDetail,
     InsightIntelligenceCandidateListItem,
     InsightIntelligenceCreate,
@@ -64,6 +79,11 @@ from app.schemas.agent.insight.report import (
     InsightReportListItem,
     InsightReportPreferenceRead,
     InsightReportPreferenceUpdate,
+    InsightReportSubscriptionCreate,
+    InsightReportSubscriptionDueRunResponse,
+    InsightReportSubscriptionRead,
+    InsightReportSubscriptionRunResponse,
+    InsightReportSubscriptionUpdate,
     InsightReportTemplateCloneRequest,
     InsightReportTemplateCreate,
     InsightReportTemplatePublishRequest,
@@ -72,7 +92,7 @@ from app.schemas.agent.insight.report import (
     InsightReportTemplateUpdate,
     InsightReportUpdateRequest,
 )
-from app.schemas.agent.insight.permission import InsightAccessRuleRead, InsightAccessRuleUpsert
+from app.schemas.agent.insight.permission import InsightAccessRuleBulkResponse, InsightAccessRuleBulkUpsert, InsightAccessRuleRead, InsightAccessRuleUpsert
 from app.schemas.agent.insight.notification import InsightNotificationCreate, InsightNotificationRead
 from app.schemas.agent.insight.quality import InsightQualityOverview
 from app.schemas.agent.insight.settings import InsightSettingsStatusRead
@@ -80,16 +100,19 @@ from app.schemas.agent.insight.task import InsightTaskRead
 from app.schemas.page import Page
 from app.schemas.result import Result
 from app.services.agent.insight.crawler import insight_crawl_service, insight_search_discovery_service
+from app.services.agent.insight.assistant_service import insight_assistant_service
 from app.services.agent.insight.company_service import insight_company_service
 from app.services.agent.insight.data_source_service import insight_data_source_service
 from app.services.agent.insight.health_service import insight_health_service
 from app.services.agent.insight.dictionary_service import insight_dictionary_service
 from app.services.agent.insight.intelligence_service import insight_intelligence_service
 from app.services.agent.insight.report_service import insight_report_service
+from app.services.agent.insight.report_subscription_service import insight_report_subscription_service
 from app.services.agent.insight.scheduler_service import insight_scheduler_service
 from app.services.agent.insight.permission_service import insight_permission_service
 from app.services.agent.insight.notification_service import insight_notification_service
 from app.services.agent.insight.quality_service import insight_quality_service
+from app.services.agent.insight.requirement_import_service import insight_requirement_import_service
 from app.services.agent.insight.settings_service import insight_settings_service
 
 router = APIRouter()
@@ -122,7 +145,8 @@ async def get_insight_dashboard(
 async def get_insight_settings_status(
     current_user: SysUser = Depends(get_current_user),
 ) -> Result[InsightSettingsStatusRead]:
-    _ = current_user
+    if not _is_admin(current_user):
+        raise HTTPException(status_code=403, detail="仅管理员可查看系统设置")
     return Result.success(data=insight_settings_service.get_status())
 
 
@@ -132,7 +156,8 @@ async def get_quality_overview(
     db: AsyncSession = Depends(get_db),
     current_user: SysUser = Depends(get_current_user),
 ) -> Result[InsightQualityOverview]:
-    _ = current_user
+    if not _is_admin(current_user):
+        raise HTTPException(status_code=403, detail="仅管理员可查看质量运营")
     result = await insight_quality_service.get_overview(db)
     return Result.success(data=result)
 
@@ -293,6 +318,7 @@ async def list_companies(
     page: int = 1,
     size: int = 20,
     keyword: str | None = None,
+    sys_company_id: int | None = None,
     industry: str | None = None,
     monitor_level: str | None = None,
     status: str | None = None,
@@ -302,6 +328,7 @@ async def list_companies(
         page=page,
         size=size,
         keyword=keyword,
+        sys_company_id=sys_company_id,
         industry=industry,
         monitor_level=monitor_level,
         status=status,
@@ -360,11 +387,33 @@ async def download_company_import_template(
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "企业档案导入"
-    headers = ["企业名称", "简称", "行业", "企业类型", "区域", "官网", "监控级别", "描述"]
-    example = ["示例客户有限公司", "示例客户", "食品饮料", "客户", "华东", "https://example.com", "重点客户", "用于演示的客户档案"]
+    headers = ["企业名称", "简称", "所属公司ID", "所属公司", "行业", "企业类型", "区域", "官网", "监控级别", "描述"]
+    example = [
+        "某客户食品有限公司",
+        "某客户食品",
+        "",
+        "山东香驰健源生物科技有限公司",
+        "食品饮料",
+        "客户",
+        "华东",
+        "https://www.example.com",
+        "重点客户",
+        "饮料和休闲食品客户，重点关注低糖配方、功能配料和新品上市动态",
+    ]
     sheet.append(headers)
     sheet.append(example)
-    sheet.append(["示例竞对科技有限公司", "示例竞对", "智能制造", "竞对", "华南", "", "重点竞对", "第二行开始可直接替换或删除示例"])
+    sheet.append([
+        "某植物蛋白科技有限公司",
+        "某植物蛋白",
+        "",
+        "山东御馨生物科技股份有限公司",
+        "植物蛋白",
+        "竞对",
+        "华南",
+        "",
+        "重点竞对",
+        "植物蛋白和饮品应用相关企业，重点关注产能、客户合作、产品应用和价格策略",
+    ])
 
     header_fill = PatternFill("solid", fgColor="DDEBFF")
     header_font = Font(bold=True, color="17365D")
@@ -372,9 +421,25 @@ async def download_company_import_template(
         cell.fill = header_fill
         cell.font = header_font
         cell.alignment = Alignment(horizontal="center", vertical="center")
-    for index, width in enumerate([26, 16, 16, 14, 14, 28, 14, 36], start=1):
+    for index, width in enumerate([26, 16, 14, 28, 16, 14, 14, 28, 14, 36], start=1):
         sheet.column_dimensions[get_column_letter(index)].width = width
     sheet.freeze_panes = "A2"
+
+    note_sheet = workbook.create_sheet("填写说明")
+    note_sheet.append(["字段", "填写说明"])
+    note_sheet.append(["企业名称", "必填。请填写企业工商全称；如果企业编码或企业名称已存在，导入时会更新原档案。"])
+    note_sheet.append(["所属公司ID", "可选。已知 sys_company.id 时优先填写 ID。"])
+    note_sheet.append(["所属公司", "可选但建议填写。必须与系统公司名称一致，例如：山东香驰健源生物科技有限公司、山东御馨生物科技股份有限公司。"])
+    note_sheet.append(["企业类型", "建议填写客户、竞对、供应商、渠道、行业机构等受控口径，便于后续筛选和报告分组。"])
+    note_sheet.append(["监控级别", "建议填写重点客户、重点竞对、普通关注等，便于数据源和报告优先级配置。"])
+    note_sheet.append(["描述", "建议填写产品线、经营重点、关注原因、合作或竞争关系等有助于 AI 判断的信息，不要填写来源说明等重复信息。"])
+    for cell in note_sheet[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+    for index, width in enumerate([16, 88], start=1):
+        note_sheet.column_dimensions[get_column_letter(index)].width = width
+    note_sheet.freeze_panes = "A2"
 
     buffer = BytesIO()
     workbook.save(buffer)
@@ -506,6 +571,117 @@ async def generate_report(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return Result.success(data=result, msg="报告草稿已生成")
+
+
+@router.get("/reports/subscriptions", response_model=Result[Page[InsightReportSubscriptionRead]])
+async def list_report_subscriptions(
+    *,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+    page: int = 1,
+    size: int = 20,
+    status: str | None = None,
+) -> Result[Page[InsightReportSubscriptionRead]]:
+    result = await insight_report_subscription_service.list_subscriptions(
+        db,
+        page=page,
+        size=size,
+        status=status,
+        user_id=current_user.id,
+        is_admin=_is_admin(current_user),
+    )
+    return Result.success(data=result)
+
+
+@router.post("/reports/subscriptions", response_model=Result[InsightReportSubscriptionRead])
+async def create_report_subscription(
+    *,
+    payload: InsightReportSubscriptionCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[InsightReportSubscriptionRead]:
+    try:
+        result = await insight_report_subscription_service.create_subscription(
+            db,
+            payload,
+            user_id=current_user.id,
+            is_admin=_is_admin(current_user),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Result.success(data=result, msg="定时报告计划已保存")
+
+
+@router.put("/reports/subscriptions/{subscription_id}", response_model=Result[InsightReportSubscriptionRead])
+async def update_report_subscription(
+    *,
+    subscription_id: int,
+    payload: InsightReportSubscriptionUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[InsightReportSubscriptionRead]:
+    try:
+        result = await insight_report_subscription_service.update_subscription(
+            db,
+            subscription_id,
+            payload,
+            user_id=current_user.id,
+            is_admin=_is_admin(current_user),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Result.success(data=result, msg="定时报告计划已更新")
+
+
+@router.delete("/reports/subscriptions/{subscription_id}", response_model=Result[None])
+async def delete_report_subscription(
+    *,
+    subscription_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[None]:
+    try:
+        await insight_report_subscription_service.delete_subscription(
+            db,
+            subscription_id,
+            user_id=current_user.id,
+            is_admin=_is_admin(current_user),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return Result.success(data=None, msg="定时报告计划已删除")
+
+
+@router.post("/reports/subscriptions/{subscription_id}/run", response_model=Result[InsightReportSubscriptionRunResponse])
+async def run_report_subscription(
+    *,
+    subscription_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[InsightReportSubscriptionRunResponse]:
+    try:
+        result = await insight_report_subscription_service.run_subscription(
+            db,
+            subscription_id,
+            user_id=current_user.id,
+            is_admin=_is_admin(current_user),
+            triggered_by=f"user:{current_user.id}",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Result.success(data=result, msg="定时报告计划已执行")
+
+
+@router.post("/reports/subscriptions/run-due", response_model=Result[InsightReportSubscriptionDueRunResponse])
+async def run_due_report_subscriptions(
+    *,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+    limit: int = 10,
+) -> Result[InsightReportSubscriptionDueRunResponse]:
+    _ = current_user
+    result = await insight_report_subscription_service.run_due_subscriptions(db, limit=limit, triggered_by="manual_due_scan")
+    return Result.success(data=result, msg="到期定时报告已扫描")
 
 
 @router.get("/reports/templates", response_model=Result[list[InsightReportTemplateRead]])
@@ -780,6 +956,23 @@ async def list_access_rules(
     return Result.success(data=result)
 
 
+@router.post("/permissions/{target_type}/bulk", response_model=Result[InsightAccessRuleBulkResponse])
+async def grant_access_rules_bulk(
+    *,
+    target_type: str,
+    payload: InsightAccessRuleBulkUpsert,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[InsightAccessRuleBulkResponse]:
+    result = await insight_permission_service.grant_rules_bulk(
+        db,
+        target_type=target_type,
+        payload=payload,
+        user_id=current_user.id,
+    )
+    return Result.success(data=result, msg="批量权限已更新")
+
+
 @router.post("/permissions/{target_type}/{target_id}", response_model=Result[InsightAccessRuleRead])
 async def grant_access_rule(
     *,
@@ -837,6 +1030,26 @@ async def list_data_sources(
     return Result.success(data=result)
 
 
+@router.get("/data-sources/groups", response_model=Result[list[InsightDataSourceGroupRead]])
+async def list_data_source_groups(
+    *,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+    keyword: str | None = None,
+    source_type: str | None = None,
+    status: str | None = None,
+) -> Result[list[InsightDataSourceGroupRead]]:
+    result = await insight_data_source_service.list_data_source_groups(
+        db,
+        keyword=keyword,
+        source_type=source_type,
+        status=status,
+        user_id=current_user.id,
+        is_admin=_is_admin(current_user),
+    )
+    return Result.success(data=result)
+
+
 @router.post("/data-sources", response_model=Result[InsightDataSourceRead])
 async def create_data_source(
     *,
@@ -845,10 +1058,203 @@ async def create_data_source(
     current_user: SysUser = Depends(get_current_user),
 ) -> Result[InsightDataSourceRead]:
     try:
-        result = await insight_data_source_service.create_data_source(db, payload, current_user.id)
+        result = await insight_data_source_service.create_data_source(db, payload, current_user.id, is_admin=_is_admin(current_user))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return Result.success(data=result, msg="数据源已创建")
+
+
+@router.post("/data-sources/batch-create", response_model=Result[InsightDataSourceBatchCreateResponse])
+async def batch_create_data_sources(
+    *,
+    payload: InsightDataSourceBatchCreateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[InsightDataSourceBatchCreateResponse]:
+    try:
+        result = await insight_data_source_service.batch_create_data_sources(
+            db,
+            payload,
+            user_id=current_user.id,
+            is_admin=_is_admin(current_user),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Result.success(data=result, msg="标准数据源已批量生成")
+
+
+@router.get("/data-sources/import-template")
+async def download_data_source_import_template(
+    current_user: SysUser = Depends(get_current_user),
+) -> StreamingResponse:
+    _ = current_user
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Font, PatternFill
+        from openpyxl.utils import get_column_letter
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail="缺少 openpyxl 依赖，无法生成 Excel 模板") from exc
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "数据源导入"
+    headers = [
+        "来源名称",
+        "来源类型",
+        "官网地址",
+        "关键词",
+        "包含词",
+        "排除词",
+        "课题/项目",
+        "搜集需求",
+        "获取内容",
+        "采集周期",
+        "所属公司",
+        "关联企业",
+        "可见范围",
+        "自动审核",
+        "自动加入素材池",
+    ]
+    sheet.append(headers)
+    sheet.append([
+        "Foodaily每日食品",
+        "industry_media",
+        "",
+        "大豆蛋白、植物基、饮料新品",
+        "新品、配料、应用",
+        "招聘、广告招商",
+        "植物基蛋白趋势",
+        "跟踪食品饮料新品和应用方案",
+        "新品、配方、宣称、渠道",
+        "daily",
+        "山东御馨生物科技股份有限公司",
+        "",
+        "assigned",
+        "high_confidence",
+        "是",
+    ])
+    header_fill = PatternFill("solid", fgColor="DDEBFF")
+    header_font = Font(bold=True, color="17365D")
+    for cell in sheet[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+    for index, width in enumerate([24, 20, 34, 34, 26, 24, 24, 40, 34, 14, 34, 24, 14, 16, 18], start=1):
+        sheet.column_dimensions[get_column_letter(index)].width = width
+    sheet.freeze_panes = "A2"
+
+    buffer = BytesIO()
+    workbook.save(buffer)
+    buffer.seek(0)
+    headers_map = {"Content-Disposition": 'attachment; filename="insight-data-source-import-template.xlsx"'}
+    return StreamingResponse(
+        buffer,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers_map,
+    )
+
+
+@router.post("/data-sources/import", response_model=Result[InsightDataSourceImportResponse])
+async def import_data_sources(
+    *,
+    files: list[UploadFile] = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[InsightDataSourceImportResponse]:
+    try:
+        payload_files = [(file.filename or "未命名文件", await file.read()) for file in files]
+        result = await insight_requirement_import_service.import_files(
+            db,
+            files=payload_files,
+            user_id=current_user.id,
+            is_admin=_is_admin(current_user),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Result.success(data=result, msg="数据源导入完成")
+
+
+@router.post("/data-sources/import-preview", response_model=Result[InsightDataSourceImportResponse])
+async def preview_import_data_sources(
+    *,
+    files: list[UploadFile] = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[InsightDataSourceImportResponse]:
+    try:
+        payload_files = [(file.filename or "未命名文件", await file.read()) for file in files]
+        result = await insight_requirement_import_service.preview_files(
+            db,
+            files=payload_files,
+            user_id=current_user.id,
+            is_admin=_is_admin(current_user),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Result.success(data=result, msg="数据源导入预览完成")
+
+
+@router.post("/data-sources/bulk-action", response_model=Result[InsightDataSourceBulkActionResponse])
+async def bulk_action_data_sources(
+    *,
+    payload: InsightDataSourceBulkActionRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[InsightDataSourceBulkActionResponse]:
+    try:
+        result = await insight_data_source_service.bulk_action(
+            db,
+            payload,
+            user_id=current_user.id,
+            is_admin=_is_admin(current_user),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Result.success(data=result, msg="批量数据源操作完成")
+
+
+@router.post("/bootstrap/seed-from-requirements", response_model=Result[InsightRequirementSeedResponse])
+async def seed_from_requirements(
+    *,
+    payload: InsightRequirementSeedRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[InsightRequirementSeedResponse]:
+    if not _is_admin(current_user):
+        raise HTTPException(status_code=403, detail="仅管理员可执行期初数据源导入与采集")
+    try:
+        local_files: list[tuple[str, bytes]] = []
+        for file_path in payload.file_paths:
+            with open(file_path, "rb") as file:
+                local_files.append((file_path, file.read()))
+        import_result = await insight_requirement_import_service.import_files(
+            db,
+            files=local_files,
+            user_id=current_user.id,
+            is_admin=True,
+        )
+        execution_result = None
+        if payload.execute:
+            ids = [item.data_source_id for item in import_result.items if item.data_source_id][: payload.max_sources_to_execute]
+            if ids:
+                execution_result = await insight_data_source_service.bulk_action(
+                    db,
+                    InsightDataSourceBulkActionRequest(
+                        data_source_ids=ids,
+                        action="execute",
+                        execute_crawl_top_n=payload.crawl_top_n,
+                    ),
+                    user_id=current_user.id,
+                    is_admin=True,
+                )
+        result = InsightRequirementSeedResponse(
+            import_result=import_result,
+            execution_result=execution_result,
+            target_intelligence_count=payload.target_intelligence_count,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Result.success(data=result, msg="期初需求渠道导入已完成")
 
 
 @router.get("/data-sources/execution-logs", response_model=Result[Page[InsightTaskRead]])
@@ -1076,7 +1482,17 @@ async def list_intelligences(
     subject_type: str | None = None,
     intelligence_type: str | None = None,
     visibility_scope: str | None = None,
+    company_id: int | None = None,
+    sys_company_id: int | None = None,
+    project_name: str | None = None,
+    sentiment: str | None = None,
+    tag: str | None = None,
+    data_source_id: int | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> Result[Page[InsightIntelligenceListItem]]:
+    parsed_date_from = _parse_datetime_param(date_from)
+    parsed_date_to = _parse_datetime_param(date_to)
     result = await insight_intelligence_service.list_intelligences(
         db,
         page=page,
@@ -1085,6 +1501,65 @@ async def list_intelligences(
         subject_type=subject_type,
         intelligence_type=intelligence_type,
         visibility_scope=visibility_scope,
+        company_id=company_id,
+        sys_company_id=sys_company_id,
+        project_name=project_name,
+        sentiment=sentiment,
+        tag=tag,
+        data_source_id=data_source_id,
+        date_from=parsed_date_from,
+        date_to=parsed_date_to,
+        user_id=current_user.id,
+        is_admin=_is_admin(current_user),
+    )
+    return Result.success(data=result)
+
+
+@router.post("/intelligence/bulk-action", response_model=Result[InsightIntelligenceBulkActionResponse])
+async def bulk_action_intelligence(
+    *,
+    payload: InsightIntelligenceBulkActionRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[InsightIntelligenceBulkActionResponse]:
+    try:
+        result = await insight_intelligence_service.bulk_action(
+            db,
+            payload,
+            user_id=current_user.id,
+            is_admin=_is_admin(current_user),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Result.success(data=result, msg="批量情报操作完成")
+
+
+@router.post("/assistant/chat", response_model=Result[InsightAssistantChatResponse])
+async def insight_assistant_chat(
+    *,
+    payload: InsightAssistantChatRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[InsightAssistantChatResponse]:
+    result = await insight_assistant_service.chat(
+        db,
+        payload,
+        user_id=current_user.id,
+        is_admin=_is_admin(current_user),
+    )
+    return Result.success(data=result)
+
+
+@router.post("/research/deep", response_model=Result[InsightDeepResearchResponse])
+async def insight_deep_research(
+    *,
+    payload: InsightDeepResearchRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[InsightDeepResearchResponse]:
+    result = await insight_assistant_service.deep_research(
+        db,
+        payload,
         user_id=current_user.id,
         is_admin=_is_admin(current_user),
     )
@@ -1328,3 +1803,14 @@ async def ignore_intelligence_candidate(
 
 def _is_admin(user: SysUser) -> bool:
     return bool(getattr(user, "is_superuser", False) or getattr(user, "role", None) == "admin")
+
+
+def _parse_datetime_param(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        if len(value) == 10:
+            return datetime.fromisoformat(f"{value}T00:00:00")
+        return datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"日期参数格式不正确：{value}") from exc

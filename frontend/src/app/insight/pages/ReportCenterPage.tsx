@@ -1,6 +1,7 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Copy, Download, ExternalLink, FileText, Loader2, Pencil, Plus, RefreshCw, Save, Search, Send, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Trash2, UploadCloud, X } from "lucide-react";
+import { CalendarClock, Copy, Download, ExternalLink, FileText, Info, Loader2, Pencil, PlayCircle, Plus, RefreshCw, Save, Search, Send, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Trash2, UploadCloud, X } from "lucide-react";
+import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -14,12 +15,17 @@ import type {
     InsightReportContent,
     InsightReportExportRead,
     InsightReportFinding,
+    InsightCompanyListItem,
+    InsightDataSourceRead,
     InsightReportListItem,
     InsightReportPreferenceRead,
     InsightReportPreferenceUpdate,
+    InsightReportSubscriptionCreate,
+    InsightReportSubscriptionRead,
     InsightReportTemplateCreate,
     InsightReportTemplateRead,
     InsightReportTemplateSection,
+    SystemCompanyOption,
 } from "../api";
 import { insightApi } from "../api";
 import { AccessRuleDialog, ChartCard, InsightSelect, SectionCard, WecomPushDialog } from "../components";
@@ -27,7 +33,9 @@ import { PageContainer } from "../layout/PageContainer";
 import {
     useInsightCompanies,
     useInsightCloneReportTemplate,
+    useInsightCreateReportSubscription,
     useInsightCreateReportTemplate,
+    useInsightDeleteReportSubscription,
     useInsightDeleteReportTemplate,
     useInsightGenerateReport,
     useInsightPublishReportTemplate,
@@ -35,7 +43,11 @@ import {
     useInsightReportExports,
     useInsightReportPreference,
     useInsightReports,
+    useInsightReportSubscriptions,
     useInsightReportTemplates,
+    useInsightRunReportSubscription,
+    useInsightSystemCompanies,
+    useInsightUpdateReportSubscription,
     useInsightUpdateReportPreference,
     useInsightUpdateReportTemplate,
     useInsightUpdateReport,
@@ -44,51 +56,50 @@ import {
     useInsightDataSources,
 } from "../hooks";
 
-const fallbackTemplates: InsightReportTemplateRead[] = [
-    {
-        template_code: "customer_business_review",
-        template_name: "客户经营洞察报告",
-        description: "面向客户成功、研发营销和销售跟进的正式研究报告。",
-        report_type: "专题报告",
-        default_prompt: "生成一份可直接交付的 Word 式客户经营洞察报告，正文完整、结论克制、引用可追溯。",
-        sections: [],
-        scope: "system",
-        editable: false,
-    },
-];
-
 type ReportDetail = NonNullable<ReturnType<typeof useInsightReportDetail>["data"]>;
 type ReportMaterial = ReportDetail["materials"][number];
+type ReportExportFormat = "html" | "pdf" | "docx";
 
 export function ReportCenterPage() {
+    const [searchParams, setSearchParams] = useSearchParams();
+    const reportIdParam = parseOptionalNumber(searchParams.get("report_id") || "");
     const [keyword, setKeyword] = useState("");
-    const [selectedReportId, setSelectedReportId] = useState<number | null>(null);
+    const [selectedReportId, setSelectedReportId] = useState<number | null>(reportIdParam ?? null);
     const [templateCode, setTemplateCode] = useState("customer_business_review");
     const [reportType, setReportType] = useState("专题报告");
     const [companyId, setCompanyId] = useState("");
     const [selectedDataSourceIds, setSelectedDataSourceIds] = useState<number[]>([]);
+    const [dataSourcePickerOpen, setDataSourcePickerOpen] = useState(false);
     const [folderName, setFolderName] = useState("P1企业档案测试素材");
     const [maxMaterials, setMaxMaterials] = useState("100");
     const [prompt, setPrompt] = useState("生成一份可直接交付的 Word 式客户经营洞察报告，正文完整、结论克制、引用可追溯。");
     const [templateDialogOpen, setTemplateDialogOpen] = useState(false);
     const [preferenceDialogOpen, setPreferenceDialogOpen] = useState(false);
+    const [subscriptionDialogOpen, setSubscriptionDialogOpen] = useState(false);
     const [reportAccessTarget, setReportAccessTarget] = useState<InsightReportListItem | ReportDetail | null>(null);
     const [reportPushTarget, setReportPushTarget] = useState<InsightReportListItem | ReportDetail | null>(null);
 
     const reportsQuery = useInsightReports({ page: 1, size: 30, keyword: keyword || undefined });
     const templatesQuery = useInsightReportTemplates();
     const preferenceQuery = useInsightReportPreference();
-    const templates = useMemo(() => (templatesQuery.data?.length ? templatesQuery.data : fallbackTemplates), [templatesQuery.data]);
+    const templates = useMemo(() => templatesQuery.data ?? [], [templatesQuery.data]);
     const reports = useMemo(() => reportsQuery.data?.items ?? [], [reportsQuery.data?.items]);
     const selectedReport = reports.find((report) => report.id === selectedReportId) ?? reports[0] ?? null;
-    const reportDetailQuery = useInsightReportDetail(selectedReport?.id ?? null);
+    const activeReportId = selectedReportId ?? selectedReport?.id ?? null;
+    const reportDetailQuery = useInsightReportDetail(activeReportId);
     const reportDetail = reportDetailQuery.data ?? selectedReport;
     const reportExportsQuery = useInsightReportExports(reportDetail?.id ?? null);
-    const companiesQuery = useInsightCompanies({ page: 1, size: 100 });
-    const dataSourcesQuery = useInsightDataSources({ page: 1, size: 100, status: "enabled" });
+    const companiesQuery = useInsightCompanies({ page: 1, size: 500 });
+    const systemCompaniesQuery = useInsightSystemCompanies();
+    const dataSourcesQuery = useInsightDataSources({ page: 1, size: 500, status: "enabled" });
+    const subscriptionsQuery = useInsightReportSubscriptions({ page: 1, size: 20 });
     const generateMutation = useInsightGenerateReport();
     const updateMutation = useInsightUpdateReport();
     const exportMutation = useInsightExportReport();
+    const createSubscriptionMutation = useInsightCreateReportSubscription();
+    const updateSubscriptionMutation = useInsightUpdateReportSubscription();
+    const deleteSubscriptionMutation = useInsightDeleteReportSubscription();
+    const runSubscriptionMutation = useInsightRunReportSubscription();
     const createTemplateMutation = useInsightCreateReportTemplate();
     const cloneTemplateMutation = useInsightCloneReportTemplate();
     const publishTemplateMutation = useInsightPublishReportTemplate();
@@ -101,6 +112,25 @@ export function ReportCenterPage() {
         () => templates.map((template) => ({ value: template.template_code, label: template.template_name })),
         [templates],
     );
+
+    useEffect(() => {
+        if (reportIdParam && reportIdParam !== selectedReportId) {
+            setSelectedReportId(reportIdParam);
+        }
+    }, [reportIdParam, selectedReportId]);
+
+    useEffect(() => {
+        if (!selectedReportId && reports[0]?.id) {
+            setSelectedReportId(reports[0].id);
+        }
+    }, [reports, selectedReportId]);
+
+    const handleSelectReport = (reportId: number) => {
+        setSelectedReportId(reportId);
+        const nextParams = new URLSearchParams(searchParams);
+        nextParams.set("report_id", String(reportId));
+        setSearchParams(nextParams, { replace: true });
+    };
 
     const companyOptions = useMemo(
         () => [
@@ -150,7 +180,7 @@ export function ReportCenterPage() {
             {
                 onSuccess: (response) => {
                     setSelectedReportId(response.report.id);
-                    toast.success(`报告已生成，引用 ${response.used_material_count} 条素材`);
+                    toast.success(`报告已生成，引用 ${response.used_material_count} 条素材，${reportGenerationModeLabel(response.generation_mode)}`);
                 },
                 onError: () => toast.error("报告生成失败，请确认报告素材池有可用情报"),
             },
@@ -165,10 +195,16 @@ export function ReportCenterPage() {
                     <h1 className="mt-1 text-2xl font-black leading-tight tracking-tight text-slate-950 md:text-3xl">报告中心</h1>
                     <p className="mt-2 text-sm leading-6 text-slate-500">按模板生成、阅读和编辑市场洞察研究报告。</p>
                 </div>
-                <Button type="button" variant="outline" className="h-10 rounded-xl border-slate-200 bg-white" onClick={() => void reportsQuery.refetch()}>
-                    <RefreshCw className="size-4" />
-                    刷新
-                </Button>
+                <div className="insight-actions">
+                    <Button type="button" variant="outline" className="h-10 rounded-xl border-slate-200 bg-white" onClick={() => setSubscriptionDialogOpen(true)}>
+                        <CalendarClock className="size-4" />
+                        定时报告
+                    </Button>
+                    <Button type="button" variant="outline" className="h-10 rounded-xl border-slate-200 bg-white" onClick={() => void reportsQuery.refetch()}>
+                        <RefreshCw className="size-4" />
+                        刷新
+                    </Button>
+                </div>
             </div>
 
             <SectionCard className="p-3 md:hidden">
@@ -296,6 +332,10 @@ export function ReportCenterPage() {
                             <SlidersHorizontal className="size-4" />
                             生成偏好
                         </Button>
+                        <Button type="button" variant="outline" className="h-10 rounded-xl border-slate-200 bg-white" onClick={() => setSubscriptionDialogOpen(true)}>
+                            <CalendarClock className="size-4" />
+                            定时生成
+                        </Button>
                         <Button type="button" className="h-10 rounded-xl bg-primary px-5 text-primary-foreground" onClick={handleGenerate} disabled={generateMutation.isPending}>
                             {generateMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
                             生成报告
@@ -309,34 +349,44 @@ export function ReportCenterPage() {
                     <div className="flex flex-wrap items-center justify-between gap-2">
                         <div>
                             <div className="text-sm font-black text-slate-800">按数据源选材</div>
-                            <p className="mt-1 text-xs leading-5 text-slate-500">可指定一个或多个已启用数据源，报告只引用这些数据源采集并入库的正式情报。</p>
+                            <p className="mt-1 text-xs leading-5 text-slate-500">
+                                可指定一个或多个已启用数据源，报告只引用这些数据源采集并入库的正式情报。当前已选 {selectedDataSourceIds.length} 个。
+                            </p>
                         </div>
-                        {selectedDataSourceIds.length ? (
-                            <Button type="button" variant="ghost" className="h-8 rounded-xl text-xs" onClick={() => setSelectedDataSourceIds([])}>
-                                清空数据源
+                        <div className="flex flex-wrap items-center gap-2">
+                            {selectedDataSourceIds.length ? (
+                                <Button type="button" variant="ghost" className="h-8 rounded-xl text-xs" onClick={() => setSelectedDataSourceIds([])}>
+                                    清空数据源
+                                </Button>
+                            ) : null}
+                            <Button type="button" variant="outline" className="h-8 rounded-xl border-slate-200 bg-white text-xs" onClick={() => setDataSourcePickerOpen((open) => !open)}>
+                                <SlidersHorizontal className="size-3.5" />
+                                {dataSourcePickerOpen ? "收起选择" : "展开选择"}
                             </Button>
-                        ) : null}
+                        </div>
                     </div>
-                    <div className="mt-3 flex max-h-28 flex-wrap gap-2 overflow-y-auto">
-                        {dataSources.map((source) => {
-                            const checked = selectedDataSourceIds.includes(source.id);
-                            return (
-                                <button
-                                    key={source.id}
-                                    type="button"
-                                    onClick={() => setSelectedDataSourceIds(toggleNumber(selectedDataSourceIds, source.id))}
-                                    className={cn(
-                                        "rounded-full border px-3 py-1.5 text-xs font-bold transition",
-                                        checked ? "border-primary/40 bg-primary text-primary-foreground" : "border-slate-200 bg-white text-slate-600 hover:border-primary/30 hover:text-primary",
-                                    )}
-                                >
-                                    {source.source_name}
-                                </button>
-                            );
-                        })}
-                        {!dataSourcesQuery.isLoading && dataSources.length === 0 ? <span className="text-xs text-slate-500">暂无可选数据源。</span> : null}
-                        {dataSourcesQuery.isLoading ? <span className="text-xs text-slate-500">正在读取数据源...</span> : null}
-                    </div>
+                    {dataSourcePickerOpen ? (
+                        <div className="mt-3 flex max-h-28 flex-wrap gap-2 overflow-y-auto">
+                            {dataSources.map((source) => {
+                                const checked = selectedDataSourceIds.includes(source.id);
+                                return (
+                                    <button
+                                        key={source.id}
+                                        type="button"
+                                        onClick={() => setSelectedDataSourceIds(toggleNumber(selectedDataSourceIds, source.id))}
+                                        className={cn(
+                                            "rounded-full border px-3 py-1.5 text-xs font-bold transition",
+                                            checked ? "border-primary/40 bg-primary text-primary-foreground" : "border-slate-200 bg-white text-slate-600 hover:border-primary/30 hover:text-primary",
+                                        )}
+                                    >
+                                        {source.source_name}
+                                    </button>
+                                );
+                            })}
+                            {!dataSourcesQuery.isLoading && dataSources.length === 0 ? <span className="text-xs text-slate-500">暂无可选数据源。</span> : null}
+                            {dataSourcesQuery.isLoading ? <span className="text-xs text-slate-500">正在读取数据源...</span> : null}
+                        </div>
+                    ) : null}
                 </div>
             </SectionCard>
 
@@ -439,15 +489,74 @@ export function ReportCenterPage() {
                 }
             />
 
-            <div className="grid min-h-0 min-w-0 gap-4 2xl:grid-cols-[310px_minmax(0,1fr)]">
+            <ReportSubscriptionPanel
+                subscriptions={subscriptionsQuery.data?.items ?? []}
+                loading={subscriptionsQuery.isLoading}
+                total={subscriptionsQuery.data?.total ?? 0}
+                runningId={runSubscriptionMutation.variables ?? null}
+                saving={createSubscriptionMutation.isPending || updateSubscriptionMutation.isPending || deleteSubscriptionMutation.isPending}
+                onCreate={() => setSubscriptionDialogOpen(true)}
+                onRun={(subscription) =>
+                    runSubscriptionMutation.mutate(subscription.id, {
+                        onSuccess: (response) => {
+                            if (response.report?.id) {
+                                setSelectedReportId(response.report.id);
+                            }
+                            toast.success(response.message || "定时报告已执行");
+                        },
+                        onError: () => toast.error("定时报告执行失败，请检查素材范围和接收人"),
+                    })
+                }
+                onToggle={(subscription) =>
+                    updateSubscriptionMutation.mutate(
+                        { subscriptionId: subscription.id, data: { status: subscription.status === "active" ? "paused" : "active" } },
+                        {
+                            onSuccess: () => toast.success(subscription.status === "active" ? "计划已暂停" : "计划已启用"),
+                            onError: () => toast.error("计划状态更新失败"),
+                        },
+                    )
+                }
+                onDelete={(subscription) =>
+                    deleteSubscriptionMutation.mutate(subscription.id, {
+                        onSuccess: () => toast.success("定时报告计划已删除"),
+                        onError: () => toast.error("计划删除失败"),
+                    })
+                }
+            />
+
+            <ReportSubscriptionDialog
+                open={subscriptionDialogOpen}
+                onOpenChange={setSubscriptionDialogOpen}
+                templates={templates}
+                systemCompanies={systemCompaniesQuery.data ?? []}
+                companies={companiesQuery.data?.items ?? []}
+                dataSources={dataSources}
+                defaultTemplateCode={templateCode}
+                defaultReportType={reportType}
+                defaultFolderName={folderName}
+                defaultMaxMaterials={Number(maxMaterials) || 100}
+                defaultPrompt={prompt}
+                saving={createSubscriptionMutation.isPending}
+                onSubmit={(payload) =>
+                    createSubscriptionMutation.mutate(payload, {
+                        onSuccess: () => {
+                            toast.success("定时报告计划已保存");
+                            setSubscriptionDialogOpen(false);
+                        },
+                        onError: () => toast.error("定时报告计划保存失败，请检查范围和接收人"),
+                    })
+                }
+            />
+
+            <div className="grid min-h-0 min-w-0 gap-4 xl:grid-cols-[310px_minmax(0,1fr)]">
                 <ReportHistoryPanel
                     keyword={keyword}
                     onKeywordChange={setKeyword}
                     reports={reports}
                     loading={reportsQuery.isLoading}
-                    activeReportId={selectedReport?.id ?? null}
+                    activeReportId={activeReportId}
                     total={reportsQuery.data?.total ?? 0}
-                    onSelect={setSelectedReportId}
+                    onSelect={handleSelectReport}
                 />
                 <ReportDocument
                     key={`${reportDetail?.id ?? selectedReport?.id ?? "empty"}-${reportDetail?.version_no ?? selectedReport?.version_no ?? 0}-${reportDetailQuery.data ? "detail" : "list"}`}
@@ -468,17 +577,17 @@ export function ReportCenterPage() {
                     exporting={exportMutation.isPending}
                     exports={reportExportsQuery.data ?? []}
                     exportsLoading={reportExportsQuery.isLoading}
-                    onExport={(reportId) =>
+                    onExport={(reportId, exportFormat) =>
                         exportMutation.mutate(
-                            { reportId, exportFormat: "html" },
+                            { reportId, exportFormat },
                             {
                                 onSuccess: ({ exportRecord, file }) => {
                                     if (exportRecord.status !== "success" || !file) {
                                         toast.error(exportRecord.error_message || "报告导出失败，请稍后重试");
                                         return;
                                     }
-                                    downloadBlob(file, exportRecord.file_name || `insight-report-${reportId}.html`);
-                                    toast.success("报告 HTML 已导出");
+                                    downloadBlob(file, exportRecord.file_name || `insight-report-${reportId}.${exportFormat}`);
+                                    toast.success(`报告 ${exportFormat.toUpperCase()} 已导出`);
                                 },
                                 onError: () => toast.error("报告导出失败，请稍后重试"),
                             },
@@ -515,6 +624,291 @@ export function ReportCenterPage() {
     );
 }
 
+function ReportSubscriptionPanel({
+    subscriptions,
+    loading,
+    total,
+    runningId,
+    saving,
+    onCreate,
+    onRun,
+    onToggle,
+    onDelete,
+}: {
+    subscriptions: InsightReportSubscriptionRead[];
+    loading: boolean;
+    total: number;
+    runningId: number | null;
+    saving: boolean;
+    onCreate: () => void;
+    onRun: (subscription: InsightReportSubscriptionRead) => void;
+    onToggle: (subscription: InsightReportSubscriptionRead) => void;
+    onDelete: (subscription: InsightReportSubscriptionRead) => void;
+}) {
+    return (
+        <SectionCard className="p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                    <div className="flex items-center gap-2">
+                        <CalendarClock className="size-5 text-primary" />
+                        <h2 className="text-base font-black text-slate-950">定时报告计划</h2>
+                    </div>
+                    <p className="mt-1 text-xs font-semibold leading-5 text-slate-500">共 {total} 个计划，到点后按创建者权限自动生成报告并写入企业微信推送记录。</p>
+                </div>
+                <Button type="button" className="h-10 rounded-xl bg-primary text-primary-foreground" onClick={onCreate}>
+                    <Plus className="size-4" />
+                    新建计划
+                </Button>
+            </div>
+            {loading ? <div className="mt-4 rounded-xl border border-slate-100 bg-slate-50 p-4 text-sm font-semibold text-slate-500">正在读取定时报告计划...</div> : null}
+            {!loading && subscriptions.length === 0 ? (
+                <div className="mt-4 rounded-xl border border-dashed border-slate-200 bg-slate-50/70 p-5 text-sm font-semibold text-slate-500">
+                    暂无定时报告计划。可以先建一个每周周报，选择模板、范围和接收人后自动生成并推送。
+                </div>
+            ) : null}
+            {subscriptions.length ? (
+                <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                    {subscriptions.map((subscription) => (
+                        <div key={subscription.id} className="rounded-2xl border border-slate-100 bg-white p-4 shadow-sm">
+                            <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                        <h3 className="truncate text-sm font-black text-slate-950">{subscription.subscription_name}</h3>
+                                        <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-black", subscription.status === "active" ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500")}>
+                                            {subscription.status === "active" ? "已启用" : "已暂停"}
+                                        </span>
+                                        {subscription.last_status ? (
+                                            <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-black", subscription.last_status === "success" ? "bg-blue-50 text-blue-700" : "bg-rose-50 text-rose-700")}>
+                                                上次{subscription.last_status === "success" ? "成功" : "失败"}
+                                            </span>
+                                        ) : null}
+                                    </div>
+                                    <p className="mt-1 text-xs font-semibold leading-5 text-slate-500">
+                                        {reportScheduleLabel(subscription)} · {reportScopeLabel(subscription)}
+                                    </p>
+                                </div>
+                                <div className="flex shrink-0 items-center gap-2">
+                                    <Button type="button" variant="outline" className="h-8 rounded-xl border-slate-200 bg-white text-xs" onClick={() => onRun(subscription)} disabled={runningId === subscription.id || saving}>
+                                        {runningId === subscription.id ? <Loader2 className="size-3.5 animate-spin" /> : <PlayCircle className="size-3.5" />}
+                                        立即执行
+                                    </Button>
+                                </div>
+                            </div>
+                            <div className="mt-3 grid gap-2 text-xs font-semibold text-slate-500 md:grid-cols-2">
+                                <div>模板：{subscription.template_code || "默认模板"}</div>
+                                <div>下次：{formatFullDate(subscription.next_run_time)}</div>
+                                <div>接收：{subscription.wecom_recipient_scope === "all" ? "全员" : `${subscription.wecom_recipients.length} 人/对象`}</div>
+                                <div>素材上限：{subscription.max_materials}</div>
+                            </div>
+                            {subscription.last_error ? <p className="mt-3 rounded-xl bg-rose-50 px-3 py-2 text-xs font-semibold leading-5 text-rose-700">{subscription.last_error}</p> : null}
+                            <div className="mt-3 flex flex-wrap justify-end gap-2">
+                                <Button type="button" variant="ghost" className="h-8 rounded-xl text-xs" onClick={() => onToggle(subscription)} disabled={saving}>
+                                    {subscription.status === "active" ? "暂停" : "启用"}
+                                </Button>
+                                <Button type="button" variant="ghost" className="h-8 rounded-xl text-xs text-red-600 hover:bg-red-50 hover:text-red-700" onClick={() => onDelete(subscription)} disabled={saving}>
+                                    删除
+                                </Button>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            ) : null}
+        </SectionCard>
+    );
+}
+
+function ReportSubscriptionDialog({
+    open,
+    onOpenChange,
+    templates,
+    systemCompanies,
+    companies,
+    dataSources,
+    defaultTemplateCode,
+    defaultReportType,
+    defaultFolderName,
+    defaultMaxMaterials,
+    defaultPrompt,
+    saving,
+    onSubmit,
+}: {
+    open: boolean;
+    onOpenChange: (open: boolean) => void;
+    templates: InsightReportTemplateRead[];
+    systemCompanies: SystemCompanyOption[];
+    companies: InsightCompanyListItem[];
+    dataSources: InsightDataSourceRead[];
+    defaultTemplateCode: string;
+    defaultReportType: string;
+    defaultFolderName: string;
+    defaultMaxMaterials: number;
+    defaultPrompt: string;
+    saving: boolean;
+    onSubmit: (payload: InsightReportSubscriptionCreate) => void;
+}) {
+    const [name, setName] = useState("市场洞察周报");
+    const [templateCode, setTemplateCode] = useState(defaultTemplateCode);
+    const [reportType, setReportType] = useState(defaultReportType);
+    const [scopeType, setScopeType] = useState("sys_company");
+    const [sysCompanyId, setSysCompanyId] = useState("");
+    const [companyIds, setCompanyIds] = useState<number[]>([]);
+    const [dataSourceIds, setDataSourceIds] = useState<number[]>([]);
+    const [folder, setFolder] = useState(defaultFolderName);
+    const [maxMaterials, setMaxMaterials] = useState(String(defaultMaxMaterials));
+    const [prompt, setPrompt] = useState(defaultPrompt);
+    const [frequency, setFrequency] = useState("weekly");
+    const [weekday, setWeekday] = useState("0");
+    const [dayOfMonth, setDayOfMonth] = useState("1");
+    const [timeOfDay, setTimeOfDay] = useState("09:00");
+    const [recipientScope, setRecipientScope] = useState("selected");
+    const [recipientText, setRecipientText] = useState("");
+
+    useEffect(() => {
+        if (open) {
+            setTemplateCode(defaultTemplateCode);
+            setReportType(defaultReportType);
+            setFolder(defaultFolderName);
+            setMaxMaterials(String(defaultMaxMaterials));
+            setPrompt(defaultPrompt);
+            if (!sysCompanyId && systemCompanies[0]?.id) {
+                setSysCompanyId(String(systemCompanies[0].id));
+            }
+        }
+    }, [defaultFolderName, defaultMaxMaterials, defaultPrompt, defaultReportType, defaultTemplateCode, open, sysCompanyId, systemCompanies]);
+
+    const templateOptions = useMemo(() => templates.map((template) => ({ value: template.template_code, label: template.template_name })), [templates]);
+    const sysCompanyOptions = useMemo(
+        () => systemCompanies.map((company) => ({ value: String(company.id), label: company.name })),
+        [systemCompanies],
+    );
+
+    const submit = () => {
+        const recipients = recipientText
+            .split(/\r?\n/)
+            .map((item) => item.trim())
+            .filter(Boolean)
+            .map((value) => ({ recipient_type: "user", recipient_name: value, wecom_userid: value }));
+        if (recipientScope === "selected" && recipients.length === 0) {
+            toast.error("请填写至少一个企业微信接收人");
+            return;
+        }
+        onSubmit({
+            subscription_name: name.trim() || "未命名定时报告",
+            report_type: reportType,
+            template_code: templateCode,
+            scope_type: scopeType,
+            sys_company_id: scopeType === "sys_company" && sysCompanyId ? Number(sysCompanyId) : null,
+            company_ids: scopeType === "company" ? companyIds : [],
+            data_source_ids: scopeType === "data_source" ? dataSourceIds : [],
+            folder_name: scopeType === "material_pool" ? folder : null,
+            max_materials: Number(maxMaterials) || 100,
+            generation_prompt: prompt,
+            schedule_frequency: frequency,
+            weekday: frequency === "weekly" ? Number(weekday) : null,
+            day_of_month: frequency === "monthly" ? Number(dayOfMonth) : null,
+            time_of_day: timeOfDay,
+            timezone: "Asia/Shanghai",
+            wecom_recipient_scope: recipientScope,
+            wecom_recipients: recipientScope === "all" ? [] : recipients,
+            visibility_scope: "private",
+            status: "active",
+        });
+    };
+
+    return (
+        <Dialog open={open} onOpenChange={onOpenChange}>
+            <DialogContent className="max-h-[88vh] overflow-y-auto rounded-2xl border-slate-200 bg-white sm:max-w-4xl">
+                <DialogHeader>
+                    <DialogTitle className="text-xl font-black text-slate-950">新建定时报告计划</DialogTitle>
+                    <DialogDescription>选择报告模板、素材范围、企业微信接收人和生成时间，系统会按权限自动生成并推送。</DialogDescription>
+                </DialogHeader>
+                <div className="grid gap-4 md:grid-cols-2">
+                    <TemplateField label="计划名称" value={name} onChange={setName} />
+                    <InsightSelect label="报告模板" value={templateCode} options={templateOptions} onChange={setTemplateCode} />
+                    <TemplateField label="报告类型" value={reportType} onChange={setReportType} />
+                    <TemplateField label="素材上限" value={maxMaterials} onChange={setMaxMaterials} />
+                </div>
+                <div className="mt-4 rounded-2xl border border-slate-100 bg-slate-50/80 p-4">
+                    <div className="text-sm font-black text-slate-800">生成范围</div>
+                    <div className="mt-3 grid gap-2 md:grid-cols-4">
+                        {[
+                            ["material_pool", "素材池"],
+                            ["sys_company", "所属公司"],
+                            ["company", "指定企业"],
+                            ["data_source", "指定数据源"],
+                        ].map(([value, label]) => (
+                            <button
+                                key={value}
+                                type="button"
+                                onClick={() => setScopeType(value)}
+                                className={cn("h-10 rounded-xl border text-sm font-black transition", scopeType === value ? "border-primary bg-primary text-primary-foreground" : "border-slate-200 bg-white text-slate-600")}
+                            >
+                                {label}
+                            </button>
+                        ))}
+                    </div>
+                    {scopeType === "material_pool" ? <TemplateField label="素材池名称" value={folder} onChange={setFolder} /> : null}
+                    {scopeType === "sys_company" ? <InsightSelect label="所属公司" value={sysCompanyId} options={sysCompanyOptions} onChange={setSysCompanyId} /> : null}
+                    {scopeType === "company" ? (
+                        <div className="mt-4 flex max-h-40 flex-wrap gap-2 overflow-y-auto">
+                            {companies.map((company) => {
+                                const checked = companyIds.includes(company.id);
+                                return (
+                                    <button
+                                        key={company.id}
+                                        type="button"
+                                        onClick={() => setCompanyIds(toggleNumber(companyIds, company.id))}
+                                        className={cn("rounded-full border px-3 py-1.5 text-xs font-bold", checked ? "border-primary bg-primary text-primary-foreground" : "border-slate-200 bg-white text-slate-600")}
+                                    >
+                                        {company.short_name || company.name}
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    ) : null}
+                    {scopeType === "data_source" ? (
+                        <div className="mt-4 flex max-h-40 flex-wrap gap-2 overflow-y-auto">
+                            {dataSources.map((source) => {
+                                const checked = dataSourceIds.includes(source.id);
+                                return (
+                                    <button
+                                        key={source.id}
+                                        type="button"
+                                        onClick={() => setDataSourceIds(toggleNumber(dataSourceIds, source.id))}
+                                        className={cn("rounded-full border px-3 py-1.5 text-xs font-bold", checked ? "border-primary bg-primary text-primary-foreground" : "border-slate-200 bg-white text-slate-600")}
+                                    >
+                                        {source.source_name}
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    ) : null}
+                </div>
+                <div className="mt-4 grid gap-4 md:grid-cols-[160px_160px_160px_minmax(0,1fr)]">
+                    <InsightSelect label="频率" value={frequency} options={[{ value: "daily", label: "每天" }, { value: "weekly", label: "每周" }, { value: "monthly", label: "每月" }]} onChange={setFrequency} />
+                    {frequency === "weekly" ? <InsightSelect label="星期" value={weekday} options={weekdayOptions()} onChange={setWeekday} /> : null}
+                    {frequency === "monthly" ? <TemplateField label="每月几号" value={dayOfMonth} onChange={setDayOfMonth} /> : null}
+                    <TemplateField label="发送时间" value={timeOfDay} onChange={setTimeOfDay} />
+                    <InsightSelect label="接收范围" value={recipientScope} options={[{ value: "selected", label: "指定人员" }, { value: "all", label: "全员" }]} onChange={setRecipientScope} />
+                </div>
+                {recipientScope === "selected" ? (
+                    <TemplateTextarea label="接收人员（工号 / 企业微信 UserID / 姓名，每行一个）" value={recipientText} onChange={setRecipientText} rows={4} />
+                ) : null}
+                <TemplateTextarea label="生成要求" value={prompt} onChange={setPrompt} rows={4} />
+                <div className="mt-6 flex justify-end gap-3">
+                    <Button type="button" variant="outline" className="h-10 rounded-xl border-slate-200 bg-white" onClick={() => onOpenChange(false)}>
+                        取消
+                    </Button>
+                    <Button type="button" className="h-10 rounded-xl bg-primary text-primary-foreground" onClick={submit} disabled={saving}>
+                        {saving ? <Loader2 className="size-4 animate-spin" /> : <CalendarClock className="size-4" />}
+                        保存计划
+                    </Button>
+                </div>
+            </DialogContent>
+        </Dialog>
+    );
+}
+
 function ReportHistoryPanel({
     keyword,
     onKeywordChange,
@@ -533,7 +927,7 @@ function ReportHistoryPanel({
     onSelect: (id: number) => void;
 }) {
     return (
-        <aside className="insight-card flex min-h-[18rem] min-w-0 flex-col overflow-hidden p-0 2xl:max-h-[calc(100dvh-25rem)]">
+        <aside className="insight-card flex min-h-[18rem] min-w-0 flex-col overflow-hidden p-0 xl:max-h-[calc(100dvh-25rem)]">
             <div className="border-b border-slate-100 p-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className="min-w-0">
@@ -661,7 +1055,11 @@ function TemplateDialog({
                     <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-dashed border-slate-200 bg-slate-50/80 p-4">
                         <div>
                             <div className="text-sm font-black text-slate-800">上传 Word / Excel 模板</div>
-                            <p className="mt-1 text-xs leading-5 text-slate-500">系统会解析标题、段落、表格、Sheet 和字段结构，保存成可复用报告模板。</p>
+                            <p className="mt-1 text-xs leading-5 text-slate-500">系统会解析标题、段落、表格、Sheet 和字段结构，保存成可复用报告生成模板。</p>
+                            <p className="mt-1 flex items-center gap-1.5 text-xs leading-5 text-amber-700">
+                                <Info className="size-3.5 shrink-0" />
+                                当前真实可导出格式为 HTML / PDF / DOCX；XLSX 套版导出尚未接入。
+                            </p>
                         </div>
                         <input ref={uploadInputRef} type="file" accept=".docx,.xlsx" className="hidden" onChange={(event) => handleUpload(event.target.files?.[0] ?? null)} />
                         <Button type="button" variant="outline" className="h-10 rounded-xl border-slate-200 bg-white" onClick={() => uploadInputRef.current?.click()} disabled={saving}>
@@ -707,9 +1105,12 @@ function TemplateDialog({
                                     </div>
                                     <div className="mt-2 flex flex-wrap gap-1.5">
                                         <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-black text-blue-700">{templateKindLabel(template.template_kind)}</span>
-                                        <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-black text-slate-500">
+                                        <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-black text-emerald-700">
                                             {templateExportCapabilityLabel(template)}
                                         </span>
+                                        {templatePlannedCapabilityLabel(template) ? (
+                                            <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-black text-amber-700">{templatePlannedCapabilityLabel(template)}</span>
+                                        ) : null}
                                     </div>
                                     <p className="mt-1 line-clamp-2 text-xs leading-5 text-slate-500">{template.description || template.default_prompt}</p>
                                 </button>
@@ -725,8 +1126,13 @@ function TemplateDialog({
                         <div className="mb-4 grid gap-3 rounded-2xl border border-slate-200 bg-slate-50/80 p-4 md:grid-cols-3">
                             <TemplateMeta label="模板归属" value={currentIsMarket ? "模板市场" : selectedTemplate?.editable ? "我的模板" : "系统模板"} />
                             <TemplateMeta label="模板类型" value={templateKindLabel(selectedTemplate?.template_kind)} />
-                            <TemplateMeta label="交付能力" value={templateExportCapabilityLabel(selectedTemplate)} />
+                            <TemplateMeta label="真实导出" value={templateExportCapabilityLabel(selectedTemplate)} />
                         </div>
+                        {templatePlannedCapabilityLabel(selectedTemplate) ? (
+                            <div className="mb-4 rounded-2xl border border-amber-100 bg-amber-50/70 px-4 py-3 text-xs font-semibold leading-5 text-amber-800">
+                                {templatePlannedCapabilityLabel(selectedTemplate)}。当前上传模板会参与章节结构和 Prompt 生成，不会直接按原文件套版导出。
+                            </div>
+                        ) : null}
                         <div className="grid gap-4 md:grid-cols-2">
                             <TemplateField label="模板名称" value={draftName} onChange={setDraftName} />
                             <TemplateField label="报告类型" value={draftReportType} onChange={setDraftReportType} />
@@ -935,12 +1341,55 @@ function templateKindLabel(value?: string) {
 }
 
 function templateExportCapabilityLabel(template?: InsightReportTemplateRead | null) {
-    if (!template) return "HTML 导出";
-    if (template.template_kind === "document" && template.source_file_type) {
-        return `${template.source_file_type.toUpperCase()} 结构解析，套版导出待接入`;
+    const formats = template?.export_formats?.filter((format) => ["html", "pdf", "docx"].includes(format.toLowerCase())) ?? [];
+    return formats.length ? formats.join(" / ").toUpperCase() : "HTML / PDF / DOCX";
+}
+
+function templatePlannedCapabilityLabel(template?: InsightReportTemplateRead | null) {
+    if (!template) return "";
+    const plannedFormats = (template.export_formats ?? []).filter((format) => !["html", "pdf", "docx"].includes(format.toLowerCase()));
+    if (template.source_file_type) {
+        return `${template.source_file_type.toUpperCase()} 套版导出待接入`;
     }
-    const formats = template.export_formats ?? [];
-    return formats.length ? formats.join(" / ").toUpperCase() : "HTML 导出";
+    if (plannedFormats.length) {
+        return `${plannedFormats.join(" / ").toUpperCase()} 待接入`;
+    }
+    return "";
+}
+
+function reportGenerationModeLabel(mode?: string | null) {
+    if (mode === "llm") return "AI 生成";
+    if (mode === "rules") return "证据草稿";
+    return "库内证据";
+}
+
+function reportScheduleLabel(subscription: InsightReportSubscriptionRead) {
+    if (subscription.schedule_frequency === "daily") return `每天 ${subscription.time_of_day}`;
+    if (subscription.schedule_frequency === "monthly") return `每月 ${subscription.day_of_month ?? 1} 号 ${subscription.time_of_day}`;
+    return `${weekdayName(subscription.weekday ?? 0)} ${subscription.time_of_day}`;
+}
+
+function reportScopeLabel(subscription: InsightReportSubscriptionRead) {
+    if (subscription.scope_type === "sys_company") return "所属公司全部企业";
+    if (subscription.scope_type === "company") return `指定 ${subscription.company_ids.length} 家企业`;
+    if (subscription.scope_type === "data_source") return `指定 ${subscription.data_source_ids.length} 个数据源`;
+    return `素材池：${subscription.folder_name || "默认素材池"}`;
+}
+
+function weekdayOptions() {
+    return [
+        { value: "0", label: "周一" },
+        { value: "1", label: "周二" },
+        { value: "2", label: "周三" },
+        { value: "3", label: "周四" },
+        { value: "4", label: "周五" },
+        { value: "5", label: "周六" },
+        { value: "6", label: "周日" },
+    ];
+}
+
+function weekdayName(value: number) {
+    return weekdayOptions().find((item) => item.value === String(value))?.label ?? "周一";
 }
 
 function exportStatusLabel(status: string) {
@@ -1117,10 +1566,11 @@ function ExportHistoryPanel({
     exports: InsightReportExportRead[];
     loading: boolean;
     exporting: boolean;
-    onRetry: (reportId: number) => void;
+    onRetry: (reportId: number, exportRecord: InsightReportExportRead) => void;
     onDownload: (reportId: number, exportRecord: InsightReportExportRead) => void;
 }) {
     const recentExports = exports.slice(0, 3);
+    const latestExport = recentExports[0];
     return (
         <div className="mx-auto mb-4 max-w-[920px] rounded-2xl border border-slate-200 bg-white/90 p-3 shadow-sm">
             <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1128,7 +1578,13 @@ function ExportHistoryPanel({
                     <div className="text-xs font-black text-slate-700">导出历史</div>
                     <p className="mt-1 text-xs text-slate-500">{loading ? "正在读取导出记录" : recentExports.length ? "最近导出记录可下载或重试" : "暂无导出记录"}</p>
                 </div>
-                <Button type="button" variant="outline" className="h-8 rounded-xl border-slate-200 bg-white text-xs" onClick={() => onRetry(reportId)} disabled={exporting}>
+                <Button
+                    type="button"
+                    variant="outline"
+                    className="h-8 rounded-xl border-slate-200 bg-white text-xs"
+                    onClick={() => latestExport && onRetry(reportId, latestExport)}
+                    disabled={exporting || !latestExport}
+                >
                     {exporting ? <Loader2 className="size-3.5 animate-spin" /> : <Download className="size-3.5" />}
                     重新导出
                 </Button>
@@ -1154,7 +1610,7 @@ function ExportHistoryPanel({
                                     </Button>
                                 ) : null}
                                 {item.status === "failed" ? (
-                                    <Button type="button" variant="ghost" className="h-8 rounded-xl px-2 text-xs text-rose-700" onClick={() => onRetry(reportId)} disabled={exporting}>
+                                    <Button type="button" variant="ghost" className="h-8 rounded-xl px-2 text-xs text-rose-700" onClick={() => onRetry(reportId, item)} disabled={exporting}>
                                         {exporting ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
                                         重试
                                     </Button>
@@ -1190,7 +1646,7 @@ function ReportDocument({
     onSave: (reportId: number, payload: { title: string; summary: string; content_json: InsightReportContent; change_summary: string }) => void;
     onOpenAccess: (report: ReportDetail | InsightReportListItem) => void;
     onOpenPush: (report: ReportDetail | InsightReportListItem) => void;
-    onExport: (reportId: number) => void;
+    onExport: (reportId: number, exportFormat: ReportExportFormat) => void;
     onDownloadExport: (reportId: number, exportRecord: InsightReportExportRead) => void;
 }) {
     const initialContent = report?.content_json ?? {};
@@ -1246,12 +1702,18 @@ function ReportDocument({
     };
 
     return (
-        <article className="min-h-0 min-w-0 overflow-y-auto rounded-2xl border border-slate-200 bg-slate-100/60 px-3 py-4 shadow-sm 2xl:max-h-[calc(100dvh-25rem)] sm:px-4 sm:py-6">
+        <article className="min-h-0 min-w-0 overflow-y-auto rounded-2xl border border-slate-200 bg-slate-100/60 px-3 py-4 shadow-sm xl:max-h-[calc(100dvh-25rem)] sm:px-4 sm:py-6">
             <div className="mx-auto mb-4 flex max-w-[920px] flex-wrap items-center justify-between gap-3">
                 <div className="text-xs font-semibold text-slate-500">
                     {content.template_name ? `模板：${content.template_name}` : "Word 式报告"}
                     <span className="mx-2 text-slate-300">/</span>
                     第 {report.version_no} 版
+                    {typeof content.generation_mode === "string" ? (
+                        <>
+                            <span className="mx-2 text-slate-300">/</span>
+                            {reportGenerationModeLabel(content.generation_mode)}
+                        </>
+                    ) : null}
                 </div>
                 <div className="insight-actions">
                     {editing ? (
@@ -1275,9 +1737,17 @@ function ReportDocument({
                                 <Send className="size-4" />
                                 企微推送
                             </Button>
-                            <Button type="button" variant="outline" className="h-9 rounded-xl border-slate-200 bg-white text-violet-700" onClick={() => onExport(report.id)} disabled={exporting}>
+                            <Button type="button" variant="outline" className="h-9 rounded-xl border-slate-200 bg-white text-violet-700" onClick={() => onExport(report.id, "html")} disabled={exporting}>
                                 {exporting ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}
                                 导出 HTML
+                            </Button>
+                            <Button type="button" variant="outline" className="h-9 rounded-xl border-slate-200 bg-white text-emerald-700" onClick={() => onExport(report.id, "pdf")} disabled={exporting}>
+                                {exporting ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}
+                                导出 PDF
+                            </Button>
+                            <Button type="button" variant="outline" className="h-9 rounded-xl border-slate-200 bg-white text-sky-700" onClick={() => onExport(report.id, "docx")} disabled={exporting}>
+                                {exporting ? <Loader2 className="size-4 animate-spin" /> : <Download className="size-4" />}
+                                导出 DOCX
                             </Button>
                             <Button type="button" variant="outline" className="h-9 rounded-xl border-slate-200 bg-white" onClick={() => setEditing(true)}>
                                 <Pencil className="size-4" />
@@ -1293,7 +1763,7 @@ function ReportDocument({
                 exports={exports}
                 loading={exportsLoading}
                 exporting={exporting}
-                onRetry={onExport}
+                onRetry={(reportId, exportRecord) => onExport(reportId, normalizeExportFormat(exportRecord.export_format))}
                 onDownload={onDownloadExport}
             />
 
@@ -1700,6 +2170,12 @@ function downloadBlob(file: Blob, fileName: string) {
     URL.revokeObjectURL(url);
 }
 
+function normalizeExportFormat(format?: string | null): ReportExportFormat {
+    const normalized = format?.toLowerCase();
+    if (normalized === "pdf" || normalized === "docx") return normalized;
+    return "html";
+}
+
 async function insightDownloadReportExport(reportId: number, exportRecord: InsightReportExportRead) {
     const file = await insightApi.downloadReportExport(reportId, exportRecord.id);
     downloadBlob(file, exportRecord.file_name || `insight-report-${reportId}.${exportRecord.export_format || "html"}`);
@@ -1708,4 +2184,10 @@ async function insightDownloadReportExport(reportId: number, exportRecord: Insig
 function formatFullDate(value?: string | null) {
     if (!value) return "生成时间未知";
     return new Date(value).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
+function parseOptionalNumber(value: string) {
+    if (!value) return undefined;
+    const numberValue = Number(value);
+    return Number.isFinite(numberValue) ? numberValue : undefined;
 }

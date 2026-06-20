@@ -194,7 +194,7 @@ class InsightCrawlService:
                 subject_name=str(subject_context.get("subject_name") or llm_result.get("subject_name") or self._infer_subject_name(title) or "")[:200] or None,
                 company_id=subject_context.get("company_id"),
                 intelligence_type=intelligence_type,
-                suggested_tags=self._normalize_llm_tags(llm_result.get("tags")) + quality_tags,
+                suggested_tags=self._normalize_llm_tags(llm_result.get("tags")) + self._llm_analysis_tags(llm_result) + quality_tags,
                 confidence=self._quality_adjusted_confidence(self._float_value(llm_result.get("confidence"), 0.68), quality_report),
                 review_status=review_status,
                 status="active",
@@ -236,10 +236,12 @@ class InsightCrawlService:
                         content=(
                             "你是研发营销市场洞察平台的情报摘要助手。"
                             "请从网页正文中抽取适合业务人员阅读的候选情报，输出严格 JSON。"
-                            "字段包括 title、summary、subject_type、subject_name、intelligence_type、tags、confidence。"
+                            "字段包括 title、summary、subject_type、subject_name、intelligence_type、tags、sentiment、sentiment_reason、opportunities、risks、confidence。"
                             "summary 用中文，2-4 句，突出事件、主体、影响或商业价值；"
                             "subject_type 只能从 allowed_subject_types 中选择；"
                             "intelligence_type 必须使用中文，优先从 新品情报、财报公告、行业资讯、政策法规、应用方案、营销策略、竞品动态、经营动态、风险预警 中选择；"
+                            "sentiment 只能为 positive、neutral、negative、mixed；"
+                            "opportunities 和 risks 为中文字符串数组，分别给出可用于研发营销判断的机会点和风险点；"
                             "tags 为字符串数组，最多 6 个；confidence 为 0 到 1。"
                         )
                     ),
@@ -365,6 +367,28 @@ class InsightCrawlService:
             if len(tags) >= 6:
                 break
         return tags
+
+    def _llm_analysis_tags(self, value: dict[str, Any]) -> list[dict[str, Any]]:
+        sentiment = str(value.get("sentiment") or "neutral").strip()
+        if sentiment not in {"positive", "neutral", "negative", "mixed"}:
+            sentiment = "neutral"
+        return [
+            {
+                "name": "AI分析",
+                "source": "llm_analysis",
+                "sentiment": sentiment,
+                "sentiment_reason": str(value.get("sentiment_reason") or "").strip()[:500],
+                "opportunities": self._string_items(value.get("opportunities"))[:6],
+                "risks": self._string_items(value.get("risks"))[:6],
+            }
+        ]
+
+    def _string_items(self, value: object) -> list[str]:
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item).strip()]
+        if isinstance(value, str) and value.strip():
+            return [item.strip() for item in re.split(r"[\n;；]+", value) if item.strip()]
+        return []
 
     async def _assess_crawl_quality(
         self,

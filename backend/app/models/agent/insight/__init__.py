@@ -25,6 +25,7 @@ from app.models.agent.insight.report import (
     InsightReportTemplate,
     InsightReportVersion,
 )
+from app.models.agent.insight.report_subscription import InsightReportSubscription
 from app.models.agent.insight.review import InsightReviewRecord
 from app.models.agent.insight.subject import InsightSubject
 from app.models.agent.insight.tag import InsightIntelligenceTag, InsightTag
@@ -48,6 +49,7 @@ __all__ = [
     "InsightReportExport",
     "InsightReportMaterial",
     "InsightReportPreference",
+    "InsightReportSubscription",
     "InsightReportTemplate",
     "InsightReportVersion",
     "InsightSubject",

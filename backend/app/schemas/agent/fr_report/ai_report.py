@@ -56,6 +56,7 @@ class GenerateSqlStepResponse(BaseModel):
     requirementSummary: dict[str, Any] | None = None
     excelAnalysis: ExcelAnalysisResult | None = None
     querySql: str | None = None
+    createTableSql: str | None = None
     sqlValidation: "SqlValidationResult | None" = None
     warnings: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
@@ -93,10 +94,49 @@ class GenerateCptStepResponse(BaseModel):
     createSqlObjectPath: str | None = None
     logObjectPath: str | None = None
     previewUrl: str | None = None
+    reportId: str | None = None
+    fileVersionId: str | None = None
+    structureVersionId: str | None = None
+    conflict: dict[str, Any] | None = None
     warnings: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     createTime: datetime
     updateTime: datetime
+
+
+class FrAiReportAgentContext(BaseModel):
+    reportName: str | None = None
+    targetFolder: str | None = None
+    targetObjectPath: str | None = None
+    sourceTableName: str | None = None
+    templateObjectPath: str | None = None
+    taskId: str | None = None
+    conversationId: str | None = None
+    requirement: str | None = None
+    ddlDialect: str = "sqlserver"
+    idAutoIncrement: bool = True
+
+
+class FrAiReportAgentEvent(BaseModel):
+    type: str
+    content: str | None = None
+    toolName: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class FrAiReportAgentChatResponse(BaseModel):
+    status: str
+    conversationId: str | None = None
+    taskId: str | None = None
+    context: FrAiReportAgentContext
+    events: list[FrAiReportAgentEvent] = Field(default_factory=list)
+    questions: list[str] = Field(default_factory=list)
+    review: "FrAiReportRequirementReviewResponse | None" = None
+    sqlStep: GenerateSqlStepResponse | None = None
+    dslStep: GenerateDslStepResponse | None = None
+    cptStep: GenerateCptStepResponse | None = None
+    warnings: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
 
 
 class PreviewValidationResult(BaseModel):
@@ -132,6 +172,21 @@ class FrAiReportQualityGate(BaseModel):
     autoCheck: bool = False
 
 
+class FrAiReportWriteBackPlan(BaseModel):
+    enabled: bool = False
+    mode: str = "none"
+    targetTable: str | None = None
+    primaryKeys: list[str] = Field(default_factory=list)
+    hiddenKeys: list[str] = Field(default_factory=list)
+    editableFields: list[str] = Field(default_factory=list)
+    readonlyFields: list[str] = Field(default_factory=list)
+    calculatedFields: list[str] = Field(default_factory=list)
+    allowInsert: bool = False
+    allowDelete: bool = False
+    widgetPolicy: str = "轻量控件优先；单元格不绑定大数据集下拉，避免填报预览卡顿。"
+    safetyNotes: list[str] = Field(default_factory=list)
+
+
 class FrAiReportRequirementReviewResponse(BaseModel):
     status: str
     scenario: str | None = None
@@ -143,6 +198,7 @@ class FrAiReportRequirementReviewResponse(BaseModel):
     maintenanceTables: list[FrAiReportMaintenanceTable] = Field(default_factory=list)
     recommendedSourceTables: list[str] = Field(default_factory=list)
     qualityGates: list[FrAiReportQualityGate] = Field(default_factory=list)
+    writeBackPlan: FrAiReportWriteBackPlan = Field(default_factory=FrAiReportWriteBackPlan)
     warnings: list[str] = Field(default_factory=list)
     excelAnalysis: ExcelAnalysisResult | None = None
 

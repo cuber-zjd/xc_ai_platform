@@ -4,6 +4,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from app.schemas.agent.insight.common import InsightBaseRead
+from app.schemas.agent.insight.notification import InsightNotificationRecipient, InsightNotificationRead
 
 
 class InsightReportGenerateRequest(BaseModel):
@@ -227,3 +228,98 @@ class InsightReportGenerateResponse(BaseModel):
     task_id: int | None = None
     used_material_count: int
     generation_mode: str
+
+
+class InsightReportSubscriptionBase(BaseModel):
+    subscription_name: str = Field(max_length=160)
+    report_type: str = Field(default="专题报告", max_length=50)
+    template_code: str | None = Field(default=None, max_length=80)
+    scope_type: str = Field(default="material_pool", max_length=30)
+    sys_company_id: int | None = None
+    company_ids: list[int] = Field(default_factory=list)
+    data_source_ids: list[int] = Field(default_factory=list)
+    folder_name: str | None = Field(default="P1企业档案测试素材", max_length=100)
+    max_materials: int = Field(default=100, ge=5, le=120)
+    generation_prompt: str | None = Field(default=None, max_length=3000)
+    schedule_frequency: str = Field(default="weekly", max_length=30)
+    weekday: int | None = Field(default=0, ge=0, le=6)
+    day_of_month: int | None = Field(default=1, ge=1, le=31)
+    time_of_day: str = Field(default="09:00", max_length=5)
+    timezone: str = Field(default="Asia/Shanghai", max_length=60)
+    wecom_recipient_scope: str = Field(default="selected", max_length=30)
+    wecom_recipients: list[InsightNotificationRecipient] = Field(default_factory=list)
+    visibility_scope: str = Field(default="private", max_length=30)
+    status: str = Field(default="active", max_length=30)
+
+
+class InsightReportSubscriptionCreate(InsightReportSubscriptionBase):
+    pass
+
+
+class InsightReportSubscriptionUpdate(BaseModel):
+    subscription_name: str | None = Field(default=None, max_length=160)
+    report_type: str | None = Field(default=None, max_length=50)
+    template_code: str | None = Field(default=None, max_length=80)
+    scope_type: str | None = Field(default=None, max_length=30)
+    sys_company_id: int | None = None
+    company_ids: list[int] | None = None
+    data_source_ids: list[int] | None = None
+    folder_name: str | None = Field(default=None, max_length=100)
+    max_materials: int | None = Field(default=None, ge=5, le=120)
+    generation_prompt: str | None = Field(default=None, max_length=3000)
+    schedule_frequency: str | None = Field(default=None, max_length=30)
+    weekday: int | None = Field(default=None, ge=0, le=6)
+    day_of_month: int | None = Field(default=None, ge=1, le=31)
+    time_of_day: str | None = Field(default=None, max_length=5)
+    timezone: str | None = Field(default=None, max_length=60)
+    wecom_recipient_scope: str | None = Field(default=None, max_length=30)
+    wecom_recipients: list[InsightNotificationRecipient] | None = None
+    visibility_scope: str | None = Field(default=None, max_length=30)
+    status: str | None = Field(default=None, max_length=30)
+
+
+class InsightReportSubscriptionRead(InsightBaseRead):
+    subscription_uid: str
+    subscription_name: str
+    report_type: str
+    template_code: str | None = None
+    scope_type: str
+    sys_company_id: int | None = None
+    company_ids: list[int] = Field(default_factory=list)
+    data_source_ids: list[int] = Field(default_factory=list)
+    folder_name: str | None = None
+    max_materials: int
+    generation_prompt: str | None = None
+    schedule_frequency: str
+    weekday: int | None = None
+    day_of_month: int | None = None
+    time_of_day: str
+    timezone: str
+    next_run_time: datetime | None = None
+    last_run_time: datetime | None = None
+    last_report_id: int | None = None
+    last_notification_id: int | None = None
+    last_status: str | None = None
+    last_error: str | None = None
+    wecom_recipient_scope: str
+    wecom_recipients: list[InsightNotificationRecipient] = Field(default_factory=list)
+    owner_user_id: int | None = None
+    owner_dept_id: int | None = None
+    visibility_scope: str
+    status: str
+
+
+class InsightReportSubscriptionRunResponse(BaseModel):
+    subscription: InsightReportSubscriptionRead
+    report: InsightReportDetail | None = None
+    notification: InsightNotificationRead | None = None
+    skipped: bool = False
+    message: str | None = None
+
+
+class InsightReportSubscriptionDueRunResponse(BaseModel):
+    checked_count: int
+    due_count: int
+    executed_count: int
+    failed_count: int
+    results: list[InsightReportSubscriptionRunResponse] = Field(default_factory=list)

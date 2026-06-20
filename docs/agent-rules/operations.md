@@ -115,13 +115,14 @@ uv sync
 - 新增环境变量：`FINEREPORT_PREVIEW_BASE_URL`。
 - FineReport AI 第三步配置详见 `docs/fr-ai-report-third-step.md`；当前已确认 MinIO S3 API endpoint 为 `192.168.14.41:9000`，bucket 为 `fanruan`，FineReport 访问根地址为 `http://192.168.14.41:1080`。
 - CPT 数据连接名环境变量：`FR_AI_FINEREPORT_DB_NAME`，当前默认 `XcTest`。
-- 帆软专用 MinIO 环境变量：`FR_AI_MINIO_ENDPOINT`、`FR_AI_MINIO_ACCESS_KEY`、`FR_AI_MINIO_SECRET_KEY`、`FR_AI_MINIO_BUCKET_NAME`、`FR_AI_MINIO_SECURE`。这些配置只用于读取现有 `.cpt` / `.frm` 和写入 `webroot/APP/reportlets/AI生成报表/` 专用预览目录，不影响平台通用文件存储。
+- 帆软专用 MinIO 环境变量：`FR_AI_MINIO_ENDPOINT`、`FR_AI_MINIO_ACCESS_KEY`、`FR_AI_MINIO_SECRET_KEY`、`FR_AI_MINIO_BUCKET_NAME`、`FR_AI_MINIO_SECURE`。这些配置只用于读取现有 `.cpt` / `.frm`、写入用户指定的 `webroot/APP/reportlets/` 目标路径和目标目录下的结构化版本库，不影响平台通用文件存储。
 - 报表文件读取环境变量：`FR_AI_REPORT_FILE_PREFIXES` 控制允许扫描的 MinIO 目录，默认 `webroot/APP/reportlets`；`FR_AI_REPORT_FILE_EXTENSIONS` 控制文件类型，默认 `.cpt,.frm`。
 - SQL Server 校验环境变量：`FR_AI_SQLSERVER_ENABLED`、`FR_AI_SQLSERVER_HOST`、`FR_AI_SQLSERVER_PORT`、`FR_AI_SQLSERVER_DATABASE`、`FR_AI_SQLSERVER_USER`、`FR_AI_SQLSERVER_PASSWORD`、`FR_AI_SQLSERVER_QUERY_TIMEOUT_SECONDS`、`FR_AI_SQLSERVER_MAX_ROWS`。
 - `FR_AI_SQLSERVER_ENABLED=false` 时跳过数据 SQL 校验；启用后用于 FineReport AI 报表生成链路中的只读 SQL Server 预执行校验。
 - 用途：AI 报表生成后调用 FineReport 预览 URL 校验 HTTP 状态和页面报错信息。
 - 未配置时：生成任务仍可完成，`PreviewValidator` 会返回 warning 并跳过 HTTP 校验。
 - 新增后端依赖：`openpyxl`，用于 `ExcelAnalyzer` 读取 `.xlsx` 文件。
+- Insight 报告 PDF 导出依赖 `reportlab`，导出服务会优先注册 Windows 中文字体 `NotoSansSC-VF.ttf` / `msyh.ttc` / `simhei.ttf` / `simsun.ttc`，确保中文 PDF 可读；DOCX 通用报告导出依赖 `python-docx`，当前生成可编辑 Word 文件；DOCX 官方模板套版和 XLSX 套版导出仍未接入。
 
 ## 8. SAP 助手配置
 
@@ -159,6 +160,16 @@ uv sync
 - 搜索发现超时由 `INSIGHT_SEARCH_TIMEOUT_SECONDS` 控制，默认 30 秒。
 - Insight 首页看板接口为 `GET /api/v1/insight/dashboard`，聚合当前用户可见的正式情报，返回 KPI、近 7 日趋势、来源分布、重点动态和最新情报；权限过滤和隐藏池过滤必须在后端完成。
 - Insight 数据源配置需要支持手动和周期采集。第一版数据源类型包括官网、通用网页、百度资讯、博查资讯和博查网页搜索；百度资讯通道需要显式走资讯搜索参数，不应复用普通网页搜索结果。
-- 数据源周期配置支持 `manual`、`15m`、`hourly`、`daily` 和自定义 cron。生产环境可通过 `INSIGHT_SCHEDULER_ENABLED=true` 启动常驻调度器；调度器只读取启用且到期的数据源创建采集任务，每轮写入 `scheduler_tick` 任务日志，并通过 PostgreSQL advisory lock 避免多实例重复执行。前端数据源配置页通过 `/api/v1/insight/scheduler/status` 查看运行状态，通过 `/scheduler/run-once` 立即扫描到期任务，通过 `/scheduler/start` 和 `/scheduler/stop` 做运行态控制。连续失败达到 `INSIGHT_SCHEDULER_FAILURE_PAUSE_THRESHOLD` 后数据源会自动暂停周期采集，人工排查后可调用 `/api/v1/insight/data-sources/{data_source_id}/schedule/retry` 加入下一轮调度。
+- 数据源周期配置支持 `manual`、`15m`、`hourly`、`daily` 和自定义 cron。当前正式运行推荐 `INSIGHT_SCHEDULER_ENABLED=true`，`.env.example` 已按开启配置；仅在纯开发调试且不希望消耗外部搜索/抓取额度时手动改为 `false`。调度器只读取启用且到期的数据源创建采集任务，每轮写入 `scheduler_tick` 任务日志，并通过 PostgreSQL advisory lock 避免多实例重复执行。周期调度推荐搜索类数据源配置 `crawl_top_n=0`、`create_candidate_from_hits=true`、`enable_llm_filter=true` 和明确的 `filter_prompt`：平台会先做搜索发现、LLM 结果筛选和搜索摘要级 AI 初筛，再把候选入库；正文级深挖由批处理脚本分时执行，避免常驻调度器被慢 URL 阻塞。搜索通道可用但结果被规则或 LLM 全部过滤时，应记录为成功的 0 候选任务，并保留 `filter_summary`、`rejected_items` 和 LLM 判分信息；只有未配置搜索通道或外部通道调用失败时才标记失败。调度器对单个数据源有超时保护，超时后按失败写回该源状态并进入下一源，不允许长期占用 `scheduler_tick`。前端数据源配置页通过 `/api/v1/insight/scheduler/status` 查看运行状态，通过 `/scheduler/run-once` 立即扫描到期任务，通过 `/scheduler/start` 和 `/scheduler/stop` 做运行态控制。连续失败达到 `INSIGHT_SCHEDULER_FAILURE_PAUSE_THRESHOLD` 后数据源会自动暂停周期采集，人工排查后可调用 `/api/v1/insight/data-sources/{data_source_id}/schedule/retry` 加入下一轮调度。
 - 数据源筛选配置包括确定性规则和 LLM 筛选提示词。LLM 筛选必须可关闭，筛选失败时按数据源配置决定降级保留或丢弃，并记录过滤原因。
 - 御馨及健源第一批实际数据源初始化脚本为 `backend/scripts/seed_insight_data_sources.py`。执行 `uv run python scripts/seed_insight_data_sources.py` 可幂等写入 14 条 `yxjy_` 前缀数据源；追加 `--test` 会代表性测试嘉华官网、御馨大豆蛋白博查资讯和健源新茶饮百度资讯链路。
+ 
+## 泛微流程AI助手环境配置
+
+- `WEAVER_DEFAULT_ENV`：ecode 未传 `env` 时使用的默认泛微环境 key。
+- `WEAVER_DB_CONFIGS`：泛微 MySQL8 多环境连接配置，JSON 对象，key 为环境名，例如 `test`、`prod`。
+- `WEAVER_AI_FIELD_CONFIGS`：字段配置可按环境组织，推荐结构为 `{"test":{"494":[...]}, "prod":{"494":[...]}}`；旧结构 `{"494":[...]}` 仅作为兼容。
+- `WEAVER_AI_MODEL_NAME`：泛微流程 AI 助手专用模型名；配置后优先按模型名调用，用于给流程规则理解更强的模型。
+- `WEAVER_AI_MODEL_CAPABILITY`：未配置专用模型名时使用的模型能力标签，默认 `complex-reasoning`。
+- `WEAVER_AI_ENABLE_REASONING`：模型支持 reasoning 时可开启；本地小模型或不兼容模型建议保持 `false`。
+- ecode 调用字段配置接口时可携带 `env`：`/api/v1/weaver/ai-assistant/field-config?workflow_id=494&env=test`。

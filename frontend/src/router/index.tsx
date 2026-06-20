@@ -35,6 +35,9 @@ const AgentTestPage = lazy(() => import("@/pages/agent-test/AgentTestPage"));
 const SapAssistantPage = lazy(() => import("@/features/sap-assistant/pages/SapAssistantPage"));
 const SapSystemManagerPage = lazy(() => import("@/pages/system/sap/SapSystemManagerPage"));
 const WeaverAssistantEmbedPage = lazy(() => import("@/features/weaver-ai-assistant/pages/WeaverAssistantEmbedPage"));
+const WeaverWorkflowConfigEmbedPage = lazy(() => import("@/features/weaver-ai-assistant/pages/WeaverWorkflowConfigEmbedPage"));
+const WeaverReviewEmbedPage = lazy(() => import("@/features/weaver-ai-assistant/pages/WeaverReviewEmbedPage"));
+const WeaverReviewConfigEmbedPage = lazy(() => import("@/features/weaver-ai-assistant/pages/WeaverReviewConfigEmbedPage"));
 const FrAiReportChatPage = lazy(() =>
     import("@/features/fr-ai-report/pages/FrAiReportChatPage").then((module) => ({ default: module.FrAiReportChatPage })),
 );
@@ -107,9 +110,9 @@ const ProtectedRoute = ({ children, redirectTo = "/login" }: { children: JSX.Ele
     return children;
 };
 
-const AdminRoute = ({ children }: { children: JSX.Element }) => {
+const AdminRoute = ({ children, redirectTo = "/chat-home" }: { children: JSX.Element; redirectTo?: string }) => {
     const user = useAuthStore((state) => state.user);
-    if (user?.role !== "admin") return <Navigate to="/chat-home" replace />;
+    if (user?.role !== "admin") return <Navigate to={redirectTo} replace />;
     return children;
 };
 
@@ -325,6 +328,10 @@ const router = createBrowserRouter([
                 ),
             },
             {
+                path: "assistant",
+                element: <Navigate to="/insight" replace />,
+            },
+            {
                 path: "intelligence",
                 element: (
                     <Suspense fallback={<PageLoader />}>
@@ -364,20 +371,24 @@ const router = createBrowserRouter([
                         </Suspense>
                     ),
                 },
-                {
-                    path: "quality",
-                    element: (
+            {
+                path: "quality",
+                element: (
+                    <AdminRoute redirectTo="/insight">
                         <Suspense fallback={<PageLoader />}>
                             <QualityOverviewPage />
                         </Suspense>
-                    ),
-                },
-                {
-                    path: "settings",
+                    </AdminRoute>
+                ),
+            },
+            {
+                path: "settings",
                 element: (
-                    <Suspense fallback={<PageLoader />}>
-                        <SettingsPage />
-                    </Suspense>
+                    <AdminRoute redirectTo="/insight">
+                        <Suspense fallback={<PageLoader />}>
+                            <SettingsPage />
+                        </Suspense>
+                    </AdminRoute>
                 ),
             },
         ],
@@ -405,6 +416,33 @@ const router = createBrowserRouter([
         element: (
             <Suspense fallback={<PageLoader />}>
                 <WeaverAssistantEmbedPage />
+            </Suspense>
+        ),
+        errorElement: <RouteErrorPage />,
+    },
+    {
+        path: "/weaver/assistant/workflow-config",
+        element: (
+            <Suspense fallback={<PageLoader />}>
+                <WeaverWorkflowConfigEmbedPage />
+            </Suspense>
+        ),
+        errorElement: <RouteErrorPage />,
+    },
+    {
+        path: "/weaver/assistant/review",
+        element: (
+            <Suspense fallback={<PageLoader />}>
+                <WeaverReviewEmbedPage />
+            </Suspense>
+        ),
+        errorElement: <RouteErrorPage />,
+    },
+    {
+        path: "/weaver/assistant/review-config",
+        element: (
+            <Suspense fallback={<PageLoader />}>
+                <WeaverReviewConfigEmbedPage />
             </Suspense>
         ),
         errorElement: <RouteErrorPage />,

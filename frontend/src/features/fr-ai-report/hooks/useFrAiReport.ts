@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiClient } from '@/api/client';
 import type {
     CptPublishResponse,
+    FrAiReportAgentChatPayload,
+    FrAiReportAgentChatResponse,
     FrAiReportFeedbackPayload,
     FrAiReportFeedbackRead,
     FrAiReportRequirementReviewPayload,
@@ -24,7 +26,13 @@ import type {
     FrReportFileListResponse,
     FrReportVisibilityPreferencePayload,
     FrReportVisibilityPreferenceRead,
+    FrReportVersionListResponse,
+    FrReportVersionRollbackResponse,
+    FrReportStructureRollbackResponse,
+    FrReportExternalSyncResponse,
+    FrReportRecycleResponse,
     GenerateCptStepResponse,
+    GenerateCptStepPayload,
     GenerateDslStepResponse,
     GenerateReportPayload,
     GenerateReportResponse,
@@ -52,6 +60,15 @@ export function useGenerateFrAiReport() {
             }
             if (payload.tableSchemaJson) {
                 formData.append('table_schema_json', payload.tableSchemaJson);
+            }
+            if (payload.ddlDialect) {
+                formData.append('ddl_dialect', payload.ddlDialect);
+            }
+            if (typeof payload.idAutoIncrement === 'boolean') {
+                formData.append('id_auto_increment', String(payload.idAutoIncrement));
+            }
+            if (payload.tableNameOverridesJson) {
+                formData.append('table_name_overrides_json', payload.tableNameOverridesJson);
             }
             if (payload.conversationId) {
                 formData.append('conversation_id', payload.conversationId);
@@ -90,6 +107,15 @@ export function useGenerateFrAiReportSqlStep() {
             }
             if (payload.tableSchemaJson) {
                 formData.append('table_schema_json', payload.tableSchemaJson);
+            }
+            if (payload.ddlDialect) {
+                formData.append('ddl_dialect', payload.ddlDialect);
+            }
+            if (typeof payload.idAutoIncrement === 'boolean') {
+                formData.append('id_auto_increment', String(payload.idAutoIncrement));
+            }
+            if (payload.tableNameOverridesJson) {
+                formData.append('table_name_overrides_json', payload.tableNameOverridesJson);
             }
             if (payload.conversationId) {
                 formData.append('conversation_id', payload.conversationId);
@@ -142,9 +168,22 @@ export function useGenerateFrAiReportCptStep() {
     const queryClient = useQueryClient();
 
     return useMutation({
-        mutationFn: async (taskId: string) => {
+        mutationFn: async (payload: string | GenerateCptStepPayload) => {
+            const normalizedPayload = typeof payload === 'string' ? { taskId: payload } : payload;
             const formData = new FormData();
-            formData.append('task_id', taskId);
+            formData.append('task_id', normalizedPayload.taskId);
+            if (normalizedPayload.reportName?.trim()) {
+                formData.append('report_name', normalizedPayload.reportName.trim());
+            }
+            if (normalizedPayload.targetFolder?.trim()) {
+                formData.append('target_folder', normalizedPayload.targetFolder.trim());
+            }
+            if (normalizedPayload.targetObjectPath?.trim()) {
+                formData.append('target_object_path', normalizedPayload.targetObjectPath.trim());
+            }
+            if (normalizedPayload.conflictStrategy) {
+                formData.append('conflict_strategy', normalizedPayload.conflictStrategy);
+            }
             const response = await apiClient.post<GenerateCptStepResponse>(`${BASE_URL}/steps/cpt/generate`, formData, {
                 headers: {
                     'Content-Type': 'multipart/form-data',
@@ -156,6 +195,44 @@ export function useGenerateFrAiReportCptStep() {
         onSuccess: (data) => {
             queryClient.invalidateQueries({ queryKey: ['fr-ai-report-task', data.taskId] });
             queryClient.invalidateQueries({ queryKey: ['fr-ai-report-tasks'] });
+            if (data.cptObjectPath) {
+                queryClient.invalidateQueries({ queryKey: ['fr-report-versions', data.cptObjectPath] });
+            }
+        },
+    });
+}
+
+export function useFrAiReportAgentChat() {
+    const queryClient = useQueryClient();
+
+    return useMutation({
+        mutationFn: async (payload: FrAiReportAgentChatPayload) => {
+            const formData = new FormData();
+            formData.append('message', payload.message);
+            formData.append('action', payload.action ?? 'chat');
+            if (payload.context) {
+                formData.append('context_json', JSON.stringify(payload.context));
+            }
+            if (payload.file) {
+                formData.append('file', payload.file);
+            }
+            const response = await apiClient.post<FrAiReportAgentChatResponse>(`${BASE_URL}/agent/chat`, formData, {
+                headers: {
+                    'Content-Type': 'multipart/form-data',
+                },
+                timeout: 300000,
+            });
+            return response as unknown as FrAiReportAgentChatResponse;
+        },
+        onSuccess: (data) => {
+            if (data.taskId) {
+                queryClient.invalidateQueries({ queryKey: ['fr-ai-report-task', data.taskId] });
+                queryClient.invalidateQueries({ queryKey: ['fr-ai-report-tasks'] });
+            }
+            if (data.cptStep?.cptObjectPath) {
+                queryClient.invalidateQueries({ queryKey: ['fr-report-versions', data.cptStep.cptObjectPath] });
+                queryClient.invalidateQueries({ queryKey: ['fr-ai-report-files'] });
+            }
         },
     });
 }
@@ -284,6 +361,12 @@ export function useGenerateFrReportAiNewReportPlan() {
             if (payload.templateObjectPath) {
                 formData.append('template_object_path', payload.templateObjectPath);
             }
+            if (payload.reportName?.trim()) {
+                formData.append('report_name', payload.reportName.trim());
+            }
+            if (payload.targetFolder?.trim()) {
+                formData.append('target_folder', payload.targetFolder.trim());
+            }
             for (const file of payload.files ?? []) {
                 formData.append('files', file);
             }
@@ -343,6 +426,86 @@ export function useGenerateFrReportAiSnapshotCpt() {
                 timeout: 90000,
             });
             return response as unknown as FrReportAiSnapshotCptResponse;
+        },
+    });
+}
+
+export function useFrReportVersions(objectPath?: string | null) {
+    return useQuery({
+        queryKey: ['fr-report-versions', objectPath],
+        enabled: Boolean(objectPath),
+        queryFn: async () => {
+            const response = await apiClient.get<FrReportVersionListResponse>(`${BASE_URL}/versions`, {
+                params: { object_path: objectPath },
+            });
+            return response as unknown as FrReportVersionListResponse;
+        },
+    });
+}
+
+export function useRollbackFrReportFileVersion() {
+    const queryClient = useQueryClient();
+
+    return useMutation({
+        mutationFn: async (fileVersionId: string) => {
+            const response = await apiClient.post<FrReportVersionRollbackResponse>(`${BASE_URL}/versions/rollback`, {
+                fileVersionId,
+            });
+            return response as unknown as FrReportVersionRollbackResponse;
+        },
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['fr-report-versions'] });
+            queryClient.invalidateQueries({ queryKey: ['fr-ai-report-files'] });
+        },
+    });
+}
+
+export function useRollbackFrReportStructureVersion() {
+    const queryClient = useQueryClient();
+
+    return useMutation({
+        mutationFn: async (structureVersionId: string) => {
+            const response = await apiClient.post<FrReportStructureRollbackResponse>(`${BASE_URL}/versions/structure/rollback`, {
+                structureVersionId,
+            });
+            return response as unknown as FrReportStructureRollbackResponse;
+        },
+        onSuccess: (data) => {
+            queryClient.invalidateQueries({ queryKey: ['fr-report-versions', data.currentObjectPath] });
+        },
+    });
+}
+
+export function useSyncFrReportExternalVersion() {
+    const queryClient = useQueryClient();
+
+    return useMutation({
+        mutationFn: async (objectPath: string) => {
+            const response = await apiClient.post<FrReportExternalSyncResponse>(`${BASE_URL}/versions/external/sync`, {
+                objectPath,
+            });
+            return response as unknown as FrReportExternalSyncResponse;
+        },
+        onSuccess: (data) => {
+            queryClient.invalidateQueries({ queryKey: ['fr-report-versions', data.currentObjectPath] });
+            queryClient.invalidateQueries({ queryKey: ['fr-ai-report-files'] });
+        },
+    });
+}
+
+export function useRecycleFrReportFile() {
+    const queryClient = useQueryClient();
+
+    return useMutation({
+        mutationFn: async (objectPath: string) => {
+            const response = await apiClient.post<FrReportRecycleResponse>(`${BASE_URL}/versions/recycle`, {
+                objectPath,
+            });
+            return response as unknown as FrReportRecycleResponse;
+        },
+        onSuccess: () => {
+            queryClient.invalidateQueries({ queryKey: ['fr-report-versions'] });
+            queryClient.invalidateQueries({ queryKey: ['fr-ai-report-files'] });
         },
     });
 }

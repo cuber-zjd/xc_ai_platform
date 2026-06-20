@@ -100,6 +100,7 @@ class LayoutColumnDSL(BaseModel):
     format: str | None = None
     group: bool = False
     expandDirection: Literal["down", "right", "none"] = "down"
+    hidden: bool = False
 
 
 class HorizontalExpansionDSL(BaseModel):
@@ -135,6 +136,43 @@ class ReportRulesDSL(BaseModel):
     pageSize: int = Field(default=50, ge=1, le=1000)
 
 
+class CellWidgetDSL(BaseModel):
+    field: str
+    widgetType: Literal["text", "number", "date", "combo"] = "text"
+    widgetName: str | None = None
+    dictionaryDataset: str | None = None
+    dictionaryKeyField: str | None = None
+    dictionaryValueField: str | None = None
+
+
+class WriteBackColumnDSL(BaseModel):
+    columnName: str
+    field: str | None = None
+    isKey: bool = False
+    skipUnmodified: bool = False
+    valueFormula: str | None = None
+
+
+class RowActionDSL(BaseModel):
+    enabled: bool = False
+    insertLabel: str = "插入行"
+    deleteLabel: str = "删除行"
+    columnWidth: int = Field(default=70, ge=40, le=160)
+
+
+class WriteBackDSL(BaseModel):
+    enabled: bool = False
+    submitterName: str = "内置SQL1"
+    databaseName: str | None = None
+    schemaName: str = ""
+    tableName: str | None = None
+    mode: Literal["update"] = "update"
+    toolbar: bool = True
+    rowActions: RowActionDSL = Field(default_factory=RowActionDSL)
+    widgets: list[CellWidgetDSL] = Field(default_factory=list)
+    columns: list[WriteBackColumnDSL] = Field(default_factory=list)
+
+
 class ReportDSL(BaseModel):
     schemaVersion: str = "1.0"
     reportName: str
@@ -145,6 +183,7 @@ class ReportDSL(BaseModel):
     datasets: list[DatasetDSL]
     layout: LayoutDSL
     rules: ReportRulesDSL = Field(default_factory=ReportRulesDSL)
+    writeBack: WriteBackDSL = Field(default_factory=WriteBackDSL)
 
     @field_validator("datasets")
     @classmethod

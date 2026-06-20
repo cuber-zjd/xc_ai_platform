@@ -11,6 +11,7 @@ from app.db.session import async_session
 from app.models.agent.insight import InsightTask, InsightTaskStatus
 from app.schemas.agent.insight.data_source import InsightDataSourceScheduleRunResponse
 from app.services.agent.insight.data_source_service import insight_data_source_service
+from app.services.agent.insight.report_subscription_service import insight_report_subscription_service
 
 
 class InsightSchedulerService:
@@ -146,14 +147,28 @@ class InsightSchedulerService:
                     limit=settings.INSIGHT_SCHEDULER_BATCH_LIMIT,
                     user_id=settings.INSIGHT_SCHEDULER_USER_ID,
                 )
-                task.status = InsightTaskStatus.SUCCESS if result.failed_count == 0 else InsightTaskStatus.FAILED
+                report_result = await insight_report_subscription_service.run_due_subscriptions(
+                    db,
+                    limit=settings.INSIGHT_SCHEDULER_BATCH_LIMIT,
+                    triggered_by=triggered_by,
+                )
+                total_failed_count = result.failed_count + report_result.failed_count
+                task.status = InsightTaskStatus.SUCCESS if total_failed_count == 0 else InsightTaskStatus.FAILED
                 task.progress = 100
                 task.finished_at = datetime.now()
-                task.output_payload = result.model_dump(mode="json")
-                task.error_message = None if result.failed_count == 0 else f"{result.failed_count} 个数据源执行失败"
-                self._last_success_at = datetime.now() if result.failed_count == 0 else self._last_success_at
+                task.output_payload = {
+                    "data_sources": result.model_dump(mode="json"),
+                    "report_subscriptions": report_result.model_dump(mode="json"),
+                }
+                task.error_message = None if total_failed_count == 0 else f"{result.failed_count} 个数据源执行失败，{report_result.failed_count} 个定时报告执行失败"
+                self._last_success_at = datetime.now() if total_failed_count == 0 else self._last_success_at
                 self._last_error = task.error_message
-                self._last_result = result.model_dump(mode="json") | {"triggered_by": triggered_by, "task_id": task.id}
+                self._last_result = {
+                    "data_sources": result.model_dump(mode="json"),
+                    "report_subscriptions": report_result.model_dump(mode="json"),
+                    "triggered_by": triggered_by,
+                    "task_id": task.id,
+                }
                 await db.commit()
                 return result
             except Exception as exc:

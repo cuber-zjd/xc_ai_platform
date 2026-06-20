@@ -113,7 +113,7 @@ class HrSyncService:
                 parentid as parent_id,
                 orderindex as order_index,
                 deleted as deleted_flag
-            FROM ZView_FanWei_Company
+            FROM ZView_FanWei_Company_All
             """
             cursor.execute(query)
             columns = [column[0] for column in cursor.description]
@@ -171,7 +171,7 @@ class HrSyncService:
                 rootparentid as company_id,
                 orderindex as order_index,
                 deleted as deleted_flag
-            FROM ZView_FanWei_Department
+            FROM ZView_FanWei_Department_All
             """
             cursor.execute(query)
             columns = [column[0] for column in cursor.description]

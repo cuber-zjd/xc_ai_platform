@@ -1,11 +1,23 @@
 import asyncio
+import hashlib
 import io
+from dataclasses import dataclass
 
 from minio import Minio
 from minio.error import S3Error
 
 from app.core.config import settings
 from app.core.logger import logger
+
+
+@dataclass(frozen=True)
+class FrMinIOObjectStat:
+    object_name: str
+    exists: bool
+    etag: str | None = None
+    last_modified: str | None = None
+    size: int | None = None
+    content_hash: str | None = None
 
 
 class FrMinIOService:
@@ -47,6 +59,34 @@ class FrMinIOService:
             object_name=object_name,
         )
 
+    async def object_exists(self, object_name: str) -> bool:
+        try:
+            await self.stat_object(object_name)
+            return True
+        except S3Error as exc:
+            if exc.code in {"NoSuchKey", "NoSuchObject", "NoSuchBucket"}:
+                return False
+            raise
+
+    async def stat_object_safe(self, object_name: str, include_hash: bool = False) -> FrMinIOObjectStat:
+        try:
+            stat = await self.stat_object(object_name)
+        except S3Error as exc:
+            if exc.code in {"NoSuchKey", "NoSuchObject", "NoSuchBucket"}:
+                return FrMinIOObjectStat(object_name=object_name, exists=False)
+            raise
+        content_hash = None
+        if include_hash:
+            content_hash = hashlib.sha256(await self.download_file(object_name)).hexdigest()
+        return FrMinIOObjectStat(
+            object_name=object_name,
+            exists=True,
+            etag=getattr(stat, "etag", None),
+            last_modified=str(getattr(stat, "last_modified", "") or "") or None,
+            size=getattr(stat, "size", None),
+            content_hash=content_hash,
+        )
+
     async def upload_file(
         self,
         file_data: bytes,
@@ -79,6 +119,17 @@ class FrMinIOService:
         finally:
             response.close()
             response.release_conn()
+
+    async def copy_object_by_download(self, source_object_name: str, target_object_name: str) -> str:
+        data = await self.download_file(source_object_name)
+        return await self.upload_file(data, target_object_name, "application/octet-stream")
+
+    async def delete_object(self, object_name: str) -> None:
+        await asyncio.to_thread(
+            self.client.remove_object,
+            bucket_name=self.bucket,
+            object_name=object_name,
+        )
 
 
 fr_minio_service = FrMinIOService()

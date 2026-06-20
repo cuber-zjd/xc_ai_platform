@@ -1,12 +1,21 @@
-import { Bell, CalendarDays, ChevronDown, Search } from "lucide-react";
+import { Bell, CalendarDays, ChevronDown, LogOut, Search } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { useAuthStore } from "@/store/useAuthStore";
 
 export function InsightHeader() {
     const user = useAuthStore((state) => state.user);
+    const logout = useAuthStore((state) => state.logout);
+    const navigate = useNavigate();
     const displayName = user?.full_name?.trim() || user?.username?.trim() || "当前用户";
     const avatarText = getAvatarText(displayName);
     const todayLabel = formatTodayLabel();
+
+    const handleLogout = () => {
+        logout();
+        navigate("/insight/login", { replace: true });
+    };
 
     return (
         <header className="z-20 flex min-h-[var(--insight-header-height)] shrink-0 items-center justify-between border-b border-slate-200 bg-white/95 px-[var(--insight-space-page-x)] py-3 backdrop-blur-xl md:py-0">
@@ -29,11 +38,36 @@ export function InsightHeader() {
                         <Bell className="size-4" />
                         <span className="absolute right-2 top-2 size-2 rounded-full bg-red-500" />
                     </button>
-                    <div className="flex min-w-0 items-center gap-2 sm:gap-3" title={displayName}>
-                        <div className="grid size-10 place-items-center rounded-full border border-blue-100 bg-linear-to-br from-blue-100 to-orange-100 text-sm font-black text-blue-700">{avatarText}</div>
-                        <span className="hidden max-w-32 truncate text-sm font-bold text-slate-800 sm:inline">{displayName}</span>
-                        <ChevronDown className="size-4 text-slate-500" />
-                    </div>
+                    <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                            <button
+                                type="button"
+                                className="flex min-w-0 items-center gap-2 rounded-full px-1 py-1 text-left transition hover:bg-slate-100 sm:gap-3"
+                                title={displayName}
+                                aria-label="打开用户菜单"
+                            >
+                                <span className="grid size-10 place-items-center rounded-full border border-blue-100 bg-linear-to-br from-blue-100 to-orange-100 text-sm font-black text-blue-700">
+                                    {avatarText}
+                                </span>
+                                <span className="hidden max-w-32 truncate text-sm font-bold text-slate-800 sm:inline">{displayName}</span>
+                                <ChevronDown className="size-4 text-slate-500" />
+                            </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="w-56 rounded-xl border-slate-200 p-2 shadow-xl">
+                            <DropdownMenuLabel className="px-3 py-2">
+                                <div className="truncate text-sm font-bold text-slate-900">{displayName}</div>
+                                <div className="truncate text-xs font-medium text-slate-500">@{user?.username || "user"}</div>
+                            </DropdownMenuLabel>
+                            <DropdownMenuSeparator />
+                            <DropdownMenuItem
+                                className="cursor-pointer rounded-lg px-3 py-2 text-red-600 focus:text-red-600"
+                                onClick={handleLogout}
+                            >
+                                <LogOut className="mr-2 size-4" />
+                                退出登录
+                            </DropdownMenuItem>
+                        </DropdownMenuContent>
+                    </DropdownMenu>
                 </div>
             </div>
         </header>

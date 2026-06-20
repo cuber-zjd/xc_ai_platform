@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 import type { InsightAccessRuleRead } from "../api";
-import { useInsightAccessRules, useInsightGrantAccessRule, useInsightRevokeAccessRule } from "../hooks";
+import { useInsightAccessRules, useInsightGrantAccessRule, useInsightGrantAccessRulesBulk, useInsightRevokeAccessRule } from "../hooks";
 import { InsightSelect } from "./InsightSelect";
 
 const principalOptions = [
@@ -27,12 +27,14 @@ export function AccessRuleDialog({
     onOpenChange,
     targetType,
     targetId,
+    targetIds,
     targetName,
 }: {
     open: boolean;
     onOpenChange: (open: boolean) => void;
     targetType: string;
     targetId: number | null;
+    targetIds?: number[];
     targetName: string;
 }) {
     const [principalType, setPrincipalType] = useState("all");
@@ -40,26 +42,49 @@ export function AccessRuleDialog({
     const [permission, setPermission] = useState("view");
     const rulesQuery = useInsightAccessRules(targetType, open ? targetId : null);
     const grantMutation = useInsightGrantAccessRule();
+    const bulkGrantMutation = useInsightGrantAccessRulesBulk();
     const revokeMutation = useInsightRevokeAccessRule();
     const rules = rulesQuery.data ?? [];
-    const pending = grantMutation.isPending || revokeMutation.isPending;
+    const bulkTargetIds = targetIds?.length ? Array.from(new Set(targetIds)) : [];
+    const isBulk = bulkTargetIds.length > 1;
+    const pending = grantMutation.isPending || bulkGrantMutation.isPending || revokeMutation.isPending;
 
     const handleGrant = () => {
-        if (!targetId) return;
+        if (!targetId && !isBulk) return;
         if (principalType !== "all" && !principalId.trim()) {
             toast.error("请填写授权对象 ID");
+            return;
+        }
+        const data = {
+            principal_type: principalType,
+            principal_id: principalType === "all" ? null : Number(principalId),
+            permission,
+            grant_type: "manual",
+        };
+        if (isBulk) {
+            bulkGrantMutation.mutate(
+                {
+                    targetType,
+                    data: {
+                        ...data,
+                        target_ids: bulkTargetIds,
+                    },
+                },
+                {
+                    onSuccess: (result) => {
+                        toast.success(`已批量更新 ${result.target_count} 个对象权限`);
+                        setPrincipalId("");
+                    },
+                    onError: () => toast.error("批量授权失败，请检查对象 ID"),
+                },
+            );
             return;
         }
         grantMutation.mutate(
             {
                 targetType,
-                targetId,
-                data: {
-                    principal_type: principalType,
-                    principal_id: principalType === "all" ? null : Number(principalId),
-                    permission,
-                    grant_type: "manual",
-                },
+                targetId: targetId ?? 0,
+                data,
             },
             {
                 onSuccess: () => {
@@ -90,7 +115,9 @@ export function AccessRuleDialog({
                         <Users className="size-5 text-primary" />
                         权限配置
                     </DialogTitle>
-                    <DialogDescription>{targetName || "当前对象"} 的可见与协作权限会在后端过滤生效。</DialogDescription>
+                    <DialogDescription>
+                        {isBulk ? `将批量调整 ${bulkTargetIds.length} 个对象的可见与协作权限。` : `${targetName || "当前对象"} 的可见与协作权限会在后端过滤生效。`}
+                    </DialogDescription>
                 </DialogHeader>
                 <div className="max-h-[68vh] overflow-y-auto p-5">
                     <div className="rounded-2xl border border-slate-200 bg-slate-50/80 p-4">
@@ -107,21 +134,26 @@ export function AccessRuleDialog({
                                 />
                             </label>
                             <InsightSelect label="权限" value={permission} options={permissionOptions} onChange={setPermission} />
-                            <Button type="button" className="h-10 rounded-xl" onClick={handleGrant} disabled={pending || !targetId}>
-                                {grantMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />}
-                                添加
+                            <Button type="button" className="h-10 rounded-xl" onClick={handleGrant} disabled={pending || (!targetId && !isBulk)}>
+                                {grantMutation.isPending || bulkGrantMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />}
+                                {isBulk ? "批量添加" : "添加"}
                             </Button>
                         </div>
                     </div>
 
                     <div className="mt-4 space-y-2">
-                        {rulesQuery.isLoading ? (
+                        {isBulk ? (
+                            <div className="rounded-xl border border-blue-100 bg-blue-50 p-4 text-sm font-semibold leading-6 text-blue-800">
+                                批量模式只会为选中的 {bulkTargetIds.length} 个对象添加或更新同一条授权规则，不会删除它们已有的其他授权。
+                            </div>
+                        ) : null}
+                        {!isBulk && rulesQuery.isLoading ? (
                             <div className="rounded-xl border border-dashed border-slate-200 p-6 text-center text-sm font-semibold text-slate-500">正在读取授权规则...</div>
                         ) : null}
-                        {!rulesQuery.isLoading && rules.length === 0 ? (
+                        {!isBulk && !rulesQuery.isLoading && rules.length === 0 ? (
                             <div className="rounded-xl border border-dashed border-slate-200 p-6 text-center text-sm font-semibold text-slate-500">暂无额外授权，仅所有者和管理员可访问。</div>
                         ) : null}
-                        {rules.map((rule) => (
+                        {!isBulk && rules.map((rule) => (
                             <div key={rule.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3">
                                 <div className="min-w-0">
                                     <div className="text-sm font-black text-slate-800">

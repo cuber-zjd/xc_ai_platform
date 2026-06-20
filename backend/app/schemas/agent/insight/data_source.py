@@ -26,6 +26,7 @@ class InsightDataSourceFetchConfig(BaseModel):
     auto_review_intelligence_types: list[str] = Field(default_factory=list)
     auto_add_to_report_pool: bool = False
     auto_report_folder: str | None = Field(default=None, max_length=100)
+    create_candidate_from_hits: bool = False
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -41,6 +42,49 @@ class InsightDataSourceCreate(BaseModel):
     schedule_enabled: bool | None = None
     visibility_scope: str = Field(default="private", max_length=30)
     status: str = Field(default="enabled", max_length=20)
+
+
+class InsightDataSourceBatchCreateRequest(BaseModel):
+    company_ids: list[int] = Field(..., min_length=1, max_length=500)
+    source_types: list[str] = Field(..., min_length=1, max_length=20)
+    keyword_template: str | None = Field(default=None, max_length=500)
+    include_keywords: list[str] = Field(default_factory=list)
+    exclude_keywords: list[str] = Field(default_factory=list)
+    fetch_frequency: str = Field(default="daily", max_length=50)
+    max_results: int = Field(default=6, ge=1, le=20)
+    crawl_top_n: int = Field(default=0, ge=0, le=20)
+    freshness: str | None = Field(default="noLimit", max_length=50)
+    enable_llm_filter: bool = True
+    filter_prompt: str | None = Field(default=None, max_length=2000)
+    auto_review_mode: str = Field(default="high_confidence", max_length=30)
+    auto_review_min_confidence: float = Field(default=0.72, ge=0, le=1)
+    auto_add_to_report_pool: bool = True
+    auto_report_folder: str | None = Field(default="期初真实运行素材池", max_length=100)
+    visibility_scope: str = Field(default="assigned", max_length=30)
+    status: str = Field(default="enabled", max_length=20)
+    update_existing: bool = True
+
+
+class InsightDataSourceBatchCreateItem(BaseModel):
+    company_id: int
+    company_name: str
+    source_type: str
+    source_name: str
+    source_code: str
+    status: str
+    data_source_id: int | None = None
+    message: str | None = None
+
+
+class InsightDataSourceBatchCreateResponse(BaseModel):
+    requested_company_count: int
+    requested_type_count: int
+    requested_count: int
+    created_count: int = 0
+    updated_count: int = 0
+    skipped_count: int = 0
+    failed_count: int = 0
+    items: list[InsightDataSourceBatchCreateItem] = Field(default_factory=list)
 
 
 class InsightDataSourceUpdate(BaseModel):
@@ -82,6 +126,29 @@ class InsightDataSourceRead(InsightBaseRead):
     status: str
 
 
+class InsightDataSourceGroupRead(BaseModel):
+    group_key: str
+    company_id: int | None = None
+    company_name: str | None = None
+    company_short_name: str | None = None
+    sys_company_id: int | None = None
+    source_type: str
+    source_type_label: str
+    total_count: int = 0
+    enabled_count: int = 0
+    disabled_count: int = 0
+    scheduled_count: int = 0
+    llm_filter_count: int = 0
+    auto_review_count: int = 0
+    failed_count: int = 0
+    paused_count: int = 0
+    latest_success_time: datetime | None = None
+    latest_failure_time: datetime | None = None
+    next_run_time: datetime | None = None
+    visibility_scopes: list[str] = Field(default_factory=list)
+    data_source_ids: list[int] = Field(default_factory=list)
+
+
 class InsightDataSourceExecuteRequest(BaseModel):
     keyword: str | None = Field(default=None, max_length=500)
     crawl_top_n: int | None = Field(default=None, ge=0, le=20)
@@ -94,6 +161,67 @@ class InsightDataSourceExecuteResponse(BaseModel):
     search_results: list[InsightSearchDiscoveryResponse] = Field(default_factory=list)
     execution_errors: list[dict[str, Any]] = Field(default_factory=list)
     auto_review_summary: dict[str, Any] | None = None
+
+
+class InsightDataSourceImportItem(BaseModel):
+    row_no: int
+    source_name: str
+    source_type: str
+    base_url: str | None = None
+    company_id: int | None = None
+    company_name: str | None = None
+    keywords: list[str] = Field(default_factory=list)
+    project_name: str | None = None
+    channel_name: str | None = None
+    source_document: str | None = None
+    status: str = "created"
+    data_source_id: int | None = None
+    message: str | None = None
+
+
+class InsightDataSourceImportResponse(BaseModel):
+    file_count: int = 0
+    parsed_count: int = 0
+    created_count: int = 0
+    updated_count: int = 0
+    skipped_count: int = 0
+    failed_count: int = 0
+    items: list[InsightDataSourceImportItem] = Field(default_factory=list)
+    unsupported_channels: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class InsightDataSourceBulkActionRequest(BaseModel):
+    data_source_ids: list[int] = Field(default_factory=list, min_length=1)
+    action: str = Field(..., min_length=1, max_length=50)
+    status: str | None = Field(default=None, max_length=20)
+    fetch_frequency: str | None = Field(default=None, max_length=50)
+    schedule_enabled: bool | None = None
+    visibility_scope: str | None = Field(default=None, max_length=30)
+    fetch_config_patch: dict[str, Any] | None = None
+    execute_crawl_top_n: int | None = Field(default=None, ge=0, le=20)
+
+
+class InsightDataSourceBulkActionResponse(BaseModel):
+    action: str
+    requested_count: int
+    success_count: int = 0
+    failed_count: int = 0
+    items: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class InsightRequirementSeedRequest(BaseModel):
+    file_paths: list[str] = Field(default_factory=list)
+    execute: bool = False
+    target_intelligence_count: int = Field(default=2000, ge=1, le=10000)
+    max_sources_to_execute: int = Field(default=50, ge=1, le=1000)
+    crawl_top_n: int = Field(default=8, ge=0, le=20)
+
+
+class InsightRequirementSeedResponse(BaseModel):
+    import_result: InsightDataSourceImportResponse
+    execution_result: InsightDataSourceBulkActionResponse | None = None
+    target_intelligence_count: int
+    current_intelligence_count: int | None = None
 
 
 class InsightStaleTaskCleanupResponse(BaseModel):
