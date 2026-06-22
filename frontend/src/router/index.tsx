@@ -457,7 +457,10 @@ const router = createBrowserRouter([
         ),
         errorElement: <RouteErrorPage />,
     },
-]);
+],
+{
+  basename: '/ai',
+});
 
 export default function AppRouter() {
     return <RouterProvider router={router} />;
