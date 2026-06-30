@@ -273,7 +273,7 @@ export const insightApi = {
 };
 
 async function streamInsightEvents<TEvent>(path: string, payload: unknown, onEvent: (event: TEvent) => void, signal?: AbortSignal) {
-    const baseURL = String(apiClient.defaults.baseURL || "/api/v1").replace(/\/$/, "");
+    const baseURL = String(apiClient.defaults.baseURL || "/ai-api/v1").replace(/\/$/, "");
     const url = /^https?:\/\//i.test(baseURL) ? `${baseURL}${path}` : `${baseURL}${path}`;
     const token = useAuthStore.getState().token;
     const response = await fetch(url, {

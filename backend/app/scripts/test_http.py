@@ -1,4 +1,4 @@
-import http.client
+﻿import http.client
 import json
 
 extracted_data = []
@@ -37,7 +37,7 @@ try:
 
     # 3. 发送请求
     conn.request(
-        "POST", "/api/v1/external/extract_with_text", body=payload, headers=headers
+        "POST", "/ai-api/v1/external/extract_with_text", body=payload, headers=headers
     )
 
     # 4. 获取响应 + 状态码检查

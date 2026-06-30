@@ -1,9 +1,9 @@
-import requests
+﻿import requests
 import os
 
 # 配置项
 # 建议根据实际运行环境修改端口，默认 8000
-API_URL = "http://localhost:8000/api/v1/external/extract_with_image"
+API_URL = "http://localhost:8000/ai-api/v1/external/extract_with_image"
 # 预设的测试 Key
 AI_SIGN = "xc-rpa-1ba531fa-264d-4fa2-b57c-006442b46f5d"
 

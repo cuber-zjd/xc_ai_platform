@@ -12,7 +12,7 @@ import type {
   WeaverWorkflowRulePayload,
 } from "./types";
 
-const apiBaseUrl = import.meta.env.VITE_API_URL || "/api/v1";
+const apiBaseUrl = import.meta.env.VITE_API_URL || "/ai-api/v1";
 
 interface ChatPayload {
   message: string;

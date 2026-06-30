@@ -254,7 +254,7 @@ export default function SapAssistantPage() {
     setMessages((items) => [...items, userMessage, { id: assistantId, role: 'assistant', content: '', isStreaming: true }]);
 
     try {
-      const response = await fetch('/api/v1/sap/assistant/chat/stream', {
+      const response = await fetch('/ai-api/v1/sap/assistant/chat/stream', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

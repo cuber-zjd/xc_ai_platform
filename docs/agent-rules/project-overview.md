@@ -1,4 +1,4 @@
-# 项目结构与关键入口
+﻿# 项目结构与关键入口
 
 本文件用于快速理解项目整体结构、启动入口和模块边界。
 
@@ -39,7 +39,7 @@ backend/app/
 关键入口：
 
 - `backend/app/main.py`：应用启动、初始化数据库、加载 MCP、注册中间件和异常处理。
-- `backend/app/api/v1/router.py`：API 总路由。
+- `backend/app/ai-api/v1/router.py`：API 总路由。
 - `backend/app/core/config.py`：环境变量和配置中心。
 - `backend/app/db/session.py`：异步数据库引擎和会话。
 - `backend/app/db/init_db.py`：建表和种子数据。

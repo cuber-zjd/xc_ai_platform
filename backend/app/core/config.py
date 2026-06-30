@@ -12,7 +12,7 @@ load_dotenv(BACKEND_DIR / ".env")
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "AI Platform"
-    API_V1_STR: str = "/api/v1"
+    API_V1_STR: str = "/ai-api/v1"
     
     # CORS
     BACKEND_CORS_ORIGINS: List[Union[str, AnyHttpUrl]] = [

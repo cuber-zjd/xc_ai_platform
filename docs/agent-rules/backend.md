@@ -1,4 +1,4 @@
-# 后端开发规则
+﻿# 后端开发规则
 
 本文件适用于修改 `backend/` 下的 API、服务、模型、Agent、MCP、配置和数据库访问逻辑。
 
@@ -14,7 +14,7 @@
 
 ## 2. 分层约定
 
-- API 路由放在 `backend/app/api/v1/endpoints/`。
+- API 路由放在 `backend/app/ai-api/v1/endpoints/`。
 - 业务逻辑放在 `backend/app/services/`。
 - 数据模型放在 `backend/app/models/`。
 - 请求响应 Schema 放在 `backend/app/schemas/`。
@@ -100,18 +100,18 @@ uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ## 9. FineReport AI 报表生成
 
 - 历史任务第一版：`fr_ai_report_task` 增加 `conversation_id`、`parent_task_id`、`revision_no`，新增 `fr_ai_report_conversation` 和 `fr_ai_report_feedback`，用于任务恢复、多轮修订追踪和人工反馈沉淀。
-- 列表入口：`GET /api/v1/fr/ai-reports/tasks` 返回分页历史任务；反馈入口：`POST /api/v1/fr/ai-reports/tasks/{task_id}/feedback` 记录正向样本或待优化样本。
+- 列表入口：`GET /ai-api/v1/fr/ai-reports/tasks` 返回分页历史任务；反馈入口：`POST /ai-api/v1/fr/ai-reports/tasks/{task_id}/feedback` 记录正向样本或待优化样本。
 - 自驱进化第一版只做经验数据沉淀，不允许自动改写全局 Prompt、业务规则或确定性 CPT 生成逻辑。
-- 接口入口：`backend/app/api/v1/endpoints/agent/fr_report.py`，统一挂载到 `/api/v1/fr/ai-reports`。
-- 真实报表文件读取第一版入口：`GET /api/v1/fr/ai-reports/files`，只读列出 MinIO 允许目录下的 `.cpt`、`.frm` 文件，返回对象路径、报表相对路径、文件大小、ETag 和修改时间；扫描范围由 `FR_AI_REPORT_FILE_PREFIXES` 控制。
-- 真实报表结构读取入口：`GET /api/v1/fr/ai-reports/files/structure`，按当前登录用户和显示范围校验 `object_path`，只在线内存读取 MinIO 对象，不落盘；当前解析 UTF-8/XML CPT 的根节点、版本、数据集、连接名、参数、截断 SQL，并返回 `document.sheets` 中的行列、单元格、合并区域、基础样式、字段绑定和原始节点路径引用；只返回结构化结果和 warnings，不返回完整 CPT 原文。
-- 报表文件用户可见范围入口：`GET/PUT /api/v1/fr/ai-reports/files/visibility-preference`，按当前登录用户保存显示的文件夹或报表路径；`GET /files` 默认按偏好过滤，配置弹窗需要传 `include_all=true` 拉取全量目录。
+- 接口入口：`backend/app/ai-api/v1/endpoints/agent/fr_report.py`，统一挂载到 `/ai-api/v1/fr/ai-reports`。
+- 真实报表文件读取第一版入口：`GET /ai-api/v1/fr/ai-reports/files`，只读列出 MinIO 允许目录下的 `.cpt`、`.frm` 文件，返回对象路径、报表相对路径、文件大小、ETag 和修改时间；扫描范围由 `FR_AI_REPORT_FILE_PREFIXES` 控制。
+- 真实报表结构读取入口：`GET /ai-api/v1/fr/ai-reports/files/structure`，按当前登录用户和显示范围校验 `object_path`，只在线内存读取 MinIO 对象，不落盘；当前解析 UTF-8/XML CPT 的根节点、版本、数据集、连接名、参数、截断 SQL，并返回 `document.sheets` 中的行列、单元格、合并区域、基础样式、字段绑定和原始节点路径引用；只返回结构化结果和 warnings，不返回完整 CPT 原文。
+- 报表文件用户可见范围入口：`GET/PUT /ai-api/v1/fr/ai-reports/files/visibility-preference`，按当前登录用户保存显示的文件夹或报表路径；`GET /files` 默认按偏好过滤，配置弹窗需要传 `include_all=true` 拉取全量目录。
 - 帆软报表文件存储必须走专用 `FR_AI_MINIO_*` 配置和 `FrMinIOService`，不得复用平台通用 `MINIO_*`，避免影响合同、知识库、图标等平台文件。
-- 当前需要同时维护“第一步 SQL 生成”“第二步 DSL 生成”“第三步 CPT 生成”与“全流程生成”四类接口，其中第一步接口为 `POST /api/v1/fr/ai-reports/steps/sql/generate`，用于只生成 SQL、执行只读校验并返回样例数据；第二步接口为 `POST /api/v1/fr/ai-reports/steps/dsl/generate`，基于同一任务的 SQL、需求摘要、Excel 分析和表结构生成 ReportDSL，不生成 CPT/XML，不调用 FineReport 预览；第三步接口为 `POST /api/v1/fr/ai-reports/steps/cpt/generate` 或 AI 草稿 CPT 入口，基于已确认 ReportDSL/快照确定性生成 CPT，按用户指定 `webroot/APP/reportlets/` 子路径写入并同步版本归档。
-- 空白报表创建入口为 `POST /api/v1/fr/ai-reports/empty/create`，只接收报表名称、目标目录/路径和冲突策略，确定性生成空白 CPT，写入用户指定 `webroot/APP/reportlets/` 子路径并同步结构版本和文件版本。`POST /api/v1/fr/ai-reports/agent/chat` 保留给右侧小驰侧边栏，用于在已选中报表上下文内接收用户消息、附件和上下文 JSON，受控执行需求预检、读取真实表结构/预览数据、生成 SQL、生成 ReportDSL 或保存 CPT。
+- 当前需要同时维护“第一步 SQL 生成”“第二步 DSL 生成”“第三步 CPT 生成”与“全流程生成”四类接口，其中第一步接口为 `POST /ai-api/v1/fr/ai-reports/steps/sql/generate`，用于只生成 SQL、执行只读校验并返回样例数据；第二步接口为 `POST /ai-api/v1/fr/ai-reports/steps/dsl/generate`，基于同一任务的 SQL、需求摘要、Excel 分析和表结构生成 ReportDSL，不生成 CPT/XML，不调用 FineReport 预览；第三步接口为 `POST /ai-api/v1/fr/ai-reports/steps/cpt/generate` 或 AI 草稿 CPT 入口，基于已确认 ReportDSL/快照确定性生成 CPT，按用户指定 `webroot/APP/reportlets/` 子路径写入并同步版本归档。
+- 空白报表创建入口为 `POST /ai-api/v1/fr/ai-reports/empty/create`，只接收报表名称、目标目录/路径和冲突策略，确定性生成空白 CPT，写入用户指定 `webroot/APP/reportlets/` 子路径并同步结构版本和文件版本。`POST /ai-api/v1/fr/ai-reports/agent/chat` 保留给右侧小驰侧边栏，用于在已选中报表上下文内接收用户消息、附件和上下文 JSON，受控执行需求预检、读取真实表结构/预览数据、生成 SQL、生成 ReportDSL 或保存 CPT。
 - 小驰侧边栏后端采用受控 ReAct 外壳：`agent/chat` 先通过 `LLMFactory.safe_invoke(..., json_mode=True)` 做语义意图路由，判断 `chat`、`modify_current_report`、`start_generate` 或 `save_cpt`，模型不可用或 JSON 无效时才使用保守规则兜底；不得把关键词匹配作为主判断逻辑。`modify_current_report` 只生成待应用修改项，`start_generate` 生成 SQL 和 ReportDSL，`save_cpt` 才进入版本控制写 CPT。
 - 小驰面向用户的主回答优先使用模型路由或后续 Agent 生成的自然短回复；前端和后端只可在错误、缺少硬条件、工具产物摘要等场景提供简短兜底，不得把所有聊天回答套成固定流程模板。
-- 小驰能力清单入口为 `GET /api/v1/fr/ai-reports/agent/capabilities`，返回工具名称、风险等级、是否自动执行、是否需要确认、系统技能和运行策略；已有 CPT 修改工具只接受 `xml_patch`，前端技能只作为上下文偏好，不得改变后端工具权限。
+- 小驰能力清单入口为 `GET /ai-api/v1/fr/ai-reports/agent/capabilities`，返回工具名称、风险等级、是否自动执行、是否需要确认、系统技能和运行策略；已有 CPT 修改工具只接受 `xml_patch`，前端技能只作为上下文偏好，不得改变后端工具权限。
 - 小驰上下文工程必须控制 token 使用：报表结构需要压缩为摘要、样例数据限行、字段列表限量、技能只注入启用项；长会话后续应沉淀为会话摘要、任务版本、反馈和经验检索，不直接拼接全量历史。已确认应用的修改项不得继续作为下一轮修改参考上下文；当前报表修改应以本轮用户指令、选区、数据集字段和当前报表事实为主。历史经验只能按需检索为普通 payload，不直接注入系统提示词；XML 索引只辅助定位和省 token，不能限制后续读取或修改范围。
 - 任务模型：`backend/app/models/agent/fr_report/report_task.py`，保存 Excel 分析、需求摘要、ReportDSL、SQL、建表 SQL、生成日志、MinIO 专用预览目录路径和预览校验结果。
 - Schema：`backend/app/schemas/agent/fr_report/report_dsl.py` 定义第一版 ReportDSL 和 JSON Schema，当前阶段只落地 `detail_table`、`group_table`、`pivot_table` 三类表格报表。
@@ -146,9 +146,9 @@ uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 ## 10. SAP 助手
 
-- 接口入口：`backend/app/api/v1/endpoints/agent/sap_assistant.py`，统一挂载到 `/api/v1/sap`。
-- 会话接口：`GET /api/v1/sap/assistant/sessions`、`GET /api/v1/sap/assistant/sessions/{id}/messages`，用于前端历史会话恢复。
-- 通用知识库入口：`backend/app/api/v1/endpoints/knowledge_bases.py`，统一挂载到 `/api/v1/knowledge-bases`，不得绑定到 SAP 专属命名。
+- 接口入口：`backend/app/ai-api/v1/endpoints/agent/sap_assistant.py`，统一挂载到 `/ai-api/v1/sap`。
+- 会话接口：`GET /ai-api/v1/sap/assistant/sessions`、`GET /ai-api/v1/sap/assistant/sessions/{id}/messages`，用于前端历史会话恢复。
+- 通用知识库入口：`backend/app/ai-api/v1/endpoints/knowledge_bases.py`，统一挂载到 `/ai-api/v1/knowledge-bases`，不得绑定到 SAP 专属命名。
 - SAP 模型：`backend/app/models/agent/sap_assistant.py`，保存系统配置、会话、消息、工具调用和证据记录。
 - 知识库模型：`backend/app/models/knowledge_base.py`，保存知识库、文档、切片和索引任务。
 - SAP 服务分层位于 `backend/app/services/agent/sap_assistant/`：`SapAssistantService -> SapDeepAgentService -> SapToolService -> SapRfcClient`，工具调用必须记录审计和证据。
@@ -160,7 +160,7 @@ uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 ## 11. Insight 研发营销市场洞察平台
 
-- 后端接口统一挂载到 `/api/v1/insight`，入口目录为 `backend/app/api/v1/endpoints/agent/insight/`。
+- 后端接口统一挂载到 `/ai-api/v1/insight`，入口目录为 `backend/app/ai-api/v1/endpoints/agent/insight/`。
 - 后端业务服务放在 `backend/app/services/agent/insight/`，按 `crawler`、`intelligence`、`visibility`、`report` 等子域逐步拆分。
 - 数据模型放在 `backend/app/models/agent/insight/`，Schema 放在 `backend/app/schemas/agent/insight/`。
 - 定时报告计划服务位于 `backend/app/services/agent/insight/report_subscription_service.py`，通过 `insight_report_subscription` 保存模板、范围、周期和企业微信接收人；执行时必须按计划创建者权限生成报告并复用通知服务写 `insight_notification`。
@@ -170,7 +170,7 @@ uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - Insight 候选情报默认走 AI 自动评审：`formal` 转正式情报，`candidate` 保留为候选线索，`noise` 归档为噪声；评审结果必须写 `insight_review_record` 并同步进入情报资产层。
 - Insight 情报资产层由 `insight_intelligence_asset`、`insight_asset_vector`、`insight_graph_node`、`insight_graph_edge` 承载，报告、AI 助手和深度研究后续优先通过资产检索接口取证据。
 - Insight 向量模型使用 `sys_model.model_type=embedding` 配置，当前默认火山方舟 `doubao-embedding-vision-251215` 多模态向量接口；API Key 继承已配置火山模型，不得硬编码。
-- 质量运营基础接口为 `GET /api/v1/insight/quality/overview`，服务层位于 `backend/app/services/agent/insight/quality_service.py`，只能聚合真实任务、采集、候选审核和质量规则数据，不得返回样例指标。
+- 质量运营基础接口为 `GET /ai-api/v1/insight/quality/overview`，服务层位于 `backend/app/services/agent/insight/quality_service.py`，只能聚合真实任务、采集、候选审核和质量规则数据，不得返回样例指标。
 - Firecrawl、Bocha/博查等外部服务地址和密钥不得硬编码在业务代码中，应进入配置或环境变量。
 ## SAP 助手 Agent 状态约束补充
 
@@ -185,17 +185,17 @@ uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 - 数据库驱动是平台级资源，使用 `fr_report_database_driver` 保存，不按用户隔离；当前默认种子包含 `sqlserver` 和 `mysql8`。
 - 报表数据库连接是用户级资源，使用 `fr_report_database_connection` 保存，并通过 `driver_key` 引用平台级驱动。
-- 数据集预览入口为 `POST /api/v1/fr/ai-reports/datasets/preview`，当前支持 SQL Server 与 MySQL 8，只允许 `SELECT/WITH` 查询并限制预览行数。
+- 数据集预览入口为 `POST /ai-api/v1/fr/ai-reports/datasets/preview`，当前支持 SQL Server 与 MySQL 8，只允许 `SELECT/WITH` 查询并限制预览行数。
  
 ## 泛微流程AI助手补充
 
-- 后端接口入口为 `backend/app/api/v1/endpoints/agent/weaver_ai_assistant.py`，统一挂载到 `/api/v1/weaver/ai-assistant`。
+- 后端接口入口为 `backend/app/ai-api/v1/endpoints/agent/weaver_ai_assistant.py`，统一挂载到 `/ai-api/v1/weaver/ai-assistant`。
 - Schema 位于 `backend/app/schemas/agent/weaver_ai_assistant.py`，服务层位于 `backend/app/services/agent/weaver_ai_assistant/`。
 - 流程特殊填报规则使用 `weaver_ai_workflow_rule` 表保存，按 `env + workflow_id` 维护；规则管理接口为 `/workflow-rules`，聊天时会自动加载启用规则进入 AI 上下文。
 - 流程 AI 智审规则使用 `weaver_ai_review_rule` 表保存，按 `env + workflow_id + node_id + reviewer_user_id` 逐级匹配；智审记录使用 `weaver_ai_review_record` 保存表单快照、规则快照和模型结论。
-- 智审主入口为 `POST /api/v1/weaver/ai-assistant/review/precheck`，只返回风险等级、检查项、建议结论和建议审批意见；任何自动替审能力必须先通过规则授权并保留审计记录。
+- 智审主入口为 `POST /ai-api/v1/weaver/ai-assistant/review/precheck`，只返回风险等级、检查项、建议结论和建议审批意见；任何自动替审能力必须先通过规则授权并保留审计记录。
 - 泛微助手模型选择优先读取 `WEAVER_AI_MODEL_NAME`；未配置时按 `WEAVER_AI_MODEL_CAPABILITY` 选择模型，默认使用 `complex-reasoning`，避免复杂流程规则被轻量模型弱化。
 - ecode 或泛微页面调用该接口时使用 `ai-sign` 请求头，校验逻辑复用 `deps.verify_external_ai_sign`。
-- 聊天主入口为 `POST /api/v1/weaver/ai-assistant/chat/stream`，以 SSE 推送 `message_delta`、`actions`、`done`；`/chat` 仅作为非流式兼容入口保留。
+- 聊天主入口为 `POST /ai-api/v1/weaver/ai-assistant/chat/stream`，以 SSE 推送 `message_delta`、`actions`、`done`；`/chat` 仅作为非流式兼容入口保留。
 - 服务层需要在每轮聊天上下文中注入 `current_date` 日期工具结果，供 AI 将“今天、明天、下周一、本月”等相对日期换算为具体日期。
 - AI 只能返回 `set_field`、`add_detail_row`、`show_message` 等结构化动作，不得返回任意 JavaScript，不得触发保存、提交、审批或删除流程。

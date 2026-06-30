@@ -1,4 +1,4 @@
-# 启动、部署与测试规则
+﻿# 启动、部署与测试规则
 
 本文件适用于修改启动方式、Docker、环境变量、部署文档和测试流程。
 
@@ -86,7 +86,7 @@ pnpm build
 - 后端 `/` 能返回欢迎信息。
 - Swagger/OpenAPI 能访问。
 - 登录接口能返回 token。
-- 前端能通过 Vite 代理请求 `/api/v1`。
+- 前端能通过 Vite 代理请求 `/ai-api/v1`。
 - Docker 服务健康，特别是 PostgreSQL、MinIO、LangFuse。
 - 合同上传后后台任务能推进状态。
 
@@ -131,9 +131,9 @@ uv sync
 - Windows 还需要安装 x64 版 Microsoft Visual C++ 2013 Redistributable。若 `sapnwrfc.dll` 存在但仍提示 `_cyrfc` DLL 找不到，优先检查 `C:\Windows\System32\MSVCR120.dll` 和 `C:\Windows\System32\MSVCP120.dll` 是否存在。
 - 验证命令：`cd backend && uv run python -c "from pyrfc import Connection; print(Connection)"`。如果提示 `_cyrfc` DLL 找不到，说明 Python 包已安装但 SAP NWRFC SDK 未配置。
 - SAP RFC 用户和密码必须通过环境变量提供，例如 `SAP_PRD_800_USER`、`SAP_PRD_800_PASSWORD`，管理页面只保存这些环境变量名。
-- SAP 系统配置入口为 `/admin/sap-systems`，接口为 `/api/v1/sap/systems`。
+- SAP 系统配置入口为 `/admin/sap-systems`，接口为 `/ai-api/v1/sap/systems`。
 - ABAP RFC 示例文件位于 `docs/sap-rfc/`，生产部署前需要在 SAP 侧补充审计表、权限对象、返回量控制和 ZILOG 真实查询逻辑。
-- 通用知识库接口为 `/api/v1/knowledge-bases`，文件写入 MinIO，切片和索引元数据写 PostgreSQL；后续接入真实向量检索时使用现有 Milvus 服务。
+- 通用知识库接口为 `/ai-api/v1/knowledge-bases`，文件写入 MinIO，切片和索引元数据写 PostgreSQL；后续接入真实向量检索时使用现有 Milvus 服务。
 
 ## 9. 模型服务代理配置
 
@@ -150,22 +150,22 @@ uv sync
 - Insight 第一阶段通用网页抓取通过本地 Firecrawl 服务完成，接口由 `INSIGHT_FIRECRAWL_BASE_URL` 指定，例如 `http://127.0.0.1:3002`。
 - 如 Firecrawl 启用 API Key，使用 `INSIGHT_FIRECRAWL_API_KEY` 配置；未启用时留空。
 - 抓取超时由 `INSIGHT_FIRECRAWL_TIMEOUT_SECONDS` 控制，默认 30 秒。
-- 手动 URL 抓取接口为 `POST /api/v1/insight/crawler/manual-url`，会创建采集任务、调用 Firecrawl、写入爬取结果和候选情报。
-- 关键词搜索发现接口为 `POST /api/v1/insight/crawler/search-discovery`，第一版支持百度发现和 Bocha/博查 API，发现候选 URL 后复用 Firecrawl 正文抽取链路。
-- 抓取结果入库前会做 URL 归一、追踪参数清理、标题/摘要清洗、发布时间解析、内容去重和候选主题/类型/标签规则识别；候选列表接口为 `GET /api/v1/insight/intelligence/candidates`。
-- 候选审核接口包括 `POST /api/v1/insight/intelligence/candidates/{candidate_id}/promote`、`/reject`、`/ignore`；通过后会写入正式情报、来源证据和审核记录。
-- 正式情报查询接口包括 `GET /api/v1/insight/intelligence` 和 `GET /api/v1/insight/intelligence/{intelligence_id}`；第一版权限策略为管理员看全部，普通用户看公开或自己审核/拥有的情报。
-- 正式情报维护接口包括 `POST /api/v1/insight/intelligence`、`PUT /api/v1/insight/intelligence/{intelligence_id}` 和 `POST /api/v1/insight/intelligence/{intelligence_id}/sources`；人工新增、编辑和补来源都会写审核记录。
-- 可见性授权接口包括 `GET/POST /api/v1/insight/intelligence/{intelligence_id}/visibility-rules`，支持 `user`、`role`、`dept`、`all` 四类主体；用户情报池接口包括 `GET /api/v1/insight/intelligence-pool`、`POST /api/v1/insight/intelligence/{intelligence_id}/pool` 和 `DELETE /api/v1/insight/intelligence/{intelligence_id}/pool/{pool_type}`。
+- 手动 URL 抓取接口为 `POST /ai-api/v1/insight/crawler/manual-url`，会创建采集任务、调用 Firecrawl、写入爬取结果和候选情报。
+- 关键词搜索发现接口为 `POST /ai-api/v1/insight/crawler/search-discovery`，第一版支持百度发现和 Bocha/博查 API，发现候选 URL 后复用 Firecrawl 正文抽取链路。
+- 抓取结果入库前会做 URL 归一、追踪参数清理、标题/摘要清洗、发布时间解析、内容去重和候选主题/类型/标签规则识别；候选列表接口为 `GET /ai-api/v1/insight/intelligence/candidates`。
+- 候选审核接口包括 `POST /ai-api/v1/insight/intelligence/candidates/{candidate_id}/promote`、`/reject`、`/ignore`；通过后会写入正式情报、来源证据和审核记录。
+- 正式情报查询接口包括 `GET /ai-api/v1/insight/intelligence` 和 `GET /ai-api/v1/insight/intelligence/{intelligence_id}`；第一版权限策略为管理员看全部，普通用户看公开或自己审核/拥有的情报。
+- 正式情报维护接口包括 `POST /ai-api/v1/insight/intelligence`、`PUT /ai-api/v1/insight/intelligence/{intelligence_id}` 和 `POST /ai-api/v1/insight/intelligence/{intelligence_id}/sources`；人工新增、编辑和补来源都会写审核记录。
+- 可见性授权接口包括 `GET/POST /ai-api/v1/insight/intelligence/{intelligence_id}/visibility-rules`，支持 `user`、`role`、`dept`、`all` 四类主体；用户情报池接口包括 `GET /ai-api/v1/insight/intelligence-pool`、`POST /ai-api/v1/insight/intelligence/{intelligence_id}/pool` 和 `DELETE /ai-api/v1/insight/intelligence/{intelligence_id}/pool/{pool_type}`。
 - Bocha/博查 API Key 通过 `INSIGHT_BOCHA_API_KEY` 配置，默认接口根地址为 `INSIGHT_BOCHA_BASE_URL=https://api.bocha.cn`，完整 Web Search 地址为 `/v1/web-search`；未配置 Key 时不要启用 `bocha` 通道。
 - 搜索发现超时由 `INSIGHT_SEARCH_TIMEOUT_SECONDS` 控制，默认 30 秒。
-  - Insight 全渠道适配器依赖 `beautifulsoup4`、`requests` 和 `playwright`；服务器部署后需要执行 `uv sync` 并安装 Playwright 浏览器运行环境。近半月补数与调度模拟入口为 `uv run python scripts/insight_run_all_channel_adapters.py --mode backfill|simulate-daily|simulate-weekly|simulate-monthly --days 15`，默认把运行报告写入 `backend/storage/insight_adapter_run_reports`，适配器原始输出和运行副作用写入 `backend/storage/insight_adapter_runs`。脚本支持受控并行：`--api-concurrency` 控制百度、博查和 HTTP 适配器，`--playwright-concurrency` 控制 Playwright 站点适配器，同一渠道仍串行，`--adapter-timeout` 控制单渠道超时，`--shard-index/--shard-total` 用于夜间分片补数。正式夜间采集建议在 01:00-06:00 分批执行，失败记录可通过 `/api/v1/insight/quality/adapter-runs` 查询。
+  - Insight 全渠道适配器依赖 `beautifulsoup4`、`requests` 和 `playwright`；服务器部署后需要执行 `uv sync` 并安装 Playwright 浏览器运行环境。近半月补数与调度模拟入口为 `uv run python scripts/insight_run_all_channel_adapters.py --mode backfill|simulate-daily|simulate-weekly|simulate-monthly --days 15`，默认把运行报告写入 `backend/storage/insight_adapter_run_reports`，适配器原始输出和运行副作用写入 `backend/storage/insight_adapter_runs`。脚本支持受控并行：`--api-concurrency` 控制百度、博查和 HTTP 适配器，`--playwright-concurrency` 控制 Playwright 站点适配器，同一渠道仍串行，`--adapter-timeout` 控制单渠道超时，`--shard-index/--shard-total` 用于夜间分片补数。正式夜间采集建议在 01:00-06:00 分批执行，失败记录可通过 `/ai-api/v1/insight/quality/adapter-runs` 查询。
   - Insight 测试/烟测/样例数据清理入口为 `uv run python scripts/cleanup_insight_test_data.py`。默认只预览命中数量和样例；确认范围后加 `--execute` 才会软删除候选线索、正式情报、来源证据、报告、资产、向量、图谱、采集任务等关联数据。清理规则只匹配“测试客户、烟测、样例、仅用于测试、smoke=true”等明确测试痕迹，避免因真实网页正文中的普通 `Demo` 或“测试数据”字样误删业务数据。
   - AI 自动评审会默认注入香驰控股有限公司的大豆、玉米精深加工，功能糖、糖醇、植物蛋白、豆粕、粮油和营养健康应用画像；如需补充内部战略、重点客户群或阶段性经营口径，可用 `INSIGHT_OWN_BUSINESS_PROFILE` 配置额外文本，系统会合并进评审上下文。
 - Insight 企业微信推送卡片默认使用 `INSIGHT_PUBLIC_BASE_URL=https://ai.xiangchi.com` 拼接报告和情报链接；真实发送仍必须配置 `INSIGHT_WECOM_CORP_ID`、`INSIGHT_WECOM_AGENT_ID`、`INSIGHT_WECOM_SECRET` 并开启 `INSIGHT_WECOM_SEND_ENABLED`。
-- Insight 首页看板接口为 `GET /api/v1/insight/dashboard`，聚合当前用户可见的正式情报，返回 KPI、近 7 日趋势、来源分布、重点动态和最新情报；权限过滤和隐藏池过滤必须在后端完成。
+- Insight 首页看板接口为 `GET /ai-api/v1/insight/dashboard`，聚合当前用户可见的正式情报，返回 KPI、近 7 日趋势、来源分布、重点动态和最新情报；权限过滤和隐藏池过滤必须在后端完成。
 - Insight 数据源配置需要支持手动和周期采集。第一版数据源类型包括官网、通用网页、百度资讯、博查资讯和博查网页搜索；百度资讯通道需要显式走资讯搜索参数，不应复用普通网页搜索结果。
-- 数据源周期配置支持 `manual`、`15m`、`hourly`、`daily` 和自定义 cron。当前正式运行推荐 `INSIGHT_SCHEDULER_ENABLED=true`，`.env.example` 已按开启配置；仅在纯开发调试且不希望消耗外部搜索/抓取额度时手动改为 `false`。调度器只读取启用且到期的数据源创建采集任务，每轮写入 `scheduler_tick` 任务日志，并通过 PostgreSQL advisory lock 避免多实例重复执行。周期调度推荐搜索类数据源配置 `crawl_top_n=0`、`create_candidate_from_hits=true`、`enable_llm_filter=true` 和明确的 `filter_prompt`：平台会先做搜索发现、LLM 结果筛选和搜索摘要级 AI 初筛，再把候选入库；正文级深挖由批处理脚本分时执行，避免常驻调度器被慢 URL 阻塞。搜索通道可用但结果被规则或 LLM 全部过滤时，应记录为成功的 0 候选任务，并保留 `filter_summary`、`rejected_items` 和 LLM 判分信息；只有未配置搜索通道或外部通道调用失败时才标记失败。调度器对单个数据源有超时保护，超时后按失败写回该源状态并进入下一源，不允许长期占用 `scheduler_tick`。前端数据源配置页通过 `/api/v1/insight/scheduler/status` 查看运行状态，通过 `/scheduler/run-once` 立即扫描到期任务，通过 `/scheduler/start` 和 `/scheduler/stop` 做运行态控制。连续失败达到 `INSIGHT_SCHEDULER_FAILURE_PAUSE_THRESHOLD` 后数据源会自动暂停周期采集，人工排查后可调用 `/api/v1/insight/data-sources/{data_source_id}/schedule/retry` 加入下一轮调度。
+- 数据源周期配置支持 `manual`、`15m`、`hourly`、`daily` 和自定义 cron。当前正式运行推荐 `INSIGHT_SCHEDULER_ENABLED=true`，`.env.example` 已按开启配置；仅在纯开发调试且不希望消耗外部搜索/抓取额度时手动改为 `false`。调度器只读取启用且到期的数据源创建采集任务，每轮写入 `scheduler_tick` 任务日志，并通过 PostgreSQL advisory lock 避免多实例重复执行。周期调度推荐搜索类数据源配置 `crawl_top_n=0`、`create_candidate_from_hits=true`、`enable_llm_filter=true` 和明确的 `filter_prompt`：平台会先做搜索发现、LLM 结果筛选和搜索摘要级 AI 初筛，再把候选入库；正文级深挖由批处理脚本分时执行，避免常驻调度器被慢 URL 阻塞。搜索通道可用但结果被规则或 LLM 全部过滤时，应记录为成功的 0 候选任务，并保留 `filter_summary`、`rejected_items` 和 LLM 判分信息；只有未配置搜索通道或外部通道调用失败时才标记失败。调度器对单个数据源有超时保护，超时后按失败写回该源状态并进入下一源，不允许长期占用 `scheduler_tick`。前端数据源配置页通过 `/ai-api/v1/insight/scheduler/status` 查看运行状态，通过 `/scheduler/run-once` 立即扫描到期任务，通过 `/scheduler/start` 和 `/scheduler/stop` 做运行态控制。连续失败达到 `INSIGHT_SCHEDULER_FAILURE_PAUSE_THRESHOLD` 后数据源会自动暂停周期采集，人工排查后可调用 `/ai-api/v1/insight/data-sources/{data_source_id}/schedule/retry` 加入下一轮调度。
 - 数据源筛选配置包括确定性规则和 LLM 筛选提示词。LLM 筛选必须可关闭，筛选失败时按数据源配置决定降级保留或丢弃，并记录过滤原因。
 - 御馨及健源第一批实际数据源初始化脚本为 `backend/scripts/seed_insight_data_sources.py`。执行 `uv run python scripts/seed_insight_data_sources.py` 可幂等写入 14 条 `yxjy_` 前缀数据源；追加 `--test` 会代表性测试嘉华官网、御馨大豆蛋白博查资讯和健源新茶饮百度资讯链路。
  
@@ -177,4 +177,4 @@ uv sync
 - `WEAVER_AI_MODEL_NAME`：泛微流程 AI 助手专用模型名；配置后优先按模型名调用，用于给流程规则理解更强的模型。
 - `WEAVER_AI_MODEL_CAPABILITY`：未配置专用模型名时使用的模型能力标签，默认 `complex-reasoning`。
 - `WEAVER_AI_ENABLE_REASONING`：模型支持 reasoning 时可开启；本地小模型或不兼容模型建议保持 `false`。
-- ecode 调用字段配置接口时可携带 `env`：`/api/v1/weaver/ai-assistant/field-config?workflow_id=494&env=test`。
+- ecode 调用字段配置接口时可携带 `env`：`/ai-api/v1/weaver/ai-assistant/field-config?workflow_id=494&env=test`。

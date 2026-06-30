@@ -1,4 +1,4 @@
-# 安全与权限规则
+﻿# 安全与权限规则
 
 本文件适用于修改认证、授权、密钥、外部接口、文件上传、MCP 鉴权和敏感日志。
 
@@ -12,7 +12,7 @@
 
 ## 2. JWT 认证
 
-- 登录接口位于 `backend/app/api/v1/endpoints/system/login.py`。
+- 登录接口位于 `backend/app/ai-api/v1/endpoints/system/login.py`。
 - token 生成逻辑位于 `backend/app/core/security.py`。
 - 当前用户依赖位于 `backend/app/api/deps.py`。
 - 受保护接口使用 `deps.get_current_user`。
@@ -102,7 +102,7 @@
 ## 泛微流程AI助手安全补充
 
 - 泛微 ecode 接入 AI 平台时不得在前端保存模型 Key，只允许携带外部接口签名 `ai-sign`。
-- `/api/v1/weaver/ai-assistant/*` 接口必须校验 `ai-sign`，签名值来自 `EXTERNAL_API_KEYS`，生产环境需要替换默认示例值。
+- `/ai-api/v1/weaver/ai-assistant/*` 接口必须校验 `ai-sign`，签名值来自 `EXTERNAL_API_KEYS`，生产环境需要替换默认示例值。
 - 泛微 MySQL8 连接信息通过 `WEAVER_DB_CONFIGS` 按环境 key 配置，生产环境必须使用只读账号，不得使用泛微业务库高权限账号。
 - ecode 传入的 `env` 只能作为环境选择 key 使用，后端必须在 `WEAVER_DB_CONFIGS` 白名单中查找，不得把它拼接为任意数据库地址。
 - ecode 只执行平台返回的结构化白名单动作，不允许执行 AI 生成的任意 JavaScript。

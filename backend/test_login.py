@@ -1,7 +1,7 @@
-import requests
+﻿import requests
 try:
     resp = requests.post(
-        "http://127.0.0.1:8000/api/v1/login/access-token",
+        "http://127.0.0.1:8000/ai-api/v1/login/access-token",
         data={"username": "admin", "password": "admin123", "grant_type": "password"}
     )
     print(f"Status: {resp.status_code}")
