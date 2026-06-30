@@ -6,6 +6,8 @@ export { IntelligenceCenterPage } from "./pages/IntelligenceCenterPage";
 export { IntelligenceDetailPage } from "./pages/IntelligenceDetailPage";
 export { InsightLoginPage } from "./pages/InsightLoginPage";
 export { InsightAssistantPage } from "./pages/InsightAssistantPage";
+export { MonitorConfigPage } from "./pages/MonitorConfigPage";
 export { QualityOverviewPage } from "./pages/QualityOverviewPage";
 export { ReportCenterPage } from "./pages/ReportCenterPage";
 export { SettingsPage } from "./pages/SettingsPage";
+export { TagCategoryPage } from "./pages/TagCategoryPage";

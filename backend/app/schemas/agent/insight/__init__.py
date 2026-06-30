@@ -6,6 +6,20 @@ from app.schemas.agent.insight.crawl import (
     InsightSearchDiscoveryResponse,
     InsightSearchHitRead,
 )
+from app.schemas.agent.insight.asset import (
+    InsightAiReviewDecision,
+    InsightAiReviewResponse,
+    InsightAssetRead,
+    InsightAssetSearchHit,
+    InsightAssetSearchRequest,
+    InsightAssetSearchResponse,
+    InsightFormalAssetBackfillRequest,
+    InsightFormalAssetBackfillResponse,
+    InsightGraphEdgeRead,
+    InsightGraphNodeRead,
+    InsightGraphResponse,
+)
+from app.schemas.agent.insight.adapter import InsightChannelAdapterDefinitionRead, InsightChannelAdapterRunRead
 from app.schemas.agent.insight.company import (
     InsightCompanyCreate,
     InsightCompanyDataSourceSummary,
@@ -43,6 +57,9 @@ from app.schemas.agent.insight.health import InsightHealthRead
 from app.schemas.agent.insight.dictionary import (
     InsightDictionaryOverview,
     InsightIntelligenceTypeRead,
+    InsightTagCategoryCreate,
+    InsightTagCategoryRead,
+    InsightTagCategoryUpdate,
     InsightTagCreate,
     InsightTagRead,
     InsightTagUpdate,
@@ -100,12 +117,27 @@ from app.schemas.agent.insight.notification import (
     InsightNotificationRead,
     InsightNotificationRecipient,
 )
+from app.schemas.agent.insight.monitor_config import (
+    InsightLegacySourceSyncResponse,
+    InsightMonitorConfigCreate,
+    InsightMonitorConfigListParams,
+    InsightMonitorConfigRead,
+    InsightMonitorConfigUpdate,
+)
 from app.schemas.agent.insight.task import InsightTaskCreate, InsightTaskRead
 
 __all__ = [
     "InsightCandidatePromoteRequest",
     "InsightCandidateReviewRequest",
     "InsightCandidateReviewResponse",
+    "InsightAiReviewDecision",
+    "InsightAiReviewResponse",
+    "InsightAssetRead",
+    "InsightAssetSearchHit",
+    "InsightAssetSearchRequest",
+    "InsightAssetSearchResponse",
+    "InsightFormalAssetBackfillRequest",
+    "InsightFormalAssetBackfillResponse",
     "InsightCompanyCreate",
     "InsightCompanyDataSourceSummary",
     "InsightCompanyDetail",
@@ -135,8 +167,16 @@ __all__ = [
     "InsightDashboardSummary",
     "InsightDashboardTrendPoint",
     "InsightHealthRead",
+    "InsightGraphEdgeRead",
+    "InsightGraphNodeRead",
+    "InsightGraphResponse",
+    "InsightChannelAdapterDefinitionRead",
+    "InsightChannelAdapterRunRead",
     "InsightDictionaryOverview",
     "InsightIntelligenceTypeRead",
+    "InsightTagCategoryCreate",
+    "InsightTagCategoryRead",
+    "InsightTagCategoryUpdate",
     "InsightTagCreate",
     "InsightTagRead",
     "InsightTagUpdate",
@@ -175,6 +215,11 @@ __all__ = [
     "InsightVisibilityRuleRead",
     "InsightManualUrlCrawlRequest",
     "InsightManualUrlCrawlResponse",
+    "InsightLegacySourceSyncResponse",
+    "InsightMonitorConfigCreate",
+    "InsightMonitorConfigListParams",
+    "InsightMonitorConfigRead",
+    "InsightMonitorConfigUpdate",
     "InsightSearchDiscoveryRequest",
     "InsightSearchDiscoveryResponse",
     "InsightSearchHitRead",

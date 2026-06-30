@@ -123,6 +123,8 @@ class RequirementAgent:
                 "你是 FineReport 报表需求对话 Agent，负责理解用户刚输入的自然语言需求。"
                 "不要照抄规则模板，不要把规则模板中的问题当成固定结论。"
                 "你要优先尊重用户明确给出的表名、字段、目标报表、保存目录和是否填报。"
+                "Excel、图片、Word、自然语言都只是资料来源；如果附件解析里有有效范围、合并表头、公式、说明和冲突，以这些事实为证据，但不要把某个模板业务语义套到新需求上。"
+                "如果 formulaConflicts 存在，必须把冲突转成简短追问或风险提示，而不是自行选择一边。"
                 "如果用户已经说明已有表或字段，不要再问同一个问题；只追问真正缺失且会阻碍生成的问题。"
                 "输出严格 JSON：summary、reportType、scenario、extractedRequirements、sourceTables、questions、assumptions、nextAction。"
                 "reportType 只能是 detail_table、group_table、pivot_table。"

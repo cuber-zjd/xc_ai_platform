@@ -154,6 +154,26 @@ class FrReportDimensionRead(BaseModel):
     size: int | None = None
 
 
+class FrReportParameterWidgetRead(BaseModel):
+    name: str
+    label: str | None = None
+    widgetType: str | None = None
+    defaultValue: str | None = None
+    x: int | None = None
+    y: int | None = None
+    width: int | None = None
+    height: int | None = None
+
+
+class FrReportParameterPanelRead(BaseModel):
+    showWindow: bool = True
+    delayPlaying: bool = False
+    useParamsTemplate: bool | None = None
+    width: int | None = None
+    height: int | None = None
+    widgets: list[FrReportParameterWidgetRead] = Field(default_factory=list)
+
+
 class FrReportSheetRead(BaseModel):
     name: str
     rowCount: int
@@ -168,6 +188,7 @@ class FrReportSheetRead(BaseModel):
 
 class FrReportDocumentRead(BaseModel):
     title: str | None = None
+    parameterPanel: FrReportParameterPanelRead | None = None
     sheets: list[FrReportSheetRead] = Field(default_factory=list)
     unsupportedNodes: list[str] = Field(default_factory=list)
     parseCoverage: dict[str, int] = Field(default_factory=dict)

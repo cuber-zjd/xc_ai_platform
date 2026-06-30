@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useLocation } from 'react-router-dom';
 import {
@@ -11,30 +11,24 @@ import {
     Database,
     ExternalLink,
     FileSpreadsheet,
-    Paperclip,
     Folder,
     History,
-    LayoutGrid,
     ListTree,
     MessageSquareText,
-    PaintBucket,
     PanelRightClose,
     PanelRightOpen,
     Play,
     Plus,
-    Redo2,
     RefreshCw,
     Rows3,
     Save,
     Search,
     SendHorizonal,
     Settings2,
-    Sigma,
     SlidersHorizontal,
     Sparkles,
     Table2,
     Trash2,
-    Undo2,
     WandSparkles,
 } from 'lucide-react';
 
@@ -46,10 +40,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { cn } from '@/lib/utils';
 import {
     useApplyFrReportAiOperationDraft,
+    useCreateEmptyFrReport,
+    useFrAiReportAgentCapabilities,
     useFrAiReportAgentChat,
     useFrAiReportFileStructure,
     useFrAiReportFiles,
-    useGenerateFrReportAiOperationDraft,
     useGenerateFrReportAiSnapshotCpt,
     useFrReportVisibilityPreference,
     useFrReportDatabaseConnections,
@@ -65,11 +60,13 @@ import {
 } from '@/features/fr-ai-report/hooks/useFrAiReport';
 import type {
     FrReportAiApplyDraftResponse,
+    FrReportAiOperationRead,
     FrReportAiOperationDraftResponse,
     FrReportAiSnapshotCptResponse,
-    FrAiReportAgentChatResponse,
+    FrAiReportAgentEvent,
     FrAiReportAgentContext,
-    FrAiReportRequirementReviewResponse,
+    FrAiReportAgentChatResponse,
+    FrAiReportAgentCapabilitiesResponse,
     GenerateCptStepResponse,
     GenerateDslStepResponse,
     GenerateSqlStepResponse,
@@ -77,45 +74,22 @@ import type {
     FrReportDatasetRead,
     FrReportFileRead,
     FrReportFileStructureRead,
+    FrReportParameterPanelRead,
     FrReportSheetRead,
 } from '@/features/fr-ai-report/types';
 
-const toolbarItems = [
-    { label: '保存', icon: Save, active: true },
-    { label: '撤销', icon: Undo2 },
-    { label: '重做', icon: Redo2 },
-    { label: 'SQL', icon: Database },
-    { label: '公式', icon: Sigma },
-    { label: '边框', icon: LayoutGrid },
-    { label: '填充', icon: PaintBucket },
-    { label: '预览', icon: Play, active: true },
-];
-
+const DEFAULT_FINEREPORT_PREVIEW_ROOT = (import.meta.env.VITE_FR_PREVIEW_URL || 'http://192.168.14.41:1080').replace(/\/$/, '');
 const DEFAULT_CANVAS_ROWS = 18;
 const DEFAULT_CANVAS_COLUMNS = 12;
-
-const aiMessages = [
-    {
-        role: 'assistant',
-        content: '已识别当前报表适合使用长表数据集，并通过横向扩展表达城市和市场列。',
-    },
-    {
-        role: 'user',
-        content: '把年销量放到产品分组后面，客户名称列加宽，筛选区保留开始年月和结束年月。',
-    },
-    {
-        role: 'assistant',
-        content: '已生成 3 个操作：调整列顺序、更新 C 列宽度、保留筛选区参数。确认后会生成版本 V2.3。',
-    },
-];
-
-const operationItems = [
-    '更新 SQL：保留 record_date / market / price / change_amt 长表结构',
-    '调整 DSL：C 列宽度 180，客户名称不换行',
-    '设置横向扩展：市场字段按列展开，合计行固定',
-];
-
-const DEFAULT_NEW_REPORT_TEMPLATE_OBJECT_PATH = 'webroot/APP/reportlets/数据分析/农产品价格平台/大豆/谷物大豆国际海运费报价-周报.cpt';
+const FR_AGENT_SKILL_IDS_STORAGE_KEY = 'fr-ai-report-agent-active-skills';
+const FR_AGENT_SKILL_INSTRUCTION_STORAGE_KEY = 'fr-ai-report-agent-skill-instruction';
+const FR_AGENT_CHAT_STORAGE_KEY_PREFIX = 'fr-ai-report-agent-chat-v3';
+const FR_AGENT_CONTEXT_STORAGE_KEY_PREFIX = 'fr-ai-report-agent-context-v2';
+const FR_AGENT_LEGACY_SESSION_STORAGE_PREFIXES = ['fr-ai-report-agent-chat-v2:', 'fr-ai-report-agent-context-v1:'];
+const FR_APPLICABLE_OPERATION_TYPES = new Set([
+    'xml_patch',
+]);
+const FR_AGENT_DRAFT_CONTEXT_KEYS = new Set(['operationDraft', 'aiDraft', 'draft', 'pendingDraft', 'pendingOperations', 'lastDraft', 'appliedOperations']);
 
 type AiPreviewCellPatch = {
     style?: Partial<FrReportCellRead['style']>;
@@ -132,10 +106,363 @@ type AssistantMessage = {
     role: 'user' | 'assistant' | 'system';
     content: string;
     status?: 'pending' | 'success' | 'error';
+    events?: FrAiReportAgentEvent[];
+    artifacts?: AssistantArtifact[];
 };
 
-void aiMessages;
-void operationItems;
+type AssistantArtifact = {
+    id: string;
+    title: string;
+    type: 'sql' | 'dsl' | 'cpt' | 'draft' | 'review' | 'json' | 'warning';
+    summary?: string;
+    content?: string;
+    path?: string | null;
+    previewUrl?: string | null;
+};
+
+const getWelcomeContent = (hasReport: boolean) =>
+    hasReport
+        ? '可以直接描述要调整的内容。我会结合当前报表结构生成待应用修改项，确认后再写入版本。'
+        : '请选择一张报表，或先描述你要创建的报表内容。';
+
+const createWelcomeMessage = (hasReport: boolean): AssistantMessage => ({
+    id: 'welcome',
+    role: 'assistant',
+    content: getWelcomeContent(hasReport),
+});
+
+const normalizeWelcomeMessages = (messages: AssistantMessage[], hasReport: boolean) =>
+    messages.map((message) => (message.id === 'welcome' ? { ...message, content: getWelcomeContent(hasReport) } : message));
+
+const clearFrAgentSessionStorage = () => {
+    if (typeof window === 'undefined') {
+        return;
+    }
+    const prefixes = [
+        `${FR_AGENT_CHAT_STORAGE_KEY_PREFIX}:`,
+        `${FR_AGENT_CONTEXT_STORAGE_KEY_PREFIX}:`,
+        ...FR_AGENT_LEGACY_SESSION_STORAGE_PREFIXES,
+    ];
+    for (const key of Object.keys(window.localStorage)) {
+        if (prefixes.some((prefix) => key.startsWith(prefix))) {
+            window.localStorage.removeItem(key);
+        }
+    }
+};
+
+const buildFineReportPreviewUrl = (report: FrReportFileRead | null | undefined, previewUrl?: string | null) => {
+    if (previewUrl) {
+        return previewUrl;
+    }
+    if (!report) {
+        return null;
+    }
+    const reportletPath = (report.reportPath || report.objectPath)
+        .replace(/\\/g, '/')
+        .replace(/^\/+/, '')
+        .replace(/^webroot\/APP\/reportlets\//i, '')
+        .replace(/^APP\/reportlets\//i, '')
+        .replace(/^reportlets\//i, '');
+    if (!reportletPath) {
+        return null;
+    }
+    return `${DEFAULT_FINEREPORT_PREVIEW_ROOT}/webroot/decision/view/report?viewlet=${encodeURI(reportletPath)}`;
+};
+
+const safeStringify = (value: unknown) => {
+    try {
+        return JSON.stringify(value, null, 2);
+    } catch {
+        return String(value);
+    }
+};
+
+const sanitizeAgentContext = (context: FrAiReportAgentContext | Record<string, unknown> | null | undefined): FrAiReportAgentContext => {
+    if (!context || typeof context !== 'object') {
+        return {};
+    }
+    const cleaned = Object.fromEntries(Object.entries(context).filter(([key]) => !FR_AGENT_DRAFT_CONTEXT_KEYS.has(key)));
+    return cleaned as FrAiReportAgentContext;
+};
+
+const summarizeSqlStep = (step: GenerateSqlStepResponse) => {
+    const columns = step.sqlValidation?.columns ?? [];
+    const rowCount = step.sqlValidation?.rowCount;
+    return [
+        `状态：${step.status}`,
+        step.sourceTableName ? `数据来源：${step.sourceTableName}` : null,
+        columns.length ? `字段：${columns.slice(0, 8).join('、')}${columns.length > 8 ? ` 等 ${columns.length} 个` : ''}` : null,
+        rowCount != null ? `预览行数：${rowCount}` : null,
+    ]
+        .filter(Boolean)
+        .join('；');
+};
+
+const summarizeDslStep = (step: GenerateDslStepResponse) => {
+    const dsl = step.reportDsl;
+    const parameterCount = dsl?.parameters?.length ?? 0;
+    const columnCount = dsl?.layout?.columns?.length ?? 0;
+    const writeBackEnabled = Boolean(dsl?.writeBack?.enabled);
+    return [`状态：${step.status}`, `列数：${columnCount}`, `参数：${parameterCount}`, writeBackEnabled ? '填报：启用' : '填报：未启用'].join('；');
+};
+
+const getRecordString = (value: unknown, key: string) => {
+    if (!value || typeof value !== 'object') {
+        return null;
+    }
+    const item = (value as Record<string, unknown>)[key];
+    return typeof item === 'string' && item.trim() ? item : null;
+};
+
+const toUserFacingErrorMessage = (message: string) => {
+    if (/没有找到目标 XML 节点|不支持的 XML patch selector|Unsupported XML patch selector/i.test(message)) {
+        return '这次修改没有定位到对应的报表文件节点，尚未写入 CPT。请重新生成待应用修改项，或把要修改的位置描述得更具体一些。';
+    }
+    if (/Request failed with status code 400/i.test(message)) {
+        return '请求没有通过校验，尚未写入 CPT。请重新生成待应用修改项后再试。';
+    }
+    return message;
+};
+
+const getMutationErrorMessage = (error: unknown) => {
+    if (!error) {
+        return null;
+    }
+    if (typeof error === 'string') {
+        return error;
+    }
+    const responseData = error && typeof error === 'object'
+        ? (error as { response?: { data?: unknown } }).response?.data
+        : null;
+    return toUserFacingErrorMessage(
+        getRecordString(responseData, 'detail') ??
+        getRecordString(responseData, 'msg') ??
+        getRecordString(error, 'message') ??
+        '操作失败，请稍后重试。'
+    );
+};
+
+const maxDraftRisk = (draft: FrReportAiOperationDraftResponse | null | undefined) => {
+    const order = { low: 0, medium: 1, high: 2 } as const;
+    return (draft?.operations ?? []).reduce<'low' | 'medium' | 'high'>((max, item) => {
+        const current = item.riskLevel in order ? item.riskLevel : 'medium';
+        return order[current] > order[max] ? current : max;
+    }, 'low');
+};
+
+const riskLabel = (risk: 'low' | 'medium' | 'high') => (risk === 'high' ? '高风险' : risk === 'medium' ? '中风险' : '低风险');
+
+const isXmlPatchDraft = (draft: FrReportAiOperationDraftResponse | null | undefined) =>
+    Boolean(draft && draft.status === 'draft' && draft.operations.length > 0 && draft.operations.every((item) => item.operationType === 'xml_patch'));
+
+const draftTargetLabel = (target: string | null | undefined) => {
+    const text = String(target || '').trim();
+    if (!text) {
+        return '当前报表';
+    }
+    if (/parameter|ReportParameterAttr|ParameterUI/i.test(text)) {
+        return '参数栏';
+    }
+    if (/TableData|Query|ds\d+/i.test(text)) {
+        return '数据集查询';
+    }
+    if (/StyleList|Style/i.test(text)) {
+        return '样式';
+    }
+    if (/ReportWriteAttr|ReportWebAttr|JavaScript|Event/i.test(text)) {
+        return '填报或脚本配置';
+    }
+    if (/^cell:/i.test(text)) {
+        return `单元格 ${text.replace(/^cell:/i, '')}`;
+    }
+    return text.length > 48 ? `${text.slice(0, 48)}...` : text;
+};
+
+const formatDraftDetails = (draft: FrReportAiOperationDraftResponse) => {
+    const invalidOperations = draft.operations.filter((item) => item.operationType !== 'xml_patch');
+    if (draft.status === 'blocked' || draft.operations.length === 0 || invalidOperations.length) {
+        return [
+            '未形成可确认的待应用修改项。',
+            invalidOperations.length ? `返回内容包含 ${invalidOperations.length} 个不可应用操作，已作废。` : null,
+            '请重新生成待应用修改项；生成结果应能直接进入版本流程。',
+            draft.warnings.length ? `提示：${draft.warnings.join('；')}` : null,
+        ]
+            .filter(Boolean)
+            .join('\n');
+    }
+    const lines = [
+        `待应用修改项：${draft.operations.length} 项`,
+        `最高风险：${riskLabel(maxDraftRisk(draft))}`,
+        '',
+        ...draft.operations.map((item, index) => `${index + 1}. ${item.summary}\n   影响范围：${draftTargetLabel(item.target)}\n   风险等级：${riskLabel(item.riskLevel)}`),
+    ];
+    if (draft.warnings.length) {
+        lines.push('', '风险提示：', ...draft.warnings.map((item) => `- ${item}`));
+    }
+    return lines.join('\n');
+};
+
+const normalizeArtifactForDisplay = (artifact: AssistantArtifact): AssistantArtifact => {
+    if (artifact.type !== 'draft' || !artifact.content) {
+        return artifact;
+    }
+    try {
+        const parsed = JSON.parse(artifact.content) as Partial<FrReportAiOperationDraftResponse> & {
+            assistantMessage?: string;
+            operations?: FrReportAiOperationRead[];
+            previewPatch?: Record<string, unknown>;
+            safety?: Record<string, unknown>;
+            warnings?: string[];
+        };
+        if (!Array.isArray(parsed.operations)) {
+            return artifact;
+        }
+        const draft: FrReportAiOperationDraftResponse = {
+            draftId: artifact.id,
+            baseVersion: '',
+            targetVersion: '',
+            status: parsed.operations.length && parsed.operations.every((item) => item.operationType === 'xml_patch') ? 'draft' : 'blocked',
+            assistantMessage: parsed.assistantMessage ?? '',
+            operations: parsed.operations,
+            previewPatch: parsed.previewPatch ?? {},
+            safety: parsed.safety ?? {},
+            modelName: null,
+            warnings: Array.isArray(parsed.warnings) ? parsed.warnings.map(String) : [],
+        };
+        return {
+            ...artifact,
+            title: '查看待应用修改项',
+            content: formatDraftDetails(draft),
+        };
+    } catch {
+        return artifact;
+    }
+};
+
+const buildResponseArtifacts = (response: FrAiReportAgentChatResponse): AssistantArtifact[] => {
+    const artifacts: AssistantArtifact[] = [];
+    if (response.sqlStep) {
+        artifacts.push({
+            id: `${response.sqlStep.taskId}-sql`,
+            title: '查看 SQL 和数据预览',
+            type: 'sql',
+            summary: summarizeSqlStep(response.sqlStep),
+            content: safeStringify({
+                querySql: response.sqlStep.querySql,
+                createTableSql: response.sqlStep.createTableSql,
+                sqlValidation: response.sqlStep.sqlValidation,
+                requirementSummary: response.sqlStep.requirementSummary,
+                warnings: response.sqlStep.warnings,
+                errors: response.sqlStep.errors,
+            }),
+        });
+    }
+    if (response.dslStep) {
+        artifacts.push({
+            id: `${response.dslStep.taskId}-dsl`,
+            title: '查看 ReportDSL',
+            type: 'dsl',
+            summary: summarizeDslStep(response.dslStep),
+            content: safeStringify(response.dslStep.reportDsl ?? response.dslStep),
+        });
+    }
+    if (response.operationDraft) {
+        const unsupported = response.operationDraft.operations.filter((item) => !FR_APPLICABLE_OPERATION_TYPES.has(item.operationType));
+        const risk = maxDraftRisk(response.operationDraft);
+        artifacts.push({
+            id: response.operationDraft.draftId,
+            title: '查看待应用修改项',
+            type: 'draft',
+            summary: response.operationDraft.status === 'blocked' || response.operationDraft.operations.length === 0
+                ? '没有形成可确认的待应用修改项。'
+                : unsupported.length
+                  ? `返回了 ${unsupported.length} 个不可应用操作，已作废。`
+                  : `共 ${response.operationDraft.operations.length} 个待应用修改项；最高风险：${riskLabel(risk)}。`,
+            content: formatDraftDetails(response.operationDraft),
+        });
+    }
+    if (response.cptStep) {
+        artifacts.push({
+            id: `${response.cptStep.taskId}-cpt`,
+            title: '查看 CPT 写入结果',
+            type: 'cpt',
+            summary: [
+                `状态：${response.cptStep.status}`,
+                response.cptStep.cptObjectPath ? `路径：${response.cptStep.cptObjectPath}` : null,
+                response.cptStep.fileVersionId ? `文件版本：${response.cptStep.fileVersionId}` : null,
+            ]
+                .filter(Boolean)
+                .join('；'),
+            content: safeStringify({
+                cptObjectPath: response.cptStep.cptObjectPath,
+                dslObjectPath: response.cptStep.dslObjectPath,
+                sqlObjectPath: response.cptStep.sqlObjectPath,
+                previewUrl: response.cptStep.previewUrl,
+                fileVersionId: response.cptStep.fileVersionId,
+                structureVersionId: response.cptStep.structureVersionId,
+                warnings: response.cptStep.warnings,
+                errors: response.cptStep.errors,
+            }),
+            path: response.cptStep.cptObjectPath,
+            previewUrl: response.cptStep.previewUrl,
+        });
+    }
+    if (response.warnings.length || response.errors.length) {
+        artifacts.push({
+            id: `${response.taskId ?? Date.now()}-warnings`,
+            title: response.errors.length ? '查看错误和风险' : '查看风险提示',
+            type: 'warning',
+            summary: `${response.warnings.length} 条提示，${response.errors.length} 条错误。`,
+            content: [
+                response.warnings.length ? '风险提示：' : null,
+                ...response.warnings.map((item) => `- ${item}`),
+                response.errors.length ? '错误：' : null,
+                ...response.errors.map((item) => `- ${item}`),
+            ]
+                .filter(Boolean)
+                .join('\n'),
+        });
+    }
+    return artifacts;
+};
+
+const buildAssistantContent = (response: FrAiReportAgentChatResponse) => {
+    if (response.operationDraft) {
+        if (response.operationDraft.status === 'blocked' || response.operationDraft.operations.length === 0) {
+            return `${response.operationDraft.assistantMessage || '本轮没有形成可确认的待应用修改项。'}\n\n可以补充目标效果，或重新生成待应用修改项。`;
+        }
+        const unsupported = response.operationDraft.operations.filter((item) => !FR_APPLICABLE_OPERATION_TYPES.has(item.operationType));
+        const risk = maxDraftRisk(response.operationDraft);
+        const riskText = risk === 'high'
+            ? '\n\n这次包含高风险 CPT 修改，可能触及样式、填报、脚本、数据集或整份文件。应用前请确认，生成 CPT 时会保留版本并做冲突检测。'
+            : risk === 'medium'
+              ? '\n\n这次包含中风险 CPT 修改，应用前请确认；生成 CPT 前仍会走版本归档、冲突检测和真实预览校验。'
+              : '';
+        return unsupported.length
+            ? `返回内容不是可应用修改项，已作废，没有进入待应用列表。请重新发送需求生成待应用修改项。`
+            : `${response.operationDraft.assistantMessage}\n\n待应用修改项已生成，确认后会进入快照；生成 CPT 前仍会走版本和冲突检测。${riskText}`;
+    }
+    if (response.cptStep) {
+        const statusText = response.cptStep.status === 'conflict' ? '保存被阻止：检测到设计器外部修改。' : response.cptStep.errors.length ? 'CPT 已生成版本，但预览校验有错误。' : 'CPT 已生成并进入版本库。';
+        return `${statusText}\n路径：${response.cptStep.cptObjectPath ?? '未返回'}\n${response.cptStep.previewUrl ? '可以打开 FineReport 预览核对真实效果。' : '本次没有返回可用预览地址。'}`;
+    }
+    if (response.dslStep) {
+        const parameterCount = response.dslStep.reportDsl?.parameters?.length ?? 0;
+        return `已生成 SQL 和 ReportDSL，前端现在可以直接查看中间产物。\n参数数量：${parameterCount}；报表列数：${response.dslStep.reportDsl?.layout?.columns?.length ?? 0}。\n下一步你可以继续让小驰调整，也可以保存成 CPT 后到 FineReport 预览核对。`;
+    }
+    if (response.assistantMessage?.trim()) {
+        return response.assistantMessage.trim();
+    }
+    if (response.status === 'need_input') {
+        return `我现在还不能可靠继续：\n${response.questions.map((item) => `- ${item}`).join('\n') || '缺少必要上下文。'}`;
+    }
+    const planEvent = response.events.find((event) => event.type === 'plan_draft' && event.content);
+    if (planEvent?.content) {
+        return planEvent.content;
+    }
+    const latest = response.events.filter((event) => event.content).at(-1);
+    return latest?.content ?? '小驰已完成本轮处理。';
+};
 
 interface ReportTreeFolder {
     name: string;
@@ -174,6 +501,10 @@ export function FrAiReportChatPage() {
     const selectedReport = useMemo(() => {
         return reportFiles.find((item) => item.objectPath === selectedReportPath) ?? reportFiles[0] ?? null;
     }, [reportFiles, selectedReportPath]);
+    const currentFineReportPreviewUrl = useMemo(
+        () => buildFineReportPreviewUrl(selectedReport, aiSnapshotCpt?.previewUrl),
+        [aiSnapshotCpt?.previewUrl, selectedReport],
+    );
     const reportStructureQuery = useFrAiReportFileStructure(selectedReport?.objectPath);
     const selectedCellDetail = useMemo(() => {
         const column = selectedCell.replace(/\d+/g, '');
@@ -251,64 +582,49 @@ export function FrAiReportChatPage() {
                 <div className="flex items-center gap-2">
                     <Button
                         variant="outline"
-                        className="h-9 border-[#bfe3dc] bg-[#f6fbfa] text-[#0b7c6b] hover:bg-[#eaf7f4]"
-                        onClick={() => setNewReportDialogOpen(true)}
-                    >
-                        <Sparkles className="size-4" />
-                        AI 新建报表
-                    </Button>
-                    <Button variant="outline" className="h-9 border-[#dedede] text-[#333333] hover:bg-[#f5f5f5]">
-                        <History className="size-4" />
-                        历史版本
-                    </Button>
-                    <Button
-                        variant="outline"
                         className="h-9 border-[#dedede] text-[#333333] hover:bg-[#f5f5f5]"
                         onClick={() => {
                             setDraftVisiblePaths(new Set(visibilityPreferenceQuery.data?.visiblePaths ?? []));
                             setVisibilityDialogOpen(true);
                         }}
                     >
-                        <Settings2 className="size-4" />
+                        <SlidersHorizontal className="size-4" />
                         显示范围
                     </Button>
-                    <Button className="h-9 bg-[#0f8f7b] text-white hover:bg-[#0b7c6b]">
-                        <Sparkles className="size-4" />
-                        生成 CPT
+                    <Button
+                        variant="outline"
+                        className="h-9 border-[#bfe3dc] bg-[#f6fbfa] text-[#0b7c6b] hover:bg-[#eaf7f4]"
+                        onClick={() => setNewReportDialogOpen(true)}
+                    >
+                        <Plus className="size-4" />
+                        新建报表
                     </Button>
                 </div>
             </header>
 
-            <div className="flex shrink-0 items-center gap-1 border-b border-[#eeeeee] bg-white px-4 py-2">
-                {toolbarItems.map((item) => {
-                    const Icon = item.icon;
-                    return (
-                        <button
-                            key={item.label}
-                            type="button"
-                            className={cn(
-                                'inline-flex h-8 items-center gap-1 rounded-md px-2.5 text-xs font-medium text-[#555555] transition hover:bg-[#f5f5f5] hover:text-[#0f8f7b]',
-                                item.active && 'bg-[#f2f7f6] text-[#0f8f7b]',
-                            )}
-                            title={item.label}
-                        >
-                            <Icon className="size-4" />
-                            <span className="hidden xl:inline">{item.label}</span>
-                        </button>
-                    );
-                })}
-                <div className="mx-2 h-5 w-px bg-[#e5e5e5]" />
-                <button type="button" className="inline-flex h-8 items-center gap-1 rounded-md px-2 text-xs text-[#555555] hover:bg-[#f5f5f5]">
-                    宋体
-                    <ChevronDown className="size-3" />
-                </button>
-                <button type="button" className="inline-flex h-8 items-center gap-1 rounded-md px-2 text-xs text-[#555555] hover:bg-[#f5f5f5]">
-                    13
-                    <ChevronDown className="size-3" />
-                </button>
+            <div className="flex shrink-0 items-center justify-between gap-3 border-b border-[#eeeeee] bg-white px-4 py-2">
+                <div className="min-w-0 text-xs text-[#60736f]">
+                    {selectedReport ? (
+                        <span className="block truncate">
+                            当前报表：<span className="font-medium text-[#203b35]">{selectedReport.fileName}</span>
+                        </span>
+                    ) : (
+                        <span>选择或新建一张报表后，可以在小驰侧栏继续调整。</span>
+                    )}
+                </div>
+                <Button
+                    type="button"
+                    variant="outline"
+                    className="h-8 shrink-0 border-[#bfe3dc] bg-[#f6fbfa] text-xs text-[#0b7c6b] hover:bg-[#eaf7f4]"
+                    disabled={!currentFineReportPreviewUrl}
+                    onClick={() => currentFineReportPreviewUrl && window.open(currentFineReportPreviewUrl, '_blank', 'noopener,noreferrer')}
+                >
+                    <Play className="size-3.5" />
+                    打开 FineReport 预览
+                </Button>
             </div>
 
-            <main className="flex min-h-0 flex-1 bg-white">
+            <main className="flex min-h-0 flex-1 overflow-hidden bg-white">
                 <aside className="hidden min-h-0 w-[260px] shrink-0 border-r border-[#e5e5e5] bg-[#fafafa] 2xl:block">
                     <div className="border-b border-[#eeeeee] p-3">
                         <div className="relative">
@@ -401,7 +717,7 @@ export function FrAiReportChatPage() {
                     </div>
                 </aside>
 
-                <section className="flex min-h-0 min-w-0 flex-1 flex-col">
+                <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
                     <div className="flex shrink-0 items-center justify-between border-b border-[#eeeeee] bg-white px-4 py-3">
                         <div className="min-w-0">
                             <div className="flex items-center gap-2">
@@ -440,6 +756,7 @@ export function FrAiReportChatPage() {
 
                     <ReportDesignCanvas
                         sheet={activeSheet}
+                        parameterPanel={reportStructureQuery.data?.document?.parameterPanel ?? null}
                         loading={reportStructureQuery.isLoading || reportStructureQuery.isFetching}
                         error={reportStructureQuery.error}
                         selectedCell={selectedCell}
@@ -453,12 +770,12 @@ export function FrAiReportChatPage() {
                             <span className="text-[#0b7c6b]">MinIO 已连接</span>
                             <span className="text-[#0b7c6b]">已发现 {reportFilesQuery.data?.total ?? 0} 个报表</span>
                         </div>
-                        <span>FineReport 预览待生成</span>
+                        <span>{currentFineReportPreviewUrl ? 'FineReport 预览可打开' : '选择报表后可打开 FineReport 预览'}</span>
                     </footer>
                 </section>
 
                 {rightPanelVisible ? (
-                <aside className="relative grid min-h-0 shrink-0 grid-rows-[auto_minmax(0,1fr)] border-l border-[#e5e5e5] bg-white" style={{ width: rightPanelWidth }}>
+                <aside className="relative z-10 grid h-full min-h-0 shrink-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden border-l border-[#e5e5e5] bg-white" style={{ width: rightPanelWidth }}>
                     <button
                         type="button"
                         aria-label="拖动调整小驰宽度"
@@ -493,7 +810,7 @@ export function FrAiReportChatPage() {
                             <PanelRightClose className="size-4" />
                         </Button>
                     </div>
-                    <div className="min-h-0 overflow-hidden p-4">
+                    <div className="min-h-0 overflow-hidden p-3">
                         {selectedPanel === '属性' ? (
                             <div className="h-full overflow-auto">
                                 <PropertyPanel
@@ -506,6 +823,7 @@ export function FrAiReportChatPage() {
                             </div>
                         ) : (
                             <CopilotPanel
+                                key={selectedReport?.objectPath ?? 'global'}
                                 selectedReport={selectedReport}
                                 reportStructure={reportStructureQuery.data ?? null}
                                 structureLoading={reportStructureQuery.isLoading || reportStructureQuery.isFetching}
@@ -528,12 +846,19 @@ export function FrAiReportChatPage() {
                                     setAiDraft(draft);
                                 }}
                                 onDraftApplied={(result) => {
+                                    setAiDraft(null);
                                     setAiPreviewPatch(toAiPreviewPatch(result.previewPatch));
                                     setAiAppliedSnapshotId(result.targetSnapshot.snapshotId);
                                     setAiSnapshotCpt(null);
                                 }}
                                 onSnapshotCptGenerated={(result) => {
                                     setAiSnapshotCpt(result);
+                                    if (result.status !== 'conflict') {
+                                        setAiDraft(null);
+                                        setAiPreviewPatch(null);
+                                        setAiAppliedSnapshotId(null);
+                                        void reportStructureQuery.refetch();
+                                    }
                                 }}
                                 onClearDraft={() => {
                                     setAiDraft(null);
@@ -551,8 +876,15 @@ export function FrAiReportChatPage() {
             <NewReportAiDialog
                 open={newReportDialogOpen}
                 onOpenChange={setNewReportDialogOpen}
-                templateObjectPath={selectedReport?.objectPath ?? null}
                 reportFiles={allReportFilesQuery.data?.items ?? reportFiles}
+                onCreated={(objectPath) => {
+                    setSelectedReportPath(objectPath);
+                    setSelectedPanel('小驰');
+                    setAiDraft(null);
+                    setAiPreviewPatch(null);
+                    setAiAppliedSnapshotId(null);
+                    setAiSnapshotCpt(null);
+                }}
             />
 
             <VisibilityPreferenceDialog
@@ -744,6 +1076,7 @@ function ResourcePill({ label }: { label: string }) {
 
 function ReportDesignCanvas({
     sheet,
+    parameterPanel,
     loading,
     error,
     selectedCell,
@@ -751,6 +1084,7 @@ function ReportDesignCanvas({
     onSelectCell,
 }: {
     sheet: FrReportSheetRead | null;
+    parameterPanel: FrReportParameterPanelRead | null;
     loading: boolean;
     error: unknown;
     selectedCell: string;
@@ -779,6 +1113,7 @@ function ReportDesignCanvas({
 
     return (
         <div className="min-h-0 flex-1 overflow-auto bg-[#fafafa] p-4">
+            <ReportParameterPanelPreview panel={parameterPanel} />
             <div className="inline-block min-w-full rounded-xl border border-[#dedede] bg-white shadow-sm">
                 <div
                     className="grid text-xs text-[#333333]"
@@ -859,6 +1194,74 @@ function ReportDesignCanvas({
                 </span>
                 {truncated ? <span className="text-[#9a6a12]">画布较大，当前仅展示前 {rowCount} 行、{columnCount} 列</span> : null}
             </div>
+        </div>
+    );
+}
+
+function ReportParameterPanelPreview({ panel }: { panel: FrReportParameterPanelRead | null }) {
+    const widgets = panel?.widgets ?? [];
+    if (!panel || widgets.length === 0) {
+        return null;
+    }
+    const width = Math.max(panel.width ?? 960, ...widgets.map((widget) => (widget.x ?? 0) + (widget.width ?? 80) + 24));
+    const height = Math.max(panel.height ?? 64, ...widgets.map((widget) => (widget.y ?? 0) + (widget.height ?? 21) + 14));
+    const visibleWidgets = widgets.filter((widget) => widget.widgetType !== 'label' || widget.label);
+    return (
+        <div className="mb-3 inline-block min-w-full rounded-lg border border-[#dfe6ea] bg-[#f7f9fb] shadow-sm">
+            <div className="overflow-x-auto">
+                <div className="relative" style={{ width, height }}>
+                    {visibleWidgets.map((widget) => {
+                        const x = widget.x ?? 0;
+                        const y = widget.y ?? 0;
+                        const widgetWidth = widget.width ?? (widget.widgetType === 'label' ? 80 : 120);
+                        const widgetHeight = widget.height ?? 22;
+                        const key = `${widget.name}-${x}-${y}`;
+                        const label = widget.label || widget.name;
+                        if (widget.widgetType === 'button') {
+                            return (
+                                <button
+                                    key={key}
+                                    type="button"
+                                    className="absolute rounded border border-[#54a9dd] bg-[#4aa3df] px-3 text-xs font-medium text-white shadow-sm"
+                                    style={{ left: x, top: y, width: widgetWidth, height: widgetHeight }}
+                                >
+                                    {label || '查询'}
+                                </button>
+                            );
+                        }
+                        if (widget.widgetType === 'label') {
+                            return (
+                                <div
+                                    key={key}
+                                    className="absolute flex items-center overflow-hidden text-xs text-[#111827]"
+                                    style={{ left: x, top: y, width: widgetWidth, height: widgetHeight }}
+                                    title={label}
+                                >
+                                    <span className="truncate">{label}</span>
+                                </div>
+                            );
+                        }
+                        return (
+                            <div
+                                key={key}
+                                className="absolute flex items-center overflow-hidden rounded-sm border border-[#aeb8c2] bg-white text-xs text-[#1f2937]"
+                                style={{ left: x, top: y, width: widgetWidth, height: widgetHeight }}
+                                title={`${label}：${widget.defaultValue ?? ''}`}
+                            >
+                                <span className="min-w-0 flex-1 truncate px-1.5">{widget.defaultValue ?? ''}</span>
+                                {widget.widgetType === 'date' ? (
+                                    <span className="grid h-full w-5 shrink-0 place-items-center border-l border-[#b9c2ca] bg-[#e8f5ff] text-[10px] text-[#1976b9]">
+                                        ＊
+                                    </span>
+                                ) : null}
+                            </div>
+                        );
+                    })}
+                </div>
+            </div>
+            {panel.delayPlaying ? (
+                <div className="border-t border-[#e7ecef] px-3 py-1.5 text-[11px] text-[#8a6a12]">当前参数栏设置为点击查询后显示报表内容</div>
+            ) : null}
         </div>
     );
 }
@@ -1567,79 +1970,6 @@ function listReportFolders(files: FrReportFileRead[]) {
     return Array.from(folders).sort((left, right) => left.localeCompare(right, 'zh-Hans-CN'));
 }
 
-function extractNewReportContext(text: string) {
-    const normalized = text.trim();
-    const reportName =
-        matchFirst(normalized, [
-            /报表(?:名称|名)?[：:]\s*([^\n，,；;]+)/,
-            /(?:叫|命名为|名称为)\s*([^\n，,；;]+?报表)/,
-        ]) ?? undefined;
-    const targetFolder =
-        matchFirst(normalized, [
-            /(?:保存到|放到|生成到|目录)[：:\s]*((?:webroot\/APP\/reportlets|reportlets)\/[^\s，,；;]+)/i,
-            /((?:webroot\/APP\/reportlets|reportlets)\/[^\s，,；;]+)/i,
-        ]) ?? undefined;
-    const tableMatches = Array.from(
-        normalized.matchAll(/\b(?:[A-Za-z_][\w]*\.)?[A-Za-z_][\w]*(?:\s*,\s*(?:[A-Za-z_][\w]*\.)?[A-Za-z_][\w]*)*\b/g),
-    )
-        .map((match) => match[0])
-        .filter((value) => /[_\.]/.test(value) && !value.toLowerCase().includes('webroot') && !value.toLowerCase().includes('reportlets'))
-        .slice(0, 8);
-    const sourceTablesText = tableMatches.length > 0 ? tableMatches.join('\n') : undefined;
-    return { reportName, targetFolder: normalizeReportFolder(targetFolder), sourceTablesText };
-}
-
-function matchFirst(text: string, patterns: RegExp[]) {
-    for (const pattern of patterns) {
-        const matched = text.match(pattern);
-        const value = matched?.[1]?.trim();
-        if (value) {
-            return value;
-        }
-    }
-    return null;
-}
-
-function normalizeReportFolder(value?: string) {
-    if (!value) {
-        return undefined;
-    }
-    const trimmed = value.replace(/[。.!！?？]+$/, '').replace(/\/+$/, '');
-    if (trimmed.startsWith('webroot/APP/reportlets')) {
-        return trimmed;
-    }
-    if (trimmed.startsWith('reportlets/')) {
-        return `webroot/APP/${trimmed}`;
-    }
-    return trimmed;
-}
-
-function isGenerateReportCommand(text: string) {
-    const normalized = text.replace(/\s/g, '');
-    return /开始生成|生成报表|可以生成|直接生成|开始做|开始吧/.test(normalized);
-}
-
-function isSaveCptCommand(text: string) {
-    const normalized = text.replace(/\s/g, '').toLowerCase();
-    return normalized.includes('保存成cpt') || normalized.includes('生成cpt') || normalized.includes('保存cpt');
-}
-
-function isFreshReportRequest(text: string) {
-    const normalized = text.replace(/\s/g, '');
-    return /^(帮我|我要|请|直接)?(做|新建|生成|创建|设计)(一个|一张)?/.test(normalized) || /报表名[：:]/.test(text);
-}
-
-function agentToolLabel(toolName: string) {
-    const labels: Record<string, string> = {
-        ai_requirement_review: 'AI 需求理解',
-        review_requirement: '需求预检',
-        generate_sql_with_preview: 'SQL 与数据预览',
-        generate_report_dsl: '报表设计',
-        generate_cpt: 'CPT 与版本控制',
-    };
-    return labels[toolName] ?? toolName;
-}
-
 function buildReportFileTree(files: FrReportFileRead[]) {
     const root: ReportTreeFolder = {
         name: '报表',
@@ -1883,24 +2213,13 @@ function PropertyPanel({
                     <Braces className="size-4 text-[#0f8f7b]" />
                     <h2 className="text-sm font-semibold text-[#243a35]">样式摘要</h2>
                 </div>
-                <pre className="overflow-auto rounded-lg bg-[#12352f] p-3 text-[11px] leading-5 text-[#d7fff4]">
-{JSON.stringify(
-    {
-        styleName: style?.styleName ?? null,
-        fontSize: style?.fontSize ?? null,
-        bold: style?.bold ?? null,
-        backgroundColor: style?.backgroundColor ?? null,
-        borderColor: style?.borderColor ?? null,
-        borderTop: style?.borderTop ?? null,
-        borderRight: style?.borderRight ?? null,
-        borderBottom: style?.borderBottom ?? null,
-        borderLeft: style?.borderLeft ?? null,
-        horizontalAlign: style?.horizontalAlign ?? null,
-    },
-    null,
-    2,
-)}
-                </pre>
+                <div className="grid gap-2 rounded-lg bg-[#f8faf9] p-3 text-[11px] leading-5 text-[#49615c] ring-1 ring-[#e6eeee]">
+                    <div>样式名称：{style?.styleName || '未设置'}</div>
+                    <div>字号：{style?.fontSize ?? '未设置'}；加粗：{style?.bold ? '是' : '否'}</div>
+                    <div>背景色：{style?.backgroundColor || '未设置'}；边框色：{style?.borderColor || '未设置'}</div>
+                    <div>边框：上 {style?.borderTop ? '有' : '无'}，右 {style?.borderRight ? '有' : '无'}，下 {style?.borderBottom ? '有' : '无'}，左 {style?.borderLeft ? '有' : '无'}</div>
+                    <div>水平对齐：{style?.horizontalAlign || '未设置'}</div>
+                </div>
             </section>
 
             <CellAdvancedPropertyDialog
@@ -2313,7 +2632,7 @@ function ReportStructurePanel({
                     </DialogHeader>
                     <div className="rounded-lg bg-[#fffaf0] p-3 text-xs leading-5 text-[#795300] ring-1 ring-[#f1d48a]">
                         {hasDraft
-                            ? '当前有待应用的小驰修改草稿。同步后画布会以设计器最新文件为准，尚未写入文件的预览修改可能需要重新生成。'
+                            ? '当前有待应用修改项。同步后画布会以设计器最新文件为准，尚未写入文件的预览修改可能需要重新生成。'
                             : '同步只刷新平台读取到的结构，不会直接覆盖 FineReport 文件。'}
                     </div>
                     <DialogFooter>
@@ -2453,20 +2772,64 @@ function CopilotPanel({
     onSnapshotCptGenerated: (result: FrReportAiSnapshotCptResponse) => void;
     onClearDraft: () => void;
 }) {
+    const chatStorageKey = `${FR_AGENT_CHAT_STORAGE_KEY_PREFIX}:${selectedReport?.objectPath ?? 'global'}`;
+    const contextStorageKey = `${FR_AGENT_CONTEXT_STORAGE_KEY_PREFIX}:${selectedReport?.objectPath ?? 'global'}`;
     const [prompt, setPrompt] = useState('');
     const [draftPrompt, setDraftPrompt] = useState('');
     const [targetObjectPath, setTargetObjectPath] = useState('');
     const [conflictDialogOpen, setConflictDialogOpen] = useState(false);
     const [recycleDialogOpen, setRecycleDialogOpen] = useState(false);
-    const [activeTool, setActiveTool] = useState<'structure' | 'draft' | 'commands' | 'versions' | null>(null);
-    const [messages, setMessages] = useState<AssistantMessage[]>([
-        {
-            id: 'welcome',
-            role: 'assistant',
-            content: '我可以帮你改 SQL、样式、填报配置和版本发布。你直接说要改哪里，我会先生成可预览的修改草稿。',
-        },
-    ]);
-    const generateDraft = useGenerateFrReportAiOperationDraft();
+    const [activeTool, setActiveTool] = useState<'structure' | 'draft' | 'commands' | 'versions' | 'capabilities' | 'skills' | null>(null);
+    const [activeArtifact, setActiveArtifact] = useState<AssistantArtifact | null>(null);
+    const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+    const [agentContext, setAgentContext] = useState<FrAiReportAgentContext>(() => {
+        if (typeof window === 'undefined') {
+            return {};
+        }
+        try {
+            const storedContext = window.localStorage.getItem(contextStorageKey);
+            const parsedContext = storedContext ? JSON.parse(storedContext) : null;
+            return sanitizeAgentContext(parsedContext && typeof parsedContext === 'object' ? parsedContext : {});
+        } catch {
+            return {};
+        }
+    });
+    const [activeSkillIds, setActiveSkillIds] = useState<string[]>(() => {
+        if (typeof window === 'undefined') {
+            return ['fr-style-weekly-template', 'fr-token-budget'];
+        }
+        try {
+            const storedValue = window.localStorage.getItem(FR_AGENT_SKILL_IDS_STORAGE_KEY);
+            const parsedValue = storedValue ? JSON.parse(storedValue) : null;
+            return Array.isArray(parsedValue) && parsedValue.length ? parsedValue.filter((item) => typeof item === 'string') : ['fr-style-weekly-template', 'fr-token-budget'];
+        } catch {
+            return ['fr-style-weekly-template', 'fr-token-budget'];
+        }
+    });
+    const [skillInstruction, setSkillInstruction] = useState(() => {
+        if (typeof window === 'undefined') {
+            return '';
+        }
+        return window.localStorage.getItem(FR_AGENT_SKILL_INSTRUCTION_STORAGE_KEY) ?? '';
+    });
+    const fileInputRef = useRef<HTMLInputElement | null>(null);
+    const typingTimerRef = useRef<number | null>(null);
+    const [messages, setMessages] = useState<AssistantMessage[]>(() => {
+        if (typeof window === 'undefined') {
+            return [createWelcomeMessage(Boolean(selectedReport))];
+        }
+        try {
+            const storedMessages = window.localStorage.getItem(chatStorageKey);
+            const parsedMessages = storedMessages ? JSON.parse(storedMessages) : null;
+            return Array.isArray(parsedMessages) && parsedMessages.length
+                ? normalizeWelcomeMessages(parsedMessages as AssistantMessage[], Boolean(selectedReport))
+                : [createWelcomeMessage(Boolean(selectedReport))];
+        } catch {
+            return [createWelcomeMessage(Boolean(selectedReport))];
+        }
+    });
+    const agentChat = useFrAiReportAgentChat();
+    const capabilitiesQuery = useFrAiReportAgentCapabilities();
     const applyDraft = useApplyFrReportAiOperationDraft();
     const generateSnapshotCpt = useGenerateFrReportAiSnapshotCpt();
     const effectiveTargetObjectPath = targetObjectPath.trim() || snapshotCpt?.cptObjectPath || selectedReport?.objectPath || '';
@@ -2476,55 +2839,158 @@ function CopilotPanel({
     const syncExternalVersion = useSyncFrReportExternalVersion();
     const recycleReportFile = useRecycleFrReportFile();
     const conflictDetail = snapshotCpt?.status === 'conflict' ? snapshotCpt.conflict : versionsQuery.data?.externalConflict;
+    const capabilities: FrAiReportAgentCapabilitiesResponse | undefined = capabilitiesQuery.data;
     useEffect(() => {
-        if (snapshotCpt?.status === 'conflict') {
-            setConflictDialogOpen(true);
-        }
-    }, [snapshotCpt]);
-    const handleSubmit = () => {
-        if (!selectedReport || !prompt.trim()) {
+        window.localStorage.setItem(FR_AGENT_SKILL_IDS_STORAGE_KEY, JSON.stringify(activeSkillIds));
+    }, [activeSkillIds]);
+    useEffect(() => {
+        window.localStorage.setItem(FR_AGENT_SKILL_INSTRUCTION_STORAGE_KEY, skillInstruction);
+    }, [skillInstruction]);
+    useEffect(() => {
+        if (typeof window === 'undefined') {
             return;
         }
-        const requestText = prompt.trim();
+        const persistedMessages = messages.map((message) => ({
+            ...message,
+            status: message.status === 'pending' ? 'error' : message.status,
+            content: message.id === 'welcome'
+                ? getWelcomeContent(Boolean(selectedReport))
+                : message.status === 'pending'
+                  ? '上次处理被中断，可以继续追问或重新发送。'
+                  : message.content,
+        }));
+        window.localStorage.setItem(chatStorageKey, JSON.stringify(persistedMessages.slice(-80)));
+    }, [chatStorageKey, messages, selectedReport]);
+    useEffect(() => {
+        if (typeof window === 'undefined') {
+            return;
+        }
+        window.localStorage.setItem(contextStorageKey, JSON.stringify(sanitizeAgentContext(agentContext)));
+    }, [agentContext, contextStorageKey]);
+    const buildAgentContext = () => ({
+        ...sanitizeAgentContext(agentContext),
+        reportName: selectedReport?.fileName?.replace(/\.(cpt|frm)$/i, '') ?? null,
+        targetFolder: selectedReport?.objectPath ? selectedReport.objectPath.split('/').slice(0, -1).join('/') : null,
+        targetObjectPath: selectedReport?.objectPath ?? null,
+        currentObjectPath: selectedReport?.objectPath ?? null,
+        selectedCell,
+        selectedDataset: selectedDatasetName,
+        previewColumns,
+        previewRows: [],
+        activeSkillIds,
+        skillInstruction: skillInstruction.trim() || null,
+    });
+
+    const clearTypingTimer = () => {
+        if (typingTimerRef.current !== null) {
+            window.clearInterval(typingTimerRef.current);
+            typingTimerRef.current = null;
+        }
+    };
+
+    useEffect(() => clearTypingTimer, []);
+
+    const streamAssistantMessage = (
+        messageId: string,
+        content: string,
+        options: Pick<AssistantMessage, 'events' | 'artifacts'> & { status: AssistantMessage['status'] },
+    ) => {
+        clearTypingTimer();
+        const fullText = content || '已处理完成。';
+        let cursor = 0;
+        setMessages((current) =>
+            current.map((message) =>
+                message.id === messageId
+                    ? {
+                          ...message,
+                          status: 'pending',
+                          content: '',
+                          events: options.events,
+                          artifacts: options.artifacts,
+                      }
+                    : message,
+            ),
+        );
+        typingTimerRef.current = window.setInterval(() => {
+            cursor = Math.min(cursor + 8, fullText.length);
+            setMessages((current) =>
+                current.map((message) =>
+                    message.id === messageId
+                        ? {
+                              ...message,
+                              content: fullText.slice(0, cursor),
+                              status: cursor >= fullText.length ? options.status : 'pending',
+                          }
+                        : message,
+                ),
+            );
+            if (cursor >= fullText.length) {
+                clearTypingTimer();
+            }
+        }, 18);
+    };
+
+    const handleSubmit = (action: 'chat' | 'start_generate' | 'save_cpt' = 'chat', overrideText?: string) => {
+        const requestText = (overrideText ?? prompt).trim();
+        if (!requestText && action === 'chat') {
+            return;
+        }
+        const finalText = requestText || (action === 'start_generate' ? '开始生成报表' : '保存成 CPT');
         const pendingMessageId = `assistant-${Date.now()}`;
         setMessages((current) => [
             ...current,
-            { id: `user-${Date.now()}`, role: 'user', content: requestText },
+            { id: `user-${Date.now()}`, role: 'user', content: finalText },
             {
                 id: pendingMessageId,
                 role: 'assistant',
                 status: 'pending',
-                content: '小驰正在读取当前结构、检查选中单元格和数据集字段，并生成可预览的修改草稿...',
+                content: '正在读取当前报表、整理上下文并选择工具...',
             },
         ]);
         setPrompt('');
-        generateDraft.mutate(
+        agentChat.mutate(
             {
-                objectPath: selectedReport.objectPath,
-                prompt: requestText,
-                selectedCell,
-                selectedDataset: selectedDatasetName,
-                previewColumns,
-                previewRows: [],
-                mode: 'modify',
+                message: finalText,
+                action,
+                context: buildAgentContext(),
+                files: selectedFiles,
             },
             {
-                onSuccess: (draft) => {
-                    setDraftPrompt(requestText);
-                    onDraftReady(draft);
-                    setMessages((current) =>
-                        current.map((message) =>
-                            message.id === pendingMessageId
-                                ? {
-                                      ...message,
-                                      status: 'success',
-                                      content: draft.assistantMessage || `已生成 ${draft.operations.length} 个修改操作，画布会先展示预览效果。确认后再应用为平台草稿。`,
-                                  }
-                                : message,
-                        ),
-                    );
+                onSuccess: (response) => {
+                    setAgentContext(sanitizeAgentContext(response.context ?? {}));
+                    if (response.operationDraft) {
+                        if (isXmlPatchDraft(response.operationDraft)) {
+                            setDraftPrompt(finalText);
+                            onDraftReady(response.operationDraft);
+                        } else {
+                            setDraftPrompt('');
+                            onClearDraft();
+                        }
+                    }
+                    if (response.cptStep) {
+                        onSnapshotCptGenerated({
+                            status: response.cptStep.status === 'conflict' ? 'conflict' : response.cptStep.errors.length ? 'preview_failed' : 'generated',
+                            snapshotId: '',
+                            cptObjectPath: response.cptStep.cptObjectPath ?? '',
+                            previewUrl: response.cptStep.previewUrl ?? '',
+                            reportId: response.cptStep.reportId,
+                            fileVersionId: response.cptStep.fileVersionId,
+                            structureVersionId: response.cptStep.structureVersionId,
+                            conflict: response.cptStep.conflict ?? null,
+                            warnings: response.cptStep.warnings,
+                            errors: response.cptStep.errors,
+                            operationsObjectPath: null,
+                        });
+                    }
+                    setSelectedFiles([]);
+                    streamAssistantMessage(pendingMessageId, buildAssistantContent(response), {
+                        status: response.errors.length ? 'error' : 'success',
+                        events: response.events,
+                        artifacts: buildResponseArtifacts(response),
+                    });
                 },
                 onError: (error) => {
+                    clearTypingTimer();
                     setMessages((current) =>
                         current.map((message) =>
                             message.id === pendingMessageId
@@ -2544,6 +3010,7 @@ function CopilotPanel({
         if (!selectedReport || !aiDraft) {
             return;
         }
+        generateSnapshotCpt.reset();
         applyDraft.mutate(
             {
                 objectPath: selectedReport.objectPath,
@@ -2561,14 +3028,38 @@ function CopilotPanel({
                 onSuccess: (result) => {
                     onApplyDraft({ ...aiDraft, targetVersion: result.targetVersion });
                     onDraftApplied(result);
+                    setDraftPrompt('');
+                    generateSnapshotCpt.reset();
                 },
             },
         );
     };
+    const handleRegenerateDirectXmlDraft = () => {
+        const basePrompt = draftPrompt || prompt || '请重新生成当前待应用修改项';
+        handleSubmit(
+            'chat',
+            `${basePrompt}\n\n请重新生成可直接应用的待应用修改项。参数栏、下拉框、SQL、样式、填报和脚本都按报表文件修改处理，不要返回中间结构说明。`,
+        );
+    };
+    const handleNewConversation = () => {
+        clearFrAgentSessionStorage();
+        setPrompt('');
+        setDraftPrompt('');
+        setSelectedFiles([]);
+        setAgentContext({});
+        setActiveArtifact(null);
+        setActiveTool(null);
+        applyDraft.reset();
+        generateSnapshotCpt.reset();
+        onClearDraft();
+        setMessages([createWelcomeMessage(Boolean(selectedReport))]);
+    };
     const handleGenerateSnapshotCpt = () => {
         if (!appliedSnapshotId) {
+            generateSnapshotCpt.reset();
             return;
         }
+        generateSnapshotCpt.reset();
         generateSnapshotCpt.mutate(
             {
                 snapshotId: appliedSnapshotId,
@@ -2576,7 +3067,12 @@ function CopilotPanel({
                 conflictStrategy: 'abort',
             },
             {
-                onSuccess: onSnapshotCptGenerated,
+                onSuccess: (result) => {
+                    onSnapshotCptGenerated(result);
+                    if (result.status === 'conflict') {
+                        setConflictDialogOpen(true);
+                    }
+                },
             },
         );
     };
@@ -2591,12 +3087,35 @@ function CopilotPanel({
                 conflictStrategy: 'archive_and_overwrite',
             },
             {
-                onSuccess: onSnapshotCptGenerated,
+                onSuccess: (result) => {
+                    onSnapshotCptGenerated(result);
+                    if (result.status !== 'conflict') {
+                        setConflictDialogOpen(false);
+                    }
+                },
             },
         );
     };
     const handleImportExternal = () => {
         if (!effectiveTargetObjectPath) {
+            return;
+        }
+        if (appliedSnapshotId) {
+            generateSnapshotCpt.mutate(
+                {
+                    snapshotId: appliedSnapshotId,
+                    targetObjectPath: effectiveTargetObjectPath,
+                    conflictStrategy: 'import_external',
+                },
+                {
+                    onSuccess: (result) => {
+                        onSnapshotCptGenerated(result);
+                        if (result.status !== 'conflict') {
+                            setConflictDialogOpen(false);
+                        }
+                    },
+                },
+            );
             return;
         }
         syncExternalVersion.mutate(
@@ -2608,13 +3127,22 @@ function CopilotPanel({
             },
         );
     };
-    const errorMessage = generateDraft.error instanceof Error ? generateDraft.error.message : null;
-    const applyErrorMessage = applyDraft.error instanceof Error ? applyDraft.error.message : null;
-    const cptErrorMessage = generateSnapshotCpt.error instanceof Error ? generateSnapshotCpt.error.message : null;
+    const errorMessage = getMutationErrorMessage(agentChat.error);
+    const applyErrorMessage = getMutationErrorMessage(applyDraft.error);
+    const cptErrorMessage = getMutationErrorMessage(generateSnapshotCpt.error);
+    const hasSnapshotConflict = snapshotCpt?.status === 'conflict';
+    const snapshotWarnings = snapshotCpt?.warnings ?? [];
+    const unsupportedDraftOperations = aiDraft?.operations.filter((item) => !FR_APPLICABLE_OPERATION_TYPES.has(item.operationType)) ?? [];
+    const canApplyDraft = Boolean(aiDraft && aiDraft.status === 'draft' && aiDraft.operations.length > 0 && unsupportedDraftOperations.length === 0);
+    const visibleDraftOperations = canApplyDraft ? aiDraft?.operations ?? [] : [];
+    const hasAppliedSnapshot = Boolean(appliedSnapshotId);
+    const canGenerateSnapshotCpt = Boolean(hasAppliedSnapshot && effectiveTargetObjectPath && !generateSnapshotCpt.isPending);
+    const draftRisk = maxDraftRisk(aiDraft);
+    const displayMessages = normalizeWelcomeMessages(messages, Boolean(selectedReport));
 
     return (
-        <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)_auto]">
-            <div className="flex items-center justify-between gap-2 border-b border-[#eeeeee] px-1 pb-3">
+        <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden">
+            <div className="flex shrink-0 items-center justify-between gap-2 border-b border-[#eeeeee] px-1 pb-3">
                 <div className="flex min-w-0 items-center gap-2">
                     <div className="grid size-8 shrink-0 place-items-center rounded-lg bg-[#0f8f7b] text-white">
                         <Bot className="size-4" />
@@ -2622,11 +3150,11 @@ function CopilotPanel({
                     <div className="min-w-0">
                         <div className="truncate text-sm font-semibold text-[#203b35]">小驰</div>
                         <div className="truncate text-[11px] text-[#60736f]">
-                            {selectedReport ? '随时描述你想怎么改这张报表' : '先选择一个报表文件'}
+                            {selectedReport ? '当前报表可继续调整' : '先选择一个报表文件'}
                         </div>
                     </div>
                 </div>
-                {generateDraft.isPending ? (
+                {agentChat.isPending ? (
                     <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#eef8f5] px-2 py-0.5 text-[11px] text-[#0c7a68]">
                         <RefreshCw className="size-3 animate-spin" />
                         处理中
@@ -2634,9 +3162,9 @@ function CopilotPanel({
                 ) : null}
             </div>
 
-            <div className="min-h-0 overflow-auto px-1 py-4">
+            <div className="min-h-0 overflow-y-auto overflow-x-hidden px-1 py-3 pr-2">
                 <div className="space-y-3">
-                    {messages.map((message) => (
+                    {displayMessages.map((message) => (
                         <div
                             key={message.id}
                             className={cn(
@@ -2648,7 +3176,41 @@ function CopilotPanel({
                                 message.status === 'error' && 'border-[#ffd6d6] bg-[#fff1f1] text-[#9b3a3a]',
                             )}
                         >
-                            {message.content}
+                            <div className="whitespace-pre-wrap">
+                                {message.content}
+                                {message.status === 'pending' ? <span className="ml-0.5 animate-pulse text-[#0f8f7b]">▍</span> : null}
+                            </div>
+                            {message.events?.length ? (
+                                <details className="mt-2 rounded-lg bg-white/55 px-2 py-1 text-[11px] leading-5 text-[#60736f] open:bg-white/80">
+                                    <summary className="cursor-pointer select-none text-[#0b7c6b]">查看执行轨迹</summary>
+                                    <div className="mt-1 space-y-1">
+                                        {message.events.map((event, index) => (
+                                            <div key={`${message.id}-${event.type}-${index}`} className="rounded-md border border-[#e6eeee] bg-white px-2 py-1">
+                                                <span className="font-medium text-[#203b35]">{event.toolName || event.type}</span>
+                                                {event.content ? <span>：{event.content}</span> : null}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </details>
+                            ) : null}
+                            {message.artifacts?.length ? (
+                                <div className="mt-2 grid gap-1">
+                                    {message.artifacts.map((artifact) => (
+                                        <button
+                                            key={artifact.id}
+                                            type="button"
+                                            className={cn(
+                                                'rounded-xl border bg-white/80 px-2.5 py-2 text-left text-[11px] leading-5 transition hover:border-[#9bd8cf] hover:bg-white',
+                                                artifact.type === 'warning' ? 'border-[#f3d39b] text-[#7a5608]' : 'border-[#dfe9e7] text-[#49615c]',
+                                            )}
+                                            onClick={() => setActiveArtifact(normalizeArtifactForDisplay(artifact))}
+                                        >
+                                            <div className="font-medium text-[#203b35]">{artifact.title}</div>
+                                            {artifact.summary ? <div className="mt-0.5 line-clamp-2">{artifact.summary}</div> : null}
+                                        </button>
+                                    ))}
+                                </div>
+                            ) : null}
                         </div>
                     ))}
                     {selectedDatasetName ? (
@@ -2659,12 +3221,14 @@ function CopilotPanel({
                 </div>
             </div>
 
-            <div className="space-y-2 border-t border-[#eeeeee] bg-white pt-3">
-                <div className="flex items-center gap-1 px-1">
+            <div className="shrink-0 space-y-2 border-t border-[#eeeeee] bg-white px-1 pb-2 pt-2">
+                <div className="flex flex-wrap items-center gap-1">
                     {[
                         { key: 'structure' as const, label: '上下文', icon: Database },
-                        { key: 'draft' as const, label: aiDraft ? `草稿 ${aiDraft.operations.length}` : '草稿', icon: WandSparkles },
+                        { key: 'draft' as const, label: aiDraft ? (isXmlPatchDraft(aiDraft) ? `待应用 ${aiDraft.operations.length}` : '待应用已作废') : '待应用', icon: WandSparkles },
                         { key: 'versions' as const, label: '版本', icon: History },
+                        { key: 'capabilities' as const, label: '工具', icon: Settings2 },
+                        { key: 'skills' as const, label: '技能', icon: Sparkles },
                         { key: 'commands' as const, label: '指令', icon: MessageSquareText },
                     ].map((item) => {
                         const Icon = item.icon;
@@ -2681,27 +3245,235 @@ function CopilotPanel({
                             </Button>
                         );
                     })}
+                    <Button
+                        type="button"
+                        variant="ghost"
+                        className="h-8 rounded-lg px-2 text-xs text-[#60736f] hover:bg-[#fff8eb] hover:text-[#8a5a00]"
+                        onClick={handleNewConversation}
+                    >
+                        <RefreshCw className="size-3.5" />
+                        新会话
+                    </Button>
                 </div>
-                <div className="flex items-center gap-2 rounded-xl border border-[#dedede] bg-white p-2 shadow-[0_-8px_20px_rgba(255,255,255,0.92)]">
-                <Plus className="size-4 text-[#0f8f7b]" />
-                <input
-                    className="min-w-0 flex-1 bg-transparent text-sm text-[#333333] outline-none placeholder:text-[#8a8a8a]"
-                    value={prompt}
-                    onChange={(event) => setPrompt(event.target.value)}
-                    onKeyDown={(event) => {
-                        if (event.key === 'Enter' && !event.shiftKey) {
-                            event.preventDefault();
-                            handleSubmit();
-                        }
-                    }}
-                    disabled={!selectedReport || generateDraft.isPending}
-                    placeholder="告诉小驰要如何调整这张报表"
-                />
-                <Button size="icon" className="size-8 bg-[#0f8f7b] text-white hover:bg-[#0b7c6b]" onClick={handleSubmit} disabled={!selectedReport || !prompt.trim() || generateDraft.isPending}>
-                    <SendHorizonal className="size-4" />
-                </Button>
+                {aiDraft ? (
+                    <div
+                        className={cn(
+                            'rounded-2xl p-3 text-xs leading-5 ring-1',
+                            canApplyDraft
+                                ? draftRisk === 'high'
+                                    ? 'bg-[#fff6f6] text-[#7d2d2d] ring-[#ffd6d6]'
+                                    : draftRisk === 'medium'
+                                      ? 'bg-[#fffaf0] text-[#735000] ring-[#f4d99e]'
+                                      : 'bg-[#f6fbfa] text-[#315c55] ring-[#dbe9e6]'
+                                : 'bg-[#fffaf0] text-[#735000] ring-[#f4d99e]',
+                        )}
+                    >
+                        <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                                <div className="font-semibold text-[#203b35]">
+                                    {canApplyDraft ? `待确认修改项 ${visibleDraftOperations.length} 个` : '当前修改项需要重新生成'}
+                                </div>
+                                <div className="mt-0.5 text-[11px] text-[#60736f]">
+                                    最高风险：{riskLabel(draftRisk)}。确认后先进入快照，再生成预览 CPT。
+                                </div>
+                            </div>
+                            <Button
+                                type="button"
+                                variant="ghost"
+                                className="h-7 shrink-0 rounded-lg px-2 text-[11px] text-[#0b7c6b] hover:bg-white/70"
+                                onClick={() => setActiveTool('draft')}
+                            >
+                                查看详情
+                            </Button>
+                        </div>
+                        {visibleDraftOperations.length ? (
+                            <div className="mt-2 grid gap-1">
+                                {visibleDraftOperations.slice(0, 3).map((item, index) => (
+                                    <div key={`${item.target}-${item.summary}-${index}`} className="truncate rounded-lg bg-white/70 px-2 py-1 text-[11px] text-[#49615c] ring-1 ring-white/70">
+                                        {index + 1}. {item.summary}
+                                    </div>
+                                ))}
+                                {visibleDraftOperations.length > 3 ? (
+                                    <div className="px-2 text-[11px] text-[#7b8a87]">还有 {visibleDraftOperations.length - 3} 个修改项，点“查看详情”确认范围。</div>
+                                ) : null}
+                            </div>
+                        ) : (
+                            <div className="mt-2 rounded-lg bg-white/70 px-2 py-1 text-[11px] text-[#735000] ring-1 ring-white/70">
+                                返回内容不是可直接写入 CPT 的修改项，请重新生成。
+                            </div>
+                        )}
+                        {applyErrorMessage ? (
+                            <div className="mt-2 rounded-lg bg-[#fff1f1] px-2 py-1 text-[11px] text-[#9b3a3a] ring-1 ring-[#ffd6d6]">{applyErrorMessage}</div>
+                        ) : null}
+                        <div className="mt-2 grid grid-cols-2 gap-2">
+                            <Button
+                                type="button"
+                                variant="outline"
+                                className="h-8 border-[#dedede] bg-white/80 text-xs text-[#49615c] hover:bg-white"
+                                onClick={unsupportedDraftOperations.length ? handleRegenerateDirectXmlDraft : onClearDraft}
+                                disabled={agentChat.isPending}
+                            >
+                                {unsupportedDraftOperations.length ? '重新生成' : '暂不应用'}
+                            </Button>
+                            <Button
+                                type="button"
+                                className="h-8 bg-[#0f8f7b] text-xs text-white hover:bg-[#0b7c6b]"
+                                onClick={handleApplyDraft}
+                                disabled={!canApplyDraft || applyDraft.isPending}
+                            >
+                                {applyDraft.isPending ? '应用中...' : '确认应用'}
+                            </Button>
+                        </div>
+                    </div>
+                ) : snapshotCpt && snapshotCpt.status !== 'conflict' ? (
+                    <div className="rounded-2xl bg-[#f6fbfa] p-3 text-xs leading-5 text-[#315c55] ring-1 ring-[#dbe9e6]">
+                        <div className="font-semibold text-[#0b7c6b]">
+                            {snapshotCpt.status === 'generated' ? 'CPT 已生成' : 'CPT 已生成，预览需要检查'}
+                        </div>
+                        <div className="mt-0.5 break-all text-[11px] text-[#60736f]">已写入：{snapshotCpt.cptObjectPath}</div>
+                        {snapshotCpt.warnings.map((warning) => (
+                            <div key={warning} className="mt-2 rounded-lg bg-[#fff8eb] px-2 py-1 text-[11px] text-[#8a5a00] ring-1 ring-[#f5d79b]">{warning}</div>
+                        ))}
+                        {snapshotCpt.errors.map((error) => (
+                            <div key={error} className="mt-2 rounded-lg bg-[#fff1f1] px-2 py-1 text-[11px] text-[#9b3a3a] ring-1 ring-[#ffd6d6]">{error}</div>
+                        ))}
+                        {snapshotCpt.previewUrl ? (
+                            <Button
+                                type="button"
+                                className="mt-2 h-8 w-full bg-[#0f8f7b] text-xs text-white hover:bg-[#0b7c6b]"
+                                onClick={() => window.open(snapshotCpt.previewUrl, '_blank', 'noopener,noreferrer')}
+                            >
+                                <ExternalLink className="size-3.5" />
+                                打开 FineReport 预览
+                            </Button>
+                        ) : null}
+                    </div>
+                ) : hasAppliedSnapshot ? (
+                    <div className="rounded-2xl bg-[#f6fbfa] p-3 text-xs leading-5 text-[#315c55] ring-1 ring-[#dbe9e6]">
+                        <div className="font-semibold text-[#203b35]">{hasSnapshotConflict ? '需要处理目标 CPT' : '修改项已确认'}</div>
+                        <div className="mt-0.5 text-[11px] text-[#60736f]">
+                            {hasSnapshotConflict ? '目标文件暂未写入。请先处理版本归档或覆盖策略。' : '可以生成预览 CPT，生成前仍会走版本归档和外部修改检测。'}
+                        </div>
+                        {hasSnapshotConflict && conflictDetail?.message ? (
+                            <div className="mt-2 rounded-lg bg-[#fff8eb] px-2 py-1 text-[11px] text-[#8a5a00] ring-1 ring-[#f5d79b]">{String(conflictDetail.message)}</div>
+                        ) : null}
+                        {snapshotWarnings.map((warning) => (
+                            <div key={warning} className="mt-2 rounded-lg bg-[#fff8eb] px-2 py-1 text-[11px] text-[#8a5a00] ring-1 ring-[#f5d79b]">{warning}</div>
+                        ))}
+                        {cptErrorMessage ? (
+                            <div className="mt-2 rounded-lg bg-[#fff1f1] px-2 py-1 text-[11px] text-[#9b3a3a] ring-1 ring-[#ffd6d6]">{cptErrorMessage}</div>
+                        ) : null}
+                        <Button
+                            type="button"
+                            className="mt-2 h-8 w-full bg-[#0f8f7b] text-xs text-white hover:bg-[#0b7c6b]"
+                            onClick={hasSnapshotConflict ? () => setConflictDialogOpen(true) : handleGenerateSnapshotCpt}
+                            disabled={!canGenerateSnapshotCpt}
+                        >
+                            <Play className="size-3.5" />
+                            {generateSnapshotCpt.isPending ? '生成预览中...' : hasSnapshotConflict ? '处理目标文件冲突' : '生成预览 CPT'}
+                        </Button>
+                    </div>
+                ) : null}
+                {selectedFiles.length ? (
+                    <div className="flex flex-wrap gap-1 px-1">
+                        {selectedFiles.map((file) => (
+                            <span key={`${file.name}-${file.size}`} className="rounded-full bg-[#f2f7f6] px-2 py-1 text-[11px] text-[#49615c]">
+                                {file.name}
+                            </span>
+                        ))}
+                    </div>
+                ) : null}
+                <div className="rounded-2xl border border-[#dedede] bg-white p-2 shadow-[0_-8px_20px_rgba(255,255,255,0.92)]">
+                    <textarea
+                        className="max-h-28 min-h-14 w-full resize-none bg-transparent px-1 text-sm leading-6 text-[#333333] outline-none placeholder:text-[#8a8a8a]"
+                        value={prompt}
+                        onChange={(event) => setPrompt(event.target.value)}
+                        onKeyDown={(event) => {
+                            if (event.key === 'Enter' && !event.shiftKey) {
+                                event.preventDefault();
+                                handleSubmit();
+                            }
+                        }}
+                        disabled={agentChat.isPending}
+                        placeholder={selectedReport ? '直接告诉小驰要做什么；Shift+Enter 换行' : '先选择或新建一张报表，也可以先描述你要做什么'}
+                    />
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex flex-wrap items-center gap-1">
+                            <input
+                                ref={fileInputRef}
+                                type="file"
+                                multiple
+                                className="hidden"
+                                onChange={(event) => {
+                                    setSelectedFiles(Array.from(event.target.files ?? []));
+                                    event.target.value = '';
+                                }}
+                            />
+                            <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                className="size-8 rounded-lg text-[#0f8f7b] hover:bg-[#f2f7f6]"
+                                onClick={() => fileInputRef.current?.click()}
+                            >
+                                <Plus className="size-4" />
+                            </Button>
+                        </div>
+                        <Button
+                            size="icon"
+                            className="size-8 rounded-full bg-[#0f8f7b] text-white hover:bg-[#0b7c6b]"
+                            onClick={() => handleSubmit()}
+                            disabled={!prompt.trim() || agentChat.isPending}
+                        >
+                            <SendHorizonal className="size-4" />
+                        </Button>
+                    </div>
                 </div>
             </div>
+            <Dialog open={Boolean(activeArtifact)} onOpenChange={(open) => !open && setActiveArtifact(null)}>
+                <DialogContent className="max-h-[86vh] overflow-hidden rounded-xl border-[#dfe7e5] bg-white p-0 sm:max-w-3xl">
+                    <DialogHeader className="border-b border-[#edf2f0] px-5 py-4">
+                        <DialogTitle className="text-base text-[#243a35]">{activeArtifact?.title ?? '小驰产物'}</DialogTitle>
+                        {activeArtifact?.summary ? (
+                            <DialogDescription className="text-xs leading-5 text-[#60736f]">{activeArtifact.summary}</DialogDescription>
+                        ) : null}
+                    </DialogHeader>
+                    <div className="max-h-[62vh] overflow-auto p-4">
+                        {activeArtifact?.path ? (
+                            <div className="mb-3 rounded-lg bg-[#f6fbfa] px-3 py-2 text-xs leading-5 text-[#49615c] ring-1 ring-[#dbe9e6]">
+                                <div className="font-medium text-[#0b7c6b]">对象路径</div>
+                                <div className="break-all">{activeArtifact.path}</div>
+                            </div>
+                        ) : null}
+                        <pre
+                            className={cn(
+                                'whitespace-pre-wrap rounded-xl p-4 text-xs leading-5',
+                                activeArtifact?.type === 'draft' || activeArtifact?.type === 'warning'
+                                    ? 'bg-[#f8faf9] font-sans text-[#344541] ring-1 ring-[#e6eeee]'
+                                    : 'bg-[#111817] font-mono text-[#d7ece8]',
+                            )}
+                        >
+                            {activeArtifact?.content || '暂无详细内容。'}
+                        </pre>
+                    </div>
+                    <DialogFooter className="border-t border-[#edf2f0] px-5 py-3">
+                        {activeArtifact?.previewUrl ? (
+                            <a
+                                className="inline-flex h-9 items-center gap-1 rounded-lg border border-[#bfe3dc] px-3 text-sm text-[#0b7c6b] hover:bg-[#f6fbfa]"
+                                href={activeArtifact.previewUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                            >
+                                打开 FineReport 预览
+                                <ExternalLink className="size-3.5" />
+                            </a>
+                        ) : null}
+                        <Button type="button" variant="outline" onClick={() => setActiveArtifact(null)}>
+                            关闭
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
             <Dialog open={activeTool === 'structure'} onOpenChange={(open) => setActiveTool(open ? 'structure' : null)}>
                 <DialogContent className="max-h-[86vh] overflow-auto rounded-xl border-[#dfe7e5] bg-white sm:max-w-xl">
                     <DialogHeader>
@@ -2726,19 +3498,66 @@ function CopilotPanel({
                     <DialogHeader>
                         <DialogTitle className="text-base text-[#243a35]">待应用修改</DialogTitle>
                         <DialogDescription className="text-xs text-[#60736f]">
-                            小驰生成的修改会先停在这里，确认后才进入平台草稿和 CPT 版本流程。
+                            确认后进入快照，再由版本流程写入 CPT。
                         </DialogDescription>
                     </DialogHeader>
                     <div className="space-y-2">
-                        {(aiDraft?.operations ?? []).map((item) => (
+                        {aiDraft ? (
+                            <div
+                                className={cn(
+                                    'rounded-lg px-3 py-2 text-xs leading-5 ring-1',
+                                    draftRisk === 'high'
+                                        ? 'bg-[#fff1f1] text-[#9b3a3a] ring-[#ffd6d6]'
+                                        : draftRisk === 'medium'
+                                          ? 'bg-[#fff8eb] text-[#8a5a00] ring-[#f5d79b]'
+                                          : 'bg-[#f6fbfa] text-[#0b7c6b] ring-[#dbe9e6]',
+                                )}
+                            >
+                                最高风险：{riskLabel(draftRisk)}。{draftRisk === 'low' ? '确认后会生成报表快照。' : '请确认修改范围无误后再应用。'}
+                            </div>
+                        ) : null}
+                        {visibleDraftOperations.map((item, index) => (
                             <div key={`${item.operationType}-${item.target}-${item.summary}`} className="flex gap-2 rounded-lg bg-[#fafafa] px-3 py-2 text-xs text-[#555555] ring-1 ring-[#eeeeee]">
                                 <Check className="mt-0.5 size-3.5 shrink-0 text-[#0f8f7b]" />
-                                <span>{item.operationType}：{item.summary}</span>
+                                <div className="min-w-0 flex-1">
+                                    <div className="flex flex-wrap items-center gap-1.5">
+                                        <span className="font-medium text-[#344541]">修改项 {index + 1}</span>
+                                        <span
+                                            className={cn(
+                                                'rounded-full px-1.5 py-0.5 text-[10px]',
+                                                item.riskLevel === 'high'
+                                                    ? 'bg-[#fff1f1] text-[#9b3a3a]'
+                                                    : item.riskLevel === 'medium'
+                                                      ? 'bg-[#fff8eb] text-[#8a5a00]'
+                                                      : 'bg-[#eef8f5] text-[#0b7c6b]',
+                                            )}
+                                        >
+                                            {riskLabel(item.riskLevel)}
+                                        </span>
+                                        <span className="text-[#7b8a87]">影响范围：{draftTargetLabel(item.target)}</span>
+                                    </div>
+                                    <div className="mt-1 leading-5">{item.summary}</div>
+                                </div>
                             </div>
                         ))}
-                        {!aiDraft ? (
+                        {!aiDraft && !hasAppliedSnapshot ? (
                             <div className="rounded-lg bg-[#fafafa] px-3 py-3 text-xs leading-5 text-[#60736f] ring-1 ring-[#eeeeee]">
-                                暂无 AI 草稿。输入指令后，模型会返回 SQL、报表、样式或填报相关操作。
+                                暂无待应用修改项。输入指令后，会先生成可确认的修改范围。
+                            </div>
+                        ) : null}
+                        {!aiDraft && hasAppliedSnapshot ? (
+                            <div className="rounded-lg bg-[#f6fbfa] px-3 py-3 text-xs leading-5 text-[#0b7c6b] ring-1 ring-[#dbe9e6]">
+                                待应用修改项已确认并进入快照，可以生成预览 CPT。
+                            </div>
+                        ) : null}
+                        {aiDraft && !canApplyDraft ? (
+                            <div className="rounded-lg bg-[#fff8eb] px-3 py-3 text-xs leading-5 text-[#8a5a00] ring-1 ring-[#f5d79b]">
+                                当前返回内容不能作为待应用修改项。请重新生成后再确认应用。
+                            </div>
+                        ) : null}
+                        {unsupportedDraftOperations.length ? (
+                            <div className="rounded-lg bg-[#fff8eb] px-3 py-3 text-xs leading-5 text-[#8a5a00] ring-1 ring-[#f5d79b]">
+                                当前内容已作废：包含 {unsupportedDraftOperations.length} 个不可应用操作，不能写入 CPT。
                             </div>
                         ) : null}
                         {aiDraft?.warnings.map((warning) => (
@@ -2752,11 +3571,17 @@ function CopilotPanel({
                     </div>
                     <div className="grid grid-cols-2 gap-2">
                         <Button variant="outline" className="h-9 border-[#dedede] text-[#333333] hover:bg-[#f5f5f5]" onClick={onClearDraft} disabled={!aiDraft}>
-                            清空草稿
+                            清空
                         </Button>
-                        <Button className="h-9 bg-[#0f8f7b] text-white hover:bg-[#0b7c6b]" onClick={handleApplyDraft} disabled={!aiDraft || applyDraft.isPending}>
-                            {applyDraft.isPending ? '保存中...' : '应用为草稿'}
-                        </Button>
+                        {unsupportedDraftOperations.length ? (
+                            <Button className="h-9 bg-[#0f8f7b] text-white hover:bg-[#0b7c6b]" onClick={handleRegenerateDirectXmlDraft} disabled={agentChat.isPending}>
+                                {agentChat.isPending ? '生成中...' : '重新生成修改项'}
+                            </Button>
+                        ) : (
+                            <Button className="h-9 bg-[#0f8f7b] text-white hover:bg-[#0b7c6b]" onClick={handleApplyDraft} disabled={!canApplyDraft || applyDraft.isPending}>
+                                {applyDraft.isPending ? '应用中...' : '确认应用'}
+                            </Button>
+                        )}
                     </div>
                     <Input
                         value={targetObjectPath}
@@ -2768,11 +3593,16 @@ function CopilotPanel({
                         variant="outline"
                         className="h-9 w-full border-[#bfe3dc] bg-[#f6fbfa] text-[#0b7c6b] hover:bg-[#eaf7f4]"
                         onClick={handleGenerateSnapshotCpt}
-                        disabled={!appliedSnapshotId || generateSnapshotCpt.isPending}
+                        disabled={!canGenerateSnapshotCpt}
                     >
                         <Play className="size-4" />
-                        {generateSnapshotCpt.isPending ? '生成预览中...' : '生成预览 CPT'}
+                        {generateSnapshotCpt.isPending ? '生成预览中...' : hasAppliedSnapshot ? '生成预览 CPT' : '先确认应用后生成预览'}
                     </Button>
+                    {!hasAppliedSnapshot ? (
+                        <div className="rounded-lg bg-[#fafafa] px-3 py-2 text-xs leading-5 text-[#60736f] ring-1 ring-[#eeeeee]">
+                            预览 CPT 需要先确认待应用修改项，确认后会基于快照生成。
+                        </div>
+                    ) : null}
                     {snapshotCpt ? (
                         <div className="space-y-2 rounded-lg bg-[#f6fbfa] p-3 text-xs text-[#49615c] ring-1 ring-[#dbe9e6]">
                             <div className="font-medium text-[#0b7c6b]">
@@ -2795,6 +3625,109 @@ function CopilotPanel({
                             )}
                         </div>
                     ) : null}
+                </DialogContent>
+            </Dialog>
+            <Dialog open={activeTool === 'capabilities'} onOpenChange={(open) => setActiveTool(open ? 'capabilities' : null)}>
+                <DialogContent className="max-h-[86vh] overflow-auto rounded-xl border-[#dfe7e5] bg-white sm:max-w-2xl">
+                    <DialogHeader>
+                        <DialogTitle className="text-base text-[#243a35]">小驰能力中心</DialogTitle>
+                        <DialogDescription className="text-xs text-[#60736f]">
+                            工具由平台开发和授权，技能只影响工作习惯与上下文，不会扩大权限。
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-3">
+                        <div className="rounded-xl bg-[#f6fbfa] p-3 text-xs leading-5 text-[#49615c] ring-1 ring-[#dbe9e6]">
+                            <div className="font-medium text-[#0b7c6b]">运行策略：{capabilities?.strategy.strategy?.toUpperCase() ?? 'REACT'}</div>
+                            <div>最大工具步数：{capabilities?.strategy.maxToolSteps ?? 6}；上下文预算：{capabilities?.strategy.contextTokenBudget ?? 12000} tokens。</div>
+                            <div>{capabilities?.strategy.memoryPolicy}</div>
+                        </div>
+                        <div className="grid gap-2">
+                            {(capabilities?.tools ?? []).map((tool) => (
+                                <div key={tool.name} className="rounded-xl border border-[#e6eeee] bg-white p-3">
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div className="min-w-0">
+                                            <div className="text-sm font-medium text-[#203b35]">{tool.label}</div>
+                                            <div className="mt-1 text-xs leading-5 text-[#60736f]">{tool.description}</div>
+                                        </div>
+                                        <span
+                                            className={cn(
+                                                'shrink-0 rounded-full px-2 py-0.5 text-[11px]',
+                                                tool.riskLevel === 'high'
+                                                    ? 'bg-[#fff1f1] text-[#9b3a3a]'
+                                                    : tool.riskLevel === 'medium'
+                                                      ? 'bg-[#fff8eb] text-[#8a5a00]'
+                                                      : 'bg-[#eef8f5] text-[#0b7c6b]',
+                                            )}
+                                        >
+                                            {tool.riskLevel === 'high' ? '高风险' : tool.riskLevel === 'medium' ? '中风险' : '低风险'}
+                                        </span>
+                                    </div>
+                                    <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-[#60736f]">
+                                        <span className="rounded-full bg-[#f7f8f8] px-2 py-0.5">{tool.category}</span>
+                                        <span className="rounded-full bg-[#f7f8f8] px-2 py-0.5">{tool.autoExecutable ? '可自动执行' : '需人工触发'}</span>
+                                        {tool.requiresApproval ? <span className="rounded-full bg-[#fff8eb] px-2 py-0.5 text-[#8a5a00]">执行前确认</span> : null}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                        <div className="rounded-xl bg-[#fafafa] p-3 text-xs leading-5 text-[#60736f] ring-1 ring-[#eeeeee]">
+                            {(capabilities?.boundaries ?? []).map((item) => (
+                                <div key={item}>- {item}</div>
+                            ))}
+                        </div>
+                    </div>
+                </DialogContent>
+            </Dialog>
+            <Dialog open={activeTool === 'skills'} onOpenChange={(open) => setActiveTool(open ? 'skills' : null)}>
+                <DialogContent className="max-h-[86vh] overflow-auto rounded-xl border-[#dfe7e5] bg-white sm:max-w-2xl">
+                    <DialogHeader>
+                        <DialogTitle className="text-base text-[#243a35]">小驰技能设置</DialogTitle>
+                        <DialogDescription className="text-xs text-[#60736f]">
+                            这里配置的是个人开发习惯和上下文偏好，下一轮对话开始生效。
+                        </DialogDescription>
+                    </DialogHeader>
+                    <div className="space-y-3">
+                        {(capabilities?.skills ?? []).map((skill) => {
+                            const enabled = activeSkillIds.includes(skill.skillId);
+                            return (
+                                <button
+                                    key={skill.skillId}
+                                    type="button"
+                                    className={cn(
+                                        'w-full rounded-xl border p-3 text-left transition',
+                                        enabled ? 'border-[#bfe3dc] bg-[#f6fbfa]' : 'border-[#e6eeee] bg-white hover:bg-[#fafafa]',
+                                    )}
+                                    onClick={() =>
+                                        setActiveSkillIds((current) =>
+                                            current.includes(skill.skillId)
+                                                ? current.filter((item) => item !== skill.skillId)
+                                                : [...current, skill.skillId],
+                                        )
+                                    }
+                                >
+                                    <div className="flex items-center justify-between gap-3">
+                                        <div className="text-sm font-medium text-[#203b35]">{skill.name}</div>
+                                        <span className={cn('rounded-full px-2 py-0.5 text-[11px]', enabled ? 'bg-[#0f8f7b] text-white' : 'bg-[#f1f1f1] text-[#60736f]')}>
+                                            {enabled ? '已启用' : '未启用'}
+                                        </span>
+                                    </div>
+                                    <div className="mt-1 text-xs leading-5 text-[#60736f]">{skill.description}</div>
+                                </button>
+                            );
+                        })}
+                        <div className="space-y-2">
+                            <div className="text-xs font-medium text-[#203b35]">个人开发习惯</div>
+                            <textarea
+                                className="min-h-28 w-full resize-y rounded-xl border border-[#dfe7e4] bg-white p-3 text-sm leading-6 text-[#333333] outline-none focus:border-[#83cfc2]"
+                                value={skillInstruction}
+                                onChange={(event) => setSkillInstruction(event.target.value)}
+                                placeholder="例如：SQL 字段别名尽量用业务中文；填报表优先轻量控件；样式参考数据分析里的周报模板；不确定的关联关系先给假设并生成可调整版本。"
+                            />
+                            <div className="text-[11px] leading-5 text-[#60736f]">
+                                为了控制 token，个人技能最多取前 1600 字进入模型；完整内容保留在前端本轮会话里。
+                            </div>
+                        </div>
+                    </div>
                 </DialogContent>
             </Dialog>
             <Dialog open={activeTool === 'commands'} onOpenChange={(open) => setActiveTool(open ? 'commands' : null)}>
@@ -2892,7 +3825,7 @@ function CopilotPanel({
                         ))}
                         {(versionsQuery.data?.fileVersions ?? []).length === 0 && (versionsQuery.data?.structureVersions ?? []).length === 0 ? (
                             <div className="rounded-lg border border-[#eeeeee] bg-[#fafafa] px-3 py-3 text-xs leading-5 text-[#60736f]">
-                                暂无平台版本记录。第一次应用草稿或生成 CPT 后，会在这里展示可回档的结构版本和文件版本。
+                                暂无平台版本记录。第一次确认待应用修改项或生成 CPT 后，会在这里展示可回档的结构版本和文件版本。
                             </div>
                         ) : null}
                     </div>
@@ -2901,9 +3834,9 @@ function CopilotPanel({
             <Dialog open={conflictDialogOpen} onOpenChange={setConflictDialogOpen}>
                 <DialogContent className="max-w-2xl">
                     <DialogHeader>
-                        <DialogTitle className="text-base text-[#243a35]">检测到 FineReport 设计器外部修改</DialogTitle>
+                        <DialogTitle className="text-base text-[#243a35]">需要处理目标 CPT 文件</DialogTitle>
                         <DialogDescription className="text-xs leading-5 text-[#60736f]">
-                            平台记录的最新文件版本与 MinIO 当前文件不一致。为了避免覆盖设计器中的人工修改，请选择一种处理方式。
+                            目标文件与平台版本记录不一致。为了避免覆盖已有报表，请选择一种处理方式。
                         </DialogDescription>
                     </DialogHeader>
                     <div className="space-y-3 rounded-lg bg-[#fffaf0] p-3 text-xs leading-5 text-[#795300] ring-1 ring-[#f1d48a]">
@@ -2917,8 +3850,13 @@ function CopilotPanel({
                             先不处理
                         </Button>
                         <div className="flex gap-2">
-                            <Button type="button" variant="outline" onClick={handleImportExternal} disabled={!effectiveTargetObjectPath || syncExternalVersion.isPending}>
-                                仅同步外部修改为版本
+                            <Button
+                                type="button"
+                                variant="outline"
+                                onClick={handleImportExternal}
+                                disabled={!effectiveTargetObjectPath || syncExternalVersion.isPending || generateSnapshotCpt.isPending}
+                            >
+                                {appliedSnapshotId ? '归档现有 CPT 并生成' : '先归档现有 CPT'}
                             </Button>
                             <Button type="button" className="bg-[#0f8f7b] text-white hover:bg-[#0b7c6b]" onClick={handleArchiveAndOverwrite} disabled={!appliedSnapshotId || generateSnapshotCpt.isPending}>
                                 归档当前文件并覆盖
@@ -2968,38 +3906,21 @@ function CopilotPanel({
 function NewReportAiDialog({
     open,
     onOpenChange,
-    templateObjectPath,
     reportFiles,
+    onCreated,
 }: {
     open: boolean;
     onOpenChange: (open: boolean) => void;
-    templateObjectPath: string | null;
     reportFiles: FrReportFileRead[];
+    onCreated: (objectPath: string) => void;
 }) {
-    const [requirement, setRequirement] = useState('');
-    const [reportName, setReportName] = useState('业务报表');
-    const [targetFolder, setTargetFolder] = useState('webroot/APP/reportlets/AI生成报表');
-    const [sourceTablesText, setSourceTablesText] = useState('');
+    const [reportName, setReportName] = useState('新建报表');
+    const [targetFolder, setTargetFolder] = useState('webroot/APP/reportlets/数据分析');
     const [folderPickerOpen, setFolderPickerOpen] = useState(false);
     const [folderKeyword, setFolderKeyword] = useState('');
-    const [files, setFiles] = useState<File[]>([]);
-    const [review, setReview] = useState<FrAiReportRequirementReviewResponse | null>(null);
-    const [sqlStep, setSqlStep] = useState<GenerateSqlStepResponse | null>(null);
-    const [dslStep, setDslStep] = useState<GenerateDslStepResponse | null>(null);
-    const [cptStep, setCptStep] = useState<GenerateCptStepResponse | null>(null);
-    const [editableCreateTableSql, setEditableCreateTableSql] = useState('');
-    const [editableQuerySql, setEditableQuerySql] = useState('');
-    const [replyText, setReplyText] = useState('');
-    const [builderMessages, setBuilderMessages] = useState<AssistantMessage[]>([
-        {
-            id: 'new-report-welcome',
-            role: 'assistant',
-            content: '直接告诉我你要做什么报表、保存到哪里、有没有现成数据库表，也可以上传资料。你提供表名后，我会受控读取表结构并做只读数据预览；信息不够会继续问，够了就开始生成。',
-        },
-    ]);
-    const agentChat = useFrAiReportAgentChat();
-    const effectiveTemplateObjectPath = templateObjectPath ?? DEFAULT_NEW_REPORT_TEMPLATE_OBJECT_PATH;
-    const errorMessage = agentChat.error instanceof Error ? agentChat.error.message : null;
+    const [createdResult, setCreatedResult] = useState<GenerateCptStepResponse | null>(null);
+    const createEmptyReport = useCreateEmptyFrReport();
+    const errorMessage = getMutationErrorMessage(createEmptyReport.error);
     const folderOptions = useMemo(() => listReportFolders(reportFiles), [reportFiles]);
     const filteredFolderOptions = useMemo(() => {
         const keyword = folderKeyword.trim().toLowerCase();
@@ -3008,298 +3929,113 @@ function NewReportAiDialog({
         }
         return folderOptions.filter((folder) => folder.toLowerCase().includes(keyword));
     }, [folderKeyword, folderOptions]);
-    const appendBuilderMessage = (message: Omit<AssistantMessage, 'id'>) => {
-        setBuilderMessages((current) => [
-            ...current,
-            { ...message, id: `builder-${Date.now()}-${Math.random().toString(16).slice(2)}` },
-        ]);
-    };
-    const buildAgentContext = (overrides?: Partial<FrAiReportAgentContext>): FrAiReportAgentContext => ({
-        reportName,
-        targetFolder,
-        sourceTableName: sourceTablesText.trim() || null,
-        templateObjectPath: effectiveTemplateObjectPath,
-        taskId: dslStep?.taskId ?? sqlStep?.taskId ?? cptStep?.taskId ?? null,
-        conversationId: dslStep?.conversationId ?? sqlStep?.conversationId ?? cptStep?.conversationId ?? null,
-        requirement: requirement.trim() || null,
-        ...overrides,
-    });
-    const applyAgentResponse = (result: FrAiReportAgentChatResponse) => {
-        if (result.context.reportName) {
-            setReportName(result.context.reportName);
+
+    const normalizedReportName = reportName.trim();
+    const normalizedTargetFolder = targetFolder.trim();
+    const targetPath = normalizedReportName && normalizedTargetFolder ? `${normalizedTargetFolder}/${normalizedReportName}.cpt` : '';
+    const canCreate = Boolean(normalizedReportName && normalizedTargetFolder) && !createEmptyReport.isPending;
+    const handleCreate = () => {
+        if (!canCreate) {
+            return;
         }
-        if (result.context.targetFolder) {
-            setTargetFolder(result.context.targetFolder);
-        }
-        if (result.context.sourceTableName) {
-            setSourceTablesText(result.context.sourceTableName);
-        }
-        if (result.context.requirement) {
-            setRequirement(result.context.requirement);
-        }
-        if (result.review) {
-            setReview(result.review);
-        }
-        if (result.sqlStep) {
-            setSqlStep(result.sqlStep);
-            setEditableCreateTableSql(result.sqlStep.createTableSql ?? '');
-            setEditableQuerySql(result.sqlStep.querySql ?? '');
-        }
-        if (result.dslStep) {
-            setDslStep(result.dslStep);
-        }
-        if (result.cptStep) {
-            setCptStep(result.cptStep);
-        }
-        const assistantLines = [
-            ...result.events
-                .filter((event) => event.content)
-                .map((event) => {
-                    const prefix = event.toolName ? `【${agentToolLabel(event.toolName)}】` : '';
-                    return `${prefix}${event.content}`;
-                }),
-            ...result.questions.map((question) => `需要确认：${question}`),
-            ...result.errors.map((item) => `问题：${item}`),
-        ].filter(Boolean);
-        if (assistantLines.length > 0) {
-            appendBuilderMessage({ role: 'assistant', content: assistantLines.join('\n') });
-        }
-    };
-    const sendAgentMessage = (message: string, action: 'chat' | 'start_generate' | 'save_cpt' = 'chat', contextOverrides?: Partial<FrAiReportAgentContext>) => {
-        const context = buildAgentContext(contextOverrides);
-        const pendingText =
-            action === 'start_generate'
-                ? '小驰开始执行：需求预检、读取表结构、预览数据、生成 SQL 和 ReportDSL。这个过程可能需要一会儿。'
-                : action === 'save_cpt'
-                  ? '小驰开始保存 CPT：会先检查版本和外部修改，避免覆盖设计器里的改动。'
-                  : '小驰正在分析你的补充内容。';
-        appendBuilderMessage({ role: 'assistant', status: 'pending', content: pendingText });
-        agentChat.mutate(
+        createEmptyReport.mutate(
             {
-                message,
-                action,
-                context,
-                file: files[0] ?? null,
+                reportName: normalizedReportName,
+                targetFolder: normalizedTargetFolder,
             },
             {
-                onSuccess: applyAgentResponse,
-                onError: (error) => {
-                    appendBuilderMessage({
-                        role: 'assistant',
-                        status: 'error',
-                        content: error instanceof Error ? `小驰执行失败：${error.message}` : '小驰执行失败：接口没有返回有效结果。',
-                    });
+                onSuccess: (result) => {
+                    setCreatedResult(result);
+                    if (result.cptObjectPath) {
+                        onCreated(result.cptObjectPath);
+                        onOpenChange(false);
+                    }
                 },
             },
         );
     };
-    const applyChatContext = (text: string) => {
-        const extracted = extractNewReportContext(text);
-        if (extracted.reportName) {
-            setReportName(extracted.reportName);
+    const handleOpenChange = (nextOpen: boolean) => {
+        if (!nextOpen) {
+            setCreatedResult(null);
         }
-        if (extracted.targetFolder) {
-            setTargetFolder(extracted.targetFolder);
-        }
-        if (extracted.sourceTablesText) {
-            setSourceTablesText((current) => [current.trim(), extracted.sourceTablesText].filter(Boolean).join('\n'));
-        }
-        return extracted;
-    };
-    const mergedRequirement = (extraText?: string) => [requirement.trim(), extraText?.trim()].filter(Boolean).join('\n');
-    const handleReply = (overrideText?: string) => {
-        const text = (overrideText ?? replyText).trim() || (files.length > 0 ? '请根据我上传的资料分析并生成报表方案。' : '');
-        if (!text && files.length === 0) {
-            return;
-        }
-        const extracted = applyChatContext(text);
-        const freshRequest = isFreshReportRequest(text);
-        const nextRequirement = freshRequest ? text : mergedRequirement(text);
-        const nextSourceTablesText = freshRequest
-            ? (extracted.sourceTablesText ?? '')
-            : [sourceTablesText.trim(), extracted.sourceTablesText].filter(Boolean).join('\n');
-        setRequirement(nextRequirement);
-        setSourceTablesText(nextSourceTablesText);
-        if (freshRequest) {
-            setReview(null);
-            setSqlStep(null);
-            setDslStep(null);
-            setCptStep(null);
-            setEditableCreateTableSql('');
-            setEditableQuerySql('');
-        }
-        appendBuilderMessage({ role: 'user', content: text });
-        setReplyText('');
-        if (isSaveCptCommand(text)) {
-            sendAgentMessage(text, 'save_cpt', {
-                requirement: nextRequirement,
-                sourceTableName: nextSourceTablesText || null,
-            });
-            return;
-        }
-        if (isGenerateReportCommand(text)) {
-            sendAgentMessage(text, 'start_generate', {
-                requirement: nextRequirement,
-                sourceTableName: nextSourceTablesText || null,
-            });
-            return;
-        }
-        sendAgentMessage(text, 'chat', {
-            requirement: nextRequirement,
-            sourceTableName: nextSourceTablesText || null,
-        });
+        onOpenChange(nextOpen);
     };
     return (
-        <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="max-h-[86vh] w-[70vw] max-w-[1200px] min-w-[860px] overflow-hidden border-[#dfe7e4] bg-white p-0 max-lg:w-[94vw] max-lg:min-w-0">
+        <Dialog open={open} onOpenChange={handleOpenChange}>
+            <DialogContent className="max-h-[86vh] w-[560px] max-w-[94vw] overflow-hidden border-[#dfe7e4] bg-white p-0">
                 <DialogHeader className="border-b border-[#edf2f0] px-5 py-4">
-                    <DialogTitle className="text-base font-semibold text-[#243a35]">AI 新建报表</DialogTitle>
+                    <DialogTitle className="text-base font-semibold text-[#243a35]">新建空报表</DialogTitle>
                     <DialogDescription className="text-xs text-[#60736f]">
-                        上传资料并描述目标，AI 会先生成问题清单和报表方案；确认生成 CPT 时会按指定目录写入并保留版本。
+                        这里只创建一个空白 CPT 并保存到指定目录。报表结构、SQL、样式和填报配置创建后通过右侧小驰继续完成。
                     </DialogDescription>
                 </DialogHeader>
-                <div className="grid max-h-[62vh] gap-4 overflow-auto px-5 py-4">
-                    <section className="rounded-xl border border-[#edf2f0] bg-[#fafafa] px-3 py-2">
-                        <div className="flex flex-wrap items-center gap-2 text-xs text-[#60736f]">
-                            <span className="rounded-full bg-white px-2.5 py-1 ring-1 ring-[#edf2f0]">报表：{reportName || '待识别'}</span>
-                            <span className="max-w-full truncate rounded-full bg-white px-2.5 py-1 ring-1 ring-[#edf2f0]">
-                                目录：{targetFolder || '待识别'}
-                            </span>
-                            <span className="rounded-full bg-white px-2.5 py-1 ring-1 ring-[#edf2f0]">
-                                资料：{files.length} 个
-                            </span>
-                            <Button
-                                type="button"
-                                variant="ghost"
-                                className="h-7 rounded-full px-2 text-xs text-[#0b7c6b] hover:bg-[#eef8f5]"
-                                onClick={() => setFolderPickerOpen(true)}
-                            >
-                                <Folder className="size-3.5" />
-                                选择目录
-                            </Button>
-                        </div>
-                    </section>
+                <div className="grid gap-4 px-6 py-5">
                     {errorMessage ? (
                         <div className="rounded-lg bg-[#fff1f1] px-3 py-2 text-xs text-[#9b3a3a] ring-1 ring-[#ffd6d6]">
                             {errorMessage}
                         </div>
                     ) : null}
-                    <section className="grid gap-3 rounded-xl border border-[#edf2f0] bg-white p-3">
-                        <div className="space-y-3">
-                            {builderMessages.map((message) => (
-                                <div
-                                    key={message.id}
-                                    className={cn(
-                                        'max-w-[92%] whitespace-pre-wrap rounded-2xl px-3 py-2 text-sm leading-6',
-                                        message.role === 'user'
-                                            ? 'ml-auto bg-[#0f8f7b] text-white'
-                                            : 'mr-auto border border-[#e8eeee] bg-[#f8faf9] text-[#344541]',
-                                    )}
-                                >
-                                    {message.content}
-                                </div>
-                            ))}
-                        </div>
-                        {review ? (
-                            <details className="rounded-lg border border-[#edf2f0] bg-[#f8fbfa] p-3 text-xs text-[#344541]">
-                                <summary className="cursor-pointer font-semibold text-[#243a35]">查看需求预检</summary>
-                                <div className="mt-3">
-                                    <RequirementReviewPanel review={review} />
-                                </div>
-                            </details>
-                        ) : null}
-                        {sqlStep ? (
-                            <details className="rounded-lg border border-[#edf2f0] bg-[#f8fbfa] p-3 text-xs text-[#344541]">
-                                <summary className="cursor-pointer font-semibold text-[#243a35]">查看并修改 SQL 和表结构</summary>
-                                <div className="mt-3 grid gap-3">
-                                    <div className="text-xs text-[#60736f]">任务：{sqlStep.taskId} · 状态：{sqlStep.status}</div>
-                                    {sqlStep.createTableSql ? (
-                                        <label className="grid gap-1 text-xs font-semibold text-[#243a35]">
-                                            候选建表 SQL / 字段注释
-                                            <textarea
-                                                value={editableCreateTableSql}
-                                                onChange={(event) => setEditableCreateTableSql(event.target.value)}
-                                                className="min-h-48 resize-y rounded-lg border border-[#edf2f0] bg-white p-3 font-mono text-xs font-normal leading-5 text-[#344541] outline-none focus:border-[#0f8f7b]"
-                                                spellCheck={false}
-                                            />
-                                        </label>
-                                    ) : null}
-                                    {sqlStep.querySql ? (
-                                        <label className="grid gap-1 text-xs font-semibold text-[#243a35]">
-                                            报表查询 SQL
-                                            <textarea
-                                                value={editableQuerySql}
-                                                onChange={(event) => setEditableQuerySql(event.target.value)}
-                                                className="min-h-36 resize-y rounded-lg border border-[#edf2f0] bg-white p-3 font-mono text-xs font-normal leading-5 text-[#344541] outline-none focus:border-[#0f8f7b]"
-                                                spellCheck={false}
-                                            />
-                                        </label>
-                                    ) : null}
-                                </div>
-                            </details>
-                        ) : null}
-                        {dslStep ? (
-                            <div className="rounded-lg bg-[#f6fbfa] px-3 py-2 text-xs leading-5 text-[#0b7c6b] ring-1 ring-[#dbe9e6]">
-                                报表设计已生成：{dslStep.reportName}。现在可以保存成 CPT。
+                    <section className="grid gap-4 rounded-xl border border-[#edf2f0] bg-[#fafafa] p-4">
+                        <label className="grid gap-1.5 text-sm font-semibold text-[#243a35]">
+                            报表名称
+                            <Input
+                                value={reportName}
+                                onChange={(event) => setReportName(event.target.value)}
+                                className="h-10 border-[#dedede] bg-white text-sm font-normal"
+                                placeholder="例如：健源公司经营净头寸报表"
+                            />
+                        </label>
+                        <label className="grid gap-1.5 text-sm font-semibold text-[#243a35]">
+                            保存目录
+                            <div className="flex gap-2">
+                                <Input
+                                    value={targetFolder}
+                                    onChange={(event) => setTargetFolder(event.target.value)}
+                                    className="h-10 min-w-0 flex-1 border-[#dedede] bg-white text-sm font-normal"
+                                    placeholder="webroot/APP/reportlets/数据分析/健源报表"
+                                />
+                                <Button type="button" variant="outline" className="h-10 border-[#dbe9e6] text-[#0b7c6b]" onClick={() => setFolderPickerOpen(true)}>
+                                    <Folder className="size-4" />
+                                    选择
+                                </Button>
                             </div>
-                        ) : null}
-                        {cptStep ? (
+                        </label>
+                        <div className="rounded-lg bg-white px-3 py-2 text-xs leading-5 text-[#60736f] ring-1 ring-[#edf2f0]">
+                            <div className="font-semibold text-[#243a35]">目标路径</div>
+                            <div className="mt-1 break-all">{targetPath || '请输入报表名称和保存目录'}</div>
+                        </div>
+                        {createdResult ? (
                             <div className="rounded-lg bg-[#f6fbfa] px-3 py-2 text-xs leading-5 text-[#0b7c6b] ring-1 ring-[#dbe9e6]">
-                                CPT 状态：{cptStep.status}
-                                {cptStep.cptObjectPath ? <div className="break-all">路径：{cptStep.cptObjectPath}</div> : null}
-                                {cptStep.previewUrl ? (
-                                    <a className="inline-flex items-center gap-1 font-medium hover:underline" href={cptStep.previewUrl} target="_blank" rel="noreferrer">
-                                        打开预览
+                                已创建：{createdResult.cptObjectPath}
+                                {createdResult.previewUrl ? (
+                                    <a className="mt-1 inline-flex items-center gap-1 font-medium hover:underline" href={createdResult.previewUrl} target="_blank" rel="noreferrer">
+                                        打开 FineReport 预览
                                         <ExternalLink className="size-3.5" />
                                     </a>
                                 ) : null}
                             </div>
                         ) : null}
-                        {files.length > 0 ? (
-                            <div className="flex flex-wrap gap-2">
-                                {files.map((file) => (
-                                    <span key={`${file.name}-${file.size}`} className="inline-flex items-center gap-1 rounded-full bg-[#f6fbfa] px-2.5 py-1 text-xs text-[#31544d] ring-1 ring-[#dbe9e6]">
-                                        <FileSpreadsheet className="size-3.5" />
-                                        {file.name}
-                                    </span>
-                                ))}
-                            </div>
-                        ) : null}
-                        <div className="flex items-end gap-2 rounded-2xl border border-[#dedede] bg-white p-2">
-                            <input
-                                id="new-report-file-upload"
-                                type="file"
-                                multiple
-                                accept=".xlsx,.xls,.csv,.doc,.docx,.png,.jpg,.jpeg,.txt,.md"
-                                className="hidden"
-                                onChange={(event) => setFiles(Array.from(event.target.files ?? []))}
-                            />
-                            <Button type="button" variant="ghost" size="icon" className="size-9 shrink-0 rounded-full text-[#60736f] hover:bg-[#eef8f5] hover:text-[#0b7c6b]" asChild>
-                                <label htmlFor="new-report-file-upload" aria-label="上传资料">
-                                    <Paperclip className="size-4" />
-                                </label>
-                            </Button>
-                            <textarea
-                                value={replyText}
-                                onChange={(event) => setReplyText(event.target.value)}
-                                onKeyDown={(event) => {
-                                    if (event.key === 'Enter' && !event.shiftKey) {
-                                        event.preventDefault();
-                                        handleReply();
-                                    }
-                                }}
-                                className="max-h-36 min-h-10 min-w-0 flex-1 resize-none bg-transparent px-1 py-2 text-sm leading-5 text-[#333333] outline-none placeholder:text-[#8a8a8a]"
-                                placeholder="直接告诉小驰要做什么报表、保存到哪里、用哪些表；Shift+Enter 换行"
-                            />
-                            <Button type="button" size="icon" className="size-9 shrink-0 rounded-full bg-[#0f8f7b] text-white hover:bg-[#0b7c6b]" onClick={() => handleReply()} disabled={!replyText.trim() && files.length === 0}>
-                                <SendHorizonal className="size-4" />
-                            </Button>
+                        <div className="rounded-lg bg-white px-3 py-2 text-xs leading-5 text-[#60736f] ring-1 ring-[#edf2f0]">
+                            创建后会自动选中这张空报表。右侧小驰会基于当前报表继续完成结构、数据集、样式、填报和版本发布。
                         </div>
                     </section>
                 </div>
                 <DialogFooter className="border-t border-[#edf2f0] px-5 py-4">
                     <Button variant="outline" className="border-[#dedede]" onClick={() => onOpenChange(false)}>
                         关闭
+                    </Button>
+                    <Button className="bg-[#0f8f7b] text-white hover:bg-[#0b7c6b]" disabled={!canCreate} onClick={handleCreate}>
+                        {createEmptyReport.isPending ? (
+                            <>
+                                <RefreshCw className="size-4 animate-spin" />
+                                创建中
+                            </>
+                        ) : (
+                            <>
+                                <Plus className="size-4" />
+                                创建空报表
+                            </>
+                        )}
                     </Button>
                 </DialogFooter>
             </DialogContent>
@@ -3352,111 +4088,6 @@ function NewReportAiDialog({
                 </DialogContent>
             </Dialog>
         </Dialog>
-    );
-}
-
-function RequirementReviewPanel({ review }: { review: FrAiReportRequirementReviewResponse }) {
-    return (
-        <section className="space-y-3 rounded-xl border border-[#dbe9e6] bg-[#f6fbfa] p-4">
-            <div>
-                <div className="text-sm font-semibold text-[#243a35]">需求预检</div>
-                <div className="mt-1 text-xs leading-5 text-[#60736f]">{review.summary}</div>
-            </div>
-            {review.maintenanceTables.length > 0 ? (
-                <div>
-                    <div className="mb-2 text-xs font-semibold text-[#0b7c6b]">建议维护表</div>
-                    <div className="grid gap-2">
-                        {review.maintenanceTables.map((table) => (
-                            <div key={table.tableName} className="rounded-lg bg-white p-3 text-xs ring-1 ring-[#dbe9e6]">
-                                <div className="font-semibold text-[#243a35]">{table.displayName}</div>
-                                <div className="mt-1 text-[#60736f]">{table.purpose}</div>
-                                <div className="mt-2 flex flex-wrap gap-1.5">
-                                    {table.fields.slice(0, 8).map((field) => (
-                                        <span key={`${table.tableName}-${field.name}`} className="rounded-full bg-[#eef7f5] px-2 py-1 text-[11px] text-[#0b7c6b]">
-                                            {field.label}
-                                        </span>
-                                    ))}
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-            ) : null}
-            {review.writeBackPlan?.enabled ? (
-                <div className="rounded-lg bg-white p-3 text-xs ring-1 ring-[#dbe9e6]">
-                    <div className="mb-2 flex items-center justify-between gap-3">
-                        <div className="font-semibold text-[#243a35]">填报生成方案</div>
-                        <span className="rounded-full bg-[#eef7f5] px-2 py-1 text-[11px] text-[#0b7c6b]">
-                            {review.writeBackPlan.allowInsert || review.writeBackPlan.allowDelete ? '支持增删行' : '仅写回'}
-                        </span>
-                    </div>
-                    <div className="grid gap-2 sm:grid-cols-2">
-                        <InfoItem label="写回表" value={review.writeBackPlan.targetTable || '待确认'} />
-                        <InfoItem label="主键" value={review.writeBackPlan.primaryKeys.join('、') || '待确认'} />
-                        <InfoItem label="隐藏主键" value={review.writeBackPlan.hiddenKeys.join('、') || '无'} />
-                        <InfoItem label="控件策略" value={review.writeBackPlan.widgetPolicy} />
-                    </div>
-                    {review.writeBackPlan.editableFields.length > 0 ? (
-                        <div className="mt-3">
-                            <div className="mb-1 text-[11px] font-semibold text-[#60736f]">可编辑字段</div>
-                            <div className="flex flex-wrap gap-1.5">
-                                {review.writeBackPlan.editableFields.slice(0, 18).map((field) => (
-                                    <span key={field} className="rounded-full bg-[#f6fbfa] px-2 py-1 text-[11px] text-[#31544d] ring-1 ring-[#dbe9e6]">
-                                        {field}
-                                    </span>
-                                ))}
-                            </div>
-                        </div>
-                    ) : null}
-                    {review.writeBackPlan.calculatedFields.length > 0 ? (
-                        <div className="mt-3">
-                            <div className="mb-1 text-[11px] font-semibold text-[#60736f]">计算/只读字段</div>
-                            <div className="flex flex-wrap gap-1.5">
-                                {review.writeBackPlan.calculatedFields.slice(0, 12).map((field) => (
-                                    <span key={field} className="rounded-full bg-[#fafafa] px-2 py-1 text-[11px] text-[#6d817d] ring-1 ring-[#eeeeee]">
-                                        {field}
-                                    </span>
-                                ))}
-                            </div>
-                        </div>
-                    ) : null}
-                    {review.writeBackPlan.safetyNotes.length > 0 ? (
-                        <div className="mt-3 space-y-1">
-                            {review.writeBackPlan.safetyNotes.map((note) => (
-                                <div key={note} className="rounded-lg bg-[#fffaf0] px-3 py-2 text-[#6f5200] ring-1 ring-[#f2d99b]">
-                                    {note}
-                                </div>
-                            ))}
-                        </div>
-                    ) : null}
-                </div>
-            ) : null}
-            {review.questions.length > 0 ? (
-                <div>
-                    <div className="mb-2 text-xs font-semibold text-[#8a5a00]">需要确认</div>
-                    <div className="space-y-1">
-                        {review.questions.map((question) => (
-                            <div key={question} className="rounded-lg bg-[#fffaf0] px-3 py-2 text-xs text-[#6f5200] ring-1 ring-[#f2d99b]">
-                                {question}
-                            </div>
-                        ))}
-                    </div>
-                </div>
-            ) : null}
-            {review.qualityGates.length > 0 ? (
-                <div>
-                    <div className="mb-2 text-xs font-semibold text-[#60736f]">生成监工规则</div>
-                    <div className="grid gap-1.5">
-                        {review.qualityGates.map((gate) => (
-                            <div key={gate.code} className="rounded-lg bg-white px-3 py-2 text-xs text-[#445a55] ring-1 ring-[#edf2f0]">
-                                <span className="font-semibold text-[#243a35]">{gate.label}</span>
-                                <span className="ml-2 text-[#60736f]">{gate.description}</span>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-            ) : null}
-        </section>
     );
 }
 

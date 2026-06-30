@@ -1,4 +1,5 @@
 import { apiClient } from "@/api/client";
+import { useAuthStore } from "@/store/useAuthStore";
 
 export const insightApiPrefix = "/insight";
 
@@ -6,8 +7,36 @@ export const insightApi = {
     getHealth: () => apiClient.get<InsightHealth, InsightHealth>(`${insightApiPrefix}/health`),
     getDashboard: () => apiClient.get<InsightDashboardSummary, InsightDashboardSummary>(`${insightApiPrefix}/dashboard`),
     getSettingsStatus: () => apiClient.get<InsightSettingsStatusRead, InsightSettingsStatusRead>(`${insightApiPrefix}/settings/status`),
+    listChannels: (params: InsightChannelListParams) =>
+        apiClient.get<InsightPage<InsightChannelRead>, InsightPage<InsightChannelRead>>(`${insightApiPrefix}/settings/channels`, { params }),
+    createChannel: (payload: InsightChannelCreate) =>
+        apiClient.post<InsightChannelRead, InsightChannelRead>(`${insightApiPrefix}/settings/channels`, payload),
+    updateChannel: (channelId: number, payload: InsightChannelUpdate) =>
+        apiClient.put<InsightChannelRead, InsightChannelRead>(`${insightApiPrefix}/settings/channels/${channelId}`, payload),
+    deleteChannel: (channelId: number) =>
+        apiClient.delete<void, void>(`${insightApiPrefix}/settings/channels/${channelId}`),
+    seedDefaultChannels: () =>
+        apiClient.post<Record<string, number>, Record<string, number>>(`${insightApiPrefix}/settings/channels/seed-defaults`),
+    listMonitorConfigs: (params: InsightMonitorConfigListParams) =>
+        apiClient.get<InsightPage<InsightMonitorConfigRead>, InsightPage<InsightMonitorConfigRead>>(`${insightApiPrefix}/settings/monitor-configs`, { params }),
+    createMonitorConfig: (payload: InsightMonitorConfigCreate) =>
+        apiClient.post<InsightMonitorConfigRead, InsightMonitorConfigRead>(`${insightApiPrefix}/settings/monitor-configs`, payload),
+    updateMonitorConfig: (configId: number, payload: InsightMonitorConfigUpdate) =>
+        apiClient.put<InsightMonitorConfigRead, InsightMonitorConfigRead>(`${insightApiPrefix}/settings/monitor-configs/${configId}`, payload),
+    deleteMonitorConfig: (configId: number) =>
+        apiClient.delete<void, void>(`${insightApiPrefix}/settings/monitor-configs/${configId}`),
+    syncLegacyDataSources: () =>
+        apiClient.post<InsightLegacySourceSyncResponse, InsightLegacySourceSyncResponse>(`${insightApiPrefix}/settings/legacy-sources/sync`),
     getQualityOverview: () => apiClient.get<InsightQualityOverview, InsightQualityOverview>(`${insightApiPrefix}/quality/overview`),
     getDictionaryOverview: () => apiClient.get<InsightDictionaryOverview, InsightDictionaryOverview>(`${insightApiPrefix}/dictionaries/overview`),
+    listTagCategories: (params?: { include_disabled?: boolean }) =>
+        apiClient.get<InsightTagCategoryRead[], InsightTagCategoryRead[]>(`${insightApiPrefix}/dictionaries/tag-categories`, { params }),
+    createTagCategory: (payload: InsightTagCategoryCreate) =>
+        apiClient.post<InsightTagCategoryRead, InsightTagCategoryRead>(`${insightApiPrefix}/dictionaries/tag-categories`, payload),
+    updateTagCategory: (categoryId: number, payload: InsightTagCategoryUpdate) =>
+        apiClient.put<InsightTagCategoryRead, InsightTagCategoryRead>(`${insightApiPrefix}/dictionaries/tag-categories/${categoryId}`, payload),
+    disableTagCategory: (categoryId: number) =>
+        apiClient.post<InsightTagCategoryRead, InsightTagCategoryRead>(`${insightApiPrefix}/dictionaries/tag-categories/${categoryId}/disable`),
     listDictionaryTags: (params?: { tag_type?: string; include_disabled?: boolean }) =>
         apiClient.get<InsightTagRead[], InsightTagRead[]>(`${insightApiPrefix}/dictionaries/tags`, { params }),
     createDictionaryTag: (payload: InsightTagCreate) =>
@@ -69,6 +98,8 @@ export const insightApi = {
         apiClient.post<InsightReportGenerateResponse, InsightReportGenerateResponse>(`${insightApiPrefix}/reports/generate`, payload, {
             timeout: 180000,
         }),
+    generateReportStream: (payload: InsightReportGenerateRequest, onEvent: (event: InsightReportGenerateStreamEvent) => void, signal?: AbortSignal) =>
+        streamInsightEvents<InsightReportGenerateStreamEvent>(`${insightApiPrefix}/reports/generate/stream`, payload, onEvent, signal),
     listReportSubscriptions: (params: InsightReportSubscriptionListParams) =>
         apiClient.get<InsightPage<InsightReportSubscriptionRead>, InsightPage<InsightReportSubscriptionRead>>(`${insightApiPrefix}/reports/subscriptions`, { params }),
     createReportSubscription: (payload: InsightReportSubscriptionCreate) =>
@@ -206,6 +237,16 @@ export const insightApi = {
             `${insightApiPrefix}/intelligence/candidates`,
             { params },
         ),
+    searchAssets: (payload: InsightAssetSearchRequest) =>
+        apiClient.post<InsightAssetSearchResponse, InsightAssetSearchResponse>(`${insightApiPrefix}/assets/search`, payload, {
+            timeout: 120000,
+        }),
+    backfillFormalAssets: (payload: InsightFormalAssetBackfillRequest) =>
+        apiClient.post<InsightFormalAssetBackfillResponse, InsightFormalAssetBackfillResponse>(`${insightApiPrefix}/assets/backfill-formal`, payload, {
+            timeout: 180000,
+        }),
+    getAssetGraph: (params?: InsightGraphParams) =>
+        apiClient.get<InsightGraphResponse, InsightGraphResponse>(`${insightApiPrefix}/assets/graph`, { params }),
     crawlManualUrl: (payload: InsightManualUrlCrawlRequest) =>
         apiClient.post<InsightManualUrlCrawlResponse, InsightManualUrlCrawlResponse>(`${insightApiPrefix}/crawler/manual-url`, payload, {
             timeout: 120000,
@@ -230,6 +271,44 @@ export const insightApi = {
             payload,
         ),
 };
+
+async function streamInsightEvents<TEvent>(path: string, payload: unknown, onEvent: (event: TEvent) => void, signal?: AbortSignal) {
+    const baseURL = String(apiClient.defaults.baseURL || "/api/v1").replace(/\/$/, "");
+    const url = /^https?:\/\//i.test(baseURL) ? `${baseURL}${path}` : `${baseURL}${path}`;
+    const token = useAuthStore.getState().token;
+    const response = await fetch(url, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            Accept: "text/event-stream",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(payload),
+        signal,
+    });
+    if (!response.ok || !response.body) {
+        throw new Error("报告生成请求失败");
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+    while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const chunks = buffer.split("\n\n");
+        buffer = chunks.pop() ?? "";
+        for (const chunk of chunks) {
+            const data = chunk
+                .split("\n")
+                .filter((line) => line.startsWith("data:"))
+                .map((line) => line.slice(5).trim())
+                .join("\n");
+            if (!data) continue;
+            onEvent(JSON.parse(data) as TEvent);
+        }
+    }
+}
 
 export interface InsightHealth {
     module: string;
@@ -735,6 +814,57 @@ export interface InsightSettingsStatusRead {
     sections: InsightSettingsStatusSection[];
 }
 
+export interface InsightChannelRead {
+    id: number;
+    channel_code: string;
+    channel_name: string;
+    channel_type: string;
+    channel_url?: string | null;
+    applicable_scenarios: string[];
+    collection_method: string;
+    login_requirement: string;
+    access_status: string;
+    default_trust_level: string;
+    default_frequency: string;
+    default_processing_policy: string;
+    config_json?: Record<string, unknown> | null;
+    sort_no: number;
+    status: string;
+    comment?: string | null;
+    create_time: string;
+    update_time: string;
+}
+
+export interface InsightChannelCreate {
+    channel_code?: string | null;
+    channel_name: string;
+    channel_type: string;
+    channel_url?: string | null;
+    applicable_scenarios?: string[];
+    collection_method?: string;
+    login_requirement?: string;
+    access_status?: string;
+    default_trust_level?: string;
+    default_frequency?: string;
+    default_processing_policy?: string;
+    config_json?: Record<string, unknown> | null;
+    sort_no?: number;
+    comment?: string | null;
+    status?: string;
+}
+
+export type InsightChannelUpdate = Partial<InsightChannelCreate>;
+
+export interface InsightChannelListParams {
+    page?: number;
+    size?: number;
+    keyword?: string;
+    channel_type?: string;
+    access_status?: string;
+    status?: string;
+    scenario?: string;
+}
+
 export interface InsightTagRead {
     id: number;
     tag_code: string;
@@ -746,6 +876,31 @@ export interface InsightTagRead {
     create_time: string;
     update_time: string;
 }
+
+export interface InsightTagCategoryRead {
+    id: number;
+    category_code: string;
+    category_name: string;
+    description?: string | null;
+    color?: string | null;
+    sort_no: number;
+    status: "active" | "disabled" | string;
+    tag_count: number;
+    create_time: string;
+    update_time: string;
+}
+
+export interface InsightTagCategoryCreate {
+    category_code?: string | null;
+    category_name: string;
+    description?: string | null;
+    color?: string | null;
+    sort_no?: number;
+}
+
+export type InsightTagCategoryUpdate = Partial<Pick<InsightTagCategoryCreate, "category_name" | "description" | "color" | "sort_no">> & {
+    status?: "active" | "disabled";
+};
 
 export interface InsightTagCreate {
     tag_code?: string | null;
@@ -770,6 +925,7 @@ export interface InsightIntelligenceTypeRead {
 }
 
 export interface InsightDictionaryOverview {
+    categories: InsightTagCategoryRead[];
     tags: InsightTagRead[];
     intelligence_types: InsightIntelligenceTypeRead[];
 }
@@ -898,6 +1054,19 @@ export interface InsightReportGenerateResponse {
     generation_mode: string;
 }
 
+export interface InsightReportGenerateStreamEvent {
+    event: "connected" | "progress" | "done" | "error" | string;
+    step?: string;
+    title?: string;
+    detail?: string;
+    progress?: number;
+    material_count?: number;
+    relation_count?: number;
+    report_id?: number | null;
+    generation_mode?: string | null;
+    data?: InsightReportGenerateResponse;
+}
+
 export interface InsightReportContent {
     title?: string;
     executive_summary?: string;
@@ -953,6 +1122,8 @@ export interface InsightManualUrlCrawlRequest {
     url: string;
     query_text?: string | null;
     data_source_id?: number | null;
+    monitor_config_id?: number | null;
+    source_channel_id?: number | null;
 }
 
 export interface InsightDataSourceFetchConfig {
@@ -974,6 +1145,7 @@ export interface InsightDataSourceFetchConfig {
     auto_review_intelligence_types?: string[];
     auto_add_to_report_pool?: boolean;
     auto_report_folder?: string | null;
+    create_candidate_from_hits?: boolean;
     extra?: Record<string, unknown>;
 }
 
@@ -983,6 +1155,15 @@ export interface InsightDataSourceRead {
     source_name: string;
     source_type: string;
     base_url?: string | null;
+    channel_id?: number | null;
+    channel_name?: string | null;
+    monitor_config_id?: number | null;
+    monitor_config_name?: string | null;
+    monitor_object_type?: string | null;
+    monitor_object_id?: number | null;
+    execution_role?: string | null;
+    generation_mode: string;
+    collection_strategy: string;
     company_id?: number | null;
     company_name?: string | null;
     company_short_name?: string | null;
@@ -1008,6 +1189,12 @@ export interface InsightDataSourceRead {
 
 export interface InsightDataSourceGroupRead {
     group_key: string;
+    monitor_config_id?: number | null;
+    monitor_config_name?: string | null;
+    monitor_type?: string | null;
+    execution_role?: string | null;
+    channel_id?: number | null;
+    channel_name?: string | null;
     company_id?: number | null;
     company_name?: string | null;
     company_short_name?: string | null;
@@ -1034,6 +1221,13 @@ export interface InsightDataSourceCreate {
     source_name: string;
     source_type: string;
     base_url?: string | null;
+    channel_id?: number | null;
+    monitor_config_id?: number | null;
+    monitor_object_type?: string | null;
+    monitor_object_id?: number | null;
+    execution_role?: string | null;
+    generation_mode?: string;
+    collection_strategy?: string;
     company_id?: number | null;
     fetch_frequency?: string;
     fetch_config?: InsightDataSourceFetchConfig | null;
@@ -1094,6 +1288,87 @@ export interface InsightDataSourceListParams {
     keyword?: string;
     source_type?: string;
     status?: string;
+    monitor_config_id?: number;
+    execution_role?: string;
+    channel_id?: number;
+}
+
+export interface InsightMonitorConfigRead {
+    id: number;
+    config_code: string;
+    config_name: string;
+    monitor_type: string;
+    object_type: string;
+    object_id?: number | null;
+    object_name?: string | null;
+    relation_type?: string | null;
+    enabled_modules: string[];
+    keywords: string[];
+    excluded_keywords: string[];
+    source_channel_ids: number[];
+    monitor_strength: string;
+    fetch_frequency: string;
+    ai_review_prompt?: string | null;
+    ai_review_policy: string;
+    owner_user_id?: number | null;
+    owner_dept_id?: number | null;
+    visibility_scope: string;
+    generation_mode: string;
+    config_json?: Record<string, unknown> | null;
+    status: string;
+    execution_source_count: number;
+    last_fetch_time?: string | null;
+    last_success_time?: string | null;
+    next_run_time?: string | null;
+    schedule_enabled: boolean;
+    last_schedule_status?: string | null;
+    last_schedule_message?: string | null;
+    consecutive_failure_count: number;
+    last_failure_time?: string | null;
+    auto_paused_reason?: string | null;
+    create_time: string;
+    update_time: string;
+}
+
+export interface InsightMonitorConfigCreate {
+    config_code?: string | null;
+    config_name: string;
+    monitor_type?: string;
+    object_type?: string;
+    object_id?: number | null;
+    object_name?: string | null;
+    relation_type?: string | null;
+    enabled_modules?: string[];
+    keywords?: string[];
+    excluded_keywords?: string[];
+    source_channel_ids?: number[];
+    monitor_strength?: string;
+    fetch_frequency?: string;
+    ai_review_prompt?: string | null;
+    ai_review_policy?: string;
+    visibility_scope?: string;
+    generation_mode?: string;
+    config_json?: Record<string, unknown> | null;
+    status?: string;
+}
+
+export type InsightMonitorConfigUpdate = Partial<InsightMonitorConfigCreate>;
+
+export interface InsightMonitorConfigListParams {
+    page?: number;
+    size?: number;
+    keyword?: string;
+    monitor_type?: string;
+    status?: string;
+}
+
+export interface InsightLegacySourceSyncResponse {
+    checked_count: number;
+    created_config_count: number;
+    linked_source_count: number;
+    linked_channel_count: number;
+    updated_role_count: number;
+    skipped_count: number;
 }
 
 export interface InsightDataSourceExecutionLogParams {
@@ -1183,7 +1458,8 @@ export interface InsightDataSourceExecutionError {
 }
 
 export interface InsightDataSourceScheduleExecution {
-    data_source_id: number;
+    data_source_id?: number | null;
+    monitor_config_id?: number | null;
     source_name: string;
     status: string;
     message?: string | null;
@@ -1233,6 +1509,8 @@ export interface InsightTaskRead {
     status: string;
     progress: number;
     data_source_id?: number | null;
+    monitor_config_id?: number | null;
+    source_channel_id?: number | null;
     intelligence_id?: number | null;
     report_id?: number | null;
     started_at?: string | null;
@@ -1249,6 +1527,8 @@ export interface InsightCrawlResultRead {
     id: number;
     task_id: number;
     data_source_id?: number | null;
+    monitor_config_id?: number | null;
+    source_channel_id?: number | null;
     channel: string;
     query_text?: string | null;
     source_url: string;
@@ -1469,6 +1749,128 @@ export interface InsightCandidateReviewResponse {
     intelligence?: InsightIntelligenceRead | null;
 }
 
+export interface InsightAssetRead {
+    id: number;
+    asset_uid: string;
+    asset_type: string;
+    source_kind: string;
+    intelligence_id?: number | null;
+    candidate_id?: number | null;
+    crawl_result_id?: number | null;
+    data_source_id?: number | null;
+    company_id?: number | null;
+    subject_type: string;
+    subject_id?: number | null;
+    subject_name?: string | null;
+    title: string;
+    summary?: string | null;
+    source_url?: string | null;
+    source_title?: string | null;
+    source_channel?: string | null;
+    publish_time?: string | null;
+    intelligence_type?: string | null;
+    business_value?: string | null;
+    importance_level: string;
+    sentiment: string;
+    confidence: number;
+    tags: Array<Record<string, unknown>>;
+    entities: Array<Record<string, unknown>>;
+    related_products: string[];
+    opportunities: string[];
+    risks: string[];
+    keywords: string[];
+    evidence?: string | null;
+    review_reason?: string | null;
+    embedding_status: string;
+    graph_status: string;
+    visibility_scope: string;
+    status: string;
+    create_time: string;
+    update_time: string;
+}
+
+export interface InsightAssetSearchRequest {
+    query: string;
+    top_k?: number;
+    include_candidates?: boolean;
+    company_id?: number | null;
+    subject_type?: string | null;
+    intelligence_type?: string | null;
+    date_from?: string | null;
+    date_to?: string | null;
+}
+
+export interface InsightAssetSearchHit {
+    asset: InsightAssetRead;
+    score: number;
+    vector_score?: number | null;
+    keyword_score?: number | null;
+    match_reason?: string | null;
+}
+
+export interface InsightAssetSearchResponse {
+    query: string;
+    hits: InsightAssetSearchHit[];
+    generation_mode: string;
+}
+
+export interface InsightFormalAssetBackfillRequest {
+    limit?: number;
+    include_inactive?: boolean;
+    reindex_existing_failed?: boolean;
+}
+
+export interface InsightFormalAssetBackfillResponse {
+    requested_limit: number;
+    scanned_count: number;
+    created_count: number;
+    updated_count: number;
+    indexed_count: number;
+    failed_count: number;
+    remaining_count: number;
+    items: Array<Record<string, unknown>>;
+}
+
+export interface InsightGraphParams {
+    company_id?: number;
+    asset_id?: number;
+    limit?: number;
+}
+
+export interface InsightGraphNodeRead {
+    id: number;
+    node_uid: string;
+    node_type: string;
+    node_name: string;
+    canonical_name?: string | null;
+    source_asset_id?: number | null;
+    company_id?: number | null;
+    node_metadata: Record<string, unknown>;
+    status: string;
+    create_time: string;
+    update_time: string;
+}
+
+export interface InsightGraphEdgeRead {
+    id: number;
+    edge_uid: string;
+    source_node_id: number;
+    target_node_id: number;
+    relation_type: string;
+    source_asset_id?: number | null;
+    confidence: number;
+    evidence_text?: string | null;
+    edge_metadata: Record<string, unknown>;
+    status: string;
+    create_time: string;
+    update_time: string;
+}
+
+export interface InsightGraphResponse {
+    nodes: InsightGraphNodeRead[];
+    edges: InsightGraphEdgeRead[];
+}
+
 export interface InsightIntelligenceBulkActionRequest {
     target_type?: "candidate" | "intelligence" | string;
     candidate_ids?: number[];
@@ -1565,11 +1967,14 @@ export interface InsightSearchDiscoveryRequest {
     max_results: number;
     crawl_top_n: number;
     data_source_id?: number | null;
+    monitor_config_id?: number | null;
+    source_channel_id?: number | null;
     include_keywords?: string[];
     exclude_keywords?: string[];
     filter_prompt?: string | null;
     enable_llm_filter?: boolean;
     llm_min_score?: number | null;
+    create_candidate_from_hits?: boolean;
 }
 
 export interface InsightSearchHitRead {

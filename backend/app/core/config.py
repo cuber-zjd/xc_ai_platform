@@ -86,6 +86,7 @@ class Settings(BaseSettings):
     INSIGHT_BOCHA_API_KEY: str = ""
     INSIGHT_BOCHA_BASE_URL: str = "https://api.bocha.cn"
     INSIGHT_SEARCH_TIMEOUT_SECONDS: int = 30
+    INSIGHT_OWN_BUSINESS_PROFILE: str = ""
     INSIGHT_SCHEDULER_ENABLED: bool = False
     INSIGHT_SCHEDULER_INTERVAL_SECONDS: int = 300
     INSIGHT_SCHEDULER_BATCH_LIMIT: int = 5
@@ -100,7 +101,7 @@ class Settings(BaseSettings):
     INSIGHT_WECOM_BASE_URL: str = "https://qyapi.weixin.qq.com"
     INSIGHT_WECOM_TIMEOUT_SECONDS: int = 10
     INSIGHT_WECOM_RETRY_MAX_ATTEMPTS: int = 3
-    INSIGHT_PUBLIC_BASE_URL: str = ""
+    INSIGHT_PUBLIC_BASE_URL: str = "https://ai.xiangchi.com"
 
     # Weaver / E-cology
     WEAVER_DEFAULT_ENV: str = "default"  # 泛微默认环境 key，ecode 未传 env 时使用

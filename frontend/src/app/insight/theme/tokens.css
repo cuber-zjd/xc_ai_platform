@@ -131,7 +131,7 @@
   flex: 1;
   overflow: hidden;
   overscroll-behavior: contain;
-  padding: var(--insight-space-page-y) var(--insight-space-page-x) calc(var(--insight-space-page-y) + 0.25rem);
+  padding: calc(var(--insight-space-page-y) * 0.7) var(--insight-space-page-x) calc(var(--insight-space-page-y) + 0.25rem);
 }
 
 .insight-page {
@@ -181,13 +181,17 @@
 .insight-page-heading {
   display: flex;
   align-items: flex-end;
-  justify-content: space-between;
-  gap: 1rem;
+  justify-content: flex-end;
+  gap: 0.5rem;
   min-width: 0;
 }
 
 .insight-page-heading > * {
   min-width: 0;
+}
+
+.insight-page-heading > :not(.insight-actions) {
+  display: none;
 }
 
 .insight-actions {
@@ -355,9 +359,13 @@
   background: color-mix(in oklab, var(--accent) 42%, transparent);
 }
 
-@media (max-width: 1024px) {
+@media (max-width: 1023px) {
   .insight-shell {
     grid-template-columns: 1fr;
+  }
+
+  .insight-content {
+    padding-bottom: calc(var(--insight-space-page-y) + 4.75rem + env(safe-area-inset-bottom, 0px));
   }
 
   .insight-page-heading {
@@ -382,10 +390,6 @@
     --insight-space-page-x: 0.75rem;
     --insight-space-page-y: 0.75rem;
     --insight-header-height: auto;
-  }
-
-  .insight-content {
-    padding-bottom: calc(var(--insight-space-page-y) + 4.25rem);
   }
 
   .insight-metric-strip {

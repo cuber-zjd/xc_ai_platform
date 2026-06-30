@@ -23,10 +23,11 @@ export function DashboardPage() {
 
     return (
         <PageContainer className="flex min-h-0 flex-col gap-4">
-            <div className="insight-page-heading">
-                <h1 className="text-2xl font-black leading-tight tracking-tight text-slate-950 md:text-3xl">首页看板</h1>
+            {dashboardQuery.isFetching ? (
+                <div className="flex justify-end">
                 {dashboardQuery.isFetching ? <span className="text-sm font-semibold text-slate-500">数据刷新中...</span> : null}
-            </div>
+                </div>
+            ) : null}
 
             <div className="insight-metric-strip">
                 <MetricCard

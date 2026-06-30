@@ -20,6 +20,7 @@ from app.models.agent.insight import (
     InsightCrawlStatus,
     InsightDataSource,
     InsightIntelligenceCandidate,
+    InsightMonitorConfig,
     InsightSubjectType,
     InsightTask,
     InsightTaskStatus,
@@ -40,14 +41,23 @@ class InsightCrawlService:
         is_admin: bool = False,
     ) -> InsightManualUrlCrawlResponse:
         await self._ensure_data_source_editable(db, request.data_source_id, user_id=user_id, is_admin=is_admin)
+        await self._ensure_monitor_config_editable(db, request.monitor_config_id, user_id=user_id, is_admin=is_admin)
         task = InsightTask(
             task_uid=f"crawl_{uuid4().hex}",
             task_type="manual_url_crawl",
             data_source_id=request.data_source_id,
+            monitor_config_id=request.monitor_config_id,
+            source_channel_id=request.source_channel_id,
             status=InsightTaskStatus.RUNNING,
             progress=10,
             started_at=datetime.now(),
-            input_payload={"url": request.url, "query_text": request.query_text, "user_id": user_id},
+            input_payload={
+                "url": request.url,
+                "query_text": request.query_text,
+                "user_id": user_id,
+                "monitor_config_id": request.monitor_config_id,
+                "source_channel_id": request.source_channel_id,
+            },
             create_by=str(user_id) if user_id else None,
             update_by=str(user_id) if user_id else None,
         )
@@ -92,6 +102,15 @@ class InsightCrawlService:
             await db.commit()
             await db.refresh(candidate)
             await db.refresh(task)
+            from app.services.agent.insight.ai_review_service import insight_ai_review_service
+
+            await insight_ai_review_service.review_candidate(
+                db,
+                candidate.id or 0,
+                user_id=user_id,
+                is_admin=True,
+            )
+            await db.refresh(candidate)
             return InsightManualUrlCrawlResponse(task=task, crawl_result=crawl_result, candidate=candidate)
         except Exception as exc:
             task.status = InsightTaskStatus.FAILED
@@ -127,6 +146,27 @@ class InsightCrawlService:
         if not row:
             raise ValueError("数据源不存在或无权采集")
 
+    async def _ensure_monitor_config_editable(
+        self,
+        db: AsyncSession,
+        monitor_config_id: int | None,
+        *,
+        user_id: int | None,
+        is_admin: bool,
+    ) -> None:
+        if not monitor_config_id or is_admin:
+            return
+        row = (
+            await db.exec(
+                select(InsightMonitorConfig).where(
+                    InsightMonitorConfig.id == monitor_config_id,
+                    InsightMonitorConfig.is_deleted == 0,
+                )
+            )
+        ).first()
+        if not row or (row.owner_user_id is not None and row.owner_user_id != user_id and row.visibility_scope != "public"):
+            raise ValueError("监测配置不存在或无权采集")
+
     def _to_crawl_result(
         self,
         task_id: int,
@@ -147,6 +187,8 @@ class InsightCrawlService:
         return InsightCrawlResult(
             task_id=task_id,
             data_source_id=request.data_source_id,
+            monitor_config_id=request.monitor_config_id,
+            source_channel_id=request.source_channel_id,
             channel=InsightCrawlerChannel.FIRECRAWL,
             query_text=request.query_text,
             source_url=normalized_url,
@@ -156,6 +198,8 @@ class InsightCrawlService:
             published_at=published_at,
             dedupe_hash=insight_content_cleaner.build_dedupe_hash(normalized_url, title, markdown),
             crawl_metadata={
+                "monitor_config_id": request.monitor_config_id,
+                "source_channel_id": request.source_channel_id,
                 "metadata": metadata,
                 "html_length": len(html or ""),
                 "markdown_length": len(markdown or ""),
@@ -275,6 +319,10 @@ class InsightCrawlService:
         title: str,
         content: str,
     ) -> dict[str, Any]:
+        linked_monitor_company = await self._get_monitor_config_company(db, crawl_result.monitor_config_id)
+        if linked_monitor_company:
+            return self._company_subject_context(linked_monitor_company, "monitor_config_binding")
+
         linked_company = await self._get_data_source_company(db, crawl_result.data_source_id)
         if linked_company:
             return self._company_subject_context(linked_company, "data_source_binding")
@@ -283,6 +331,23 @@ class InsightCrawlService:
         if matched_company:
             return self._company_subject_context(matched_company, "text_match")
         return {}
+
+    async def _get_monitor_config_company(
+        self,
+        db: AsyncSession,
+        monitor_config_id: int | None,
+    ) -> InsightCompany | None:
+        if not monitor_config_id:
+            return None
+        monitor_config = await db.get(InsightMonitorConfig, monitor_config_id)
+        if not monitor_config or monitor_config.is_deleted != 0:
+            return None
+        if monitor_config.object_type != "company" or not monitor_config.object_id:
+            return None
+        company = await db.get(InsightCompany, monitor_config.object_id)
+        if company and company.is_deleted == 0 and company.status == "active":
+            return company
+        return None
 
     async def _get_data_source_company(
         self,

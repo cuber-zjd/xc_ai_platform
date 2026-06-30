@@ -29,6 +29,8 @@ from app.schemas.agent.fr_report.report_file import (
     FrReportFileRead,
     FrReportFileStructureRead,
     FrReportMergeRead,
+    FrReportParameterPanelRead,
+    FrReportParameterWidgetRead,
     FrReportSheetRead,
     FrReportSubmitBindingRead,
     FrReportSubmitColumnRead,
@@ -457,6 +459,7 @@ class FrReportFileService:
     def _parse_report_document(self, root: ET.Element) -> FrReportDocumentRead:
         element_paths = self._element_paths(root)
         style_map = self._style_map(root)
+        parameter_panel = self._parse_parameter_panel(root)
         report_nodes = [node for node in root.iter() if self._local_name(node.tag).lower() == "report"]
         table_nodes = [node for node in root.iter() if self._local_name(node.tag).lower() == "table"]
         sheet_sources = report_nodes or table_nodes or [root]
@@ -482,6 +485,7 @@ class FrReportFileService:
         title = self._infer_document_title(root, sheets)
         return FrReportDocumentRead(
             title=title,
+            parameterPanel=parameter_panel,
             sheets=sheets,
             unsupportedNodes=self._unsupported_nodes(root),
             parseCoverage={
@@ -490,8 +494,95 @@ class FrReportFileService:
                 "sheetCount": len(sheets),
                 "cellCount": sum(len(sheet.cells) for sheet in sheets),
                 "mergeCount": sum(len(sheet.merges) for sheet in sheets),
+                "parameterWidgetCount": len(parameter_panel.widgets) if parameter_panel else 0,
             },
         )
+
+    def _parse_parameter_panel(self, root: ET.Element) -> FrReportParameterPanelRead | None:
+        attr_node = self._first_descendant(root, {"reportparameterattr"})
+        if attr_node is None:
+            return None
+        attributes = self._first_child(attr_node, {"attributes"})
+        parameter_ui = self._first_descendant(attr_node, {"parameterui"})
+        design_attr = self._first_descendant(parameter_ui, {"designattr"}) if parameter_ui is not None else None
+        widgets: list[FrReportParameterWidgetRead] = []
+        if parameter_ui is not None:
+            for widget in parameter_ui.iter():
+                if self._local_name(widget.tag).lower() != "widget":
+                    continue
+                inner = self._first_child(widget, {"innerwidget"})
+                bounds = self._first_child(widget, {"boundsattr"})
+                if inner is None:
+                    continue
+                name_node = self._first_descendant(inner, {"widgetname"})
+                name = name_node.attrib.get("name") if name_node is not None else None
+                if not name:
+                    continue
+                widget_class = inner.attrib.get("class") or ""
+                label = self._parameter_widget_label(inner, name)
+                widgets.append(
+                    FrReportParameterWidgetRead(
+                        name=name,
+                        label=label,
+                        widgetType=self._parameter_widget_type(widget_class),
+                        defaultValue=self._parameter_widget_default(inner),
+                        x=self._positive_int(bounds.attrib.get("x")) if bounds is not None else None,
+                        y=self._positive_int(bounds.attrib.get("y")) if bounds is not None else None,
+                        width=self._positive_int(bounds.attrib.get("width")) if bounds is not None else None,
+                        height=self._positive_int(bounds.attrib.get("height")) if bounds is not None else None,
+                    )
+                )
+        return FrReportParameterPanelRead(
+            showWindow=self._xml_bool(attributes.attrib.get("showWindow"), True) if attributes is not None else True,
+            delayPlaying=self._xml_bool(attributes.attrib.get("delayPlaying"), False) if attributes is not None else False,
+            useParamsTemplate=self._xml_bool(attributes.attrib.get("useParamsTemplate"), False) if attributes is not None and "useParamsTemplate" in attributes.attrib else None,
+            width=self._positive_int(design_attr.attrib.get("width")) if design_attr is not None else None,
+            height=self._positive_int(design_attr.attrib.get("height")) if design_attr is not None else None,
+            widgets=widgets,
+        )
+
+    def _parameter_widget_label(self, inner: ET.Element, fallback: str) -> str | None:
+        label_name = self._first_descendant(inner, {"labelname"})
+        if label_name is not None and label_name.attrib.get("name"):
+            return label_name.attrib.get("name")
+        widget_value = self._first_descendant(inner, {"widgetvalue"})
+        if widget_value is not None:
+            text = "".join(widget_value.itertext()).strip()
+            if text:
+                return text[:100]
+        text = "".join(inner.itertext()).strip()
+        return text[:100] if text else fallback
+
+    def _parameter_widget_type(self, widget_class: str) -> str:
+        lowered = widget_class.lower()
+        if "dateeditor" in lowered:
+            return "date"
+        if "combobox" in lowered:
+            return "combo"
+        if "button" in lowered:
+            return "button"
+        if "label" in lowered:
+            return "label"
+        if "number" in lowered:
+            return "number"
+        return "text"
+
+    def _parameter_widget_default(self, inner: ET.Element) -> str | None:
+        widget_value = self._first_descendant(inner, {"widgetvalue"})
+        if widget_value is None:
+            return None
+        text = "".join(widget_value.itertext()).strip()
+        return text[:200] if text else None
+
+    def _xml_bool(self, value: object | None, default: bool) -> bool:
+        if value is None:
+            return default
+        text = str(value).strip().lower()
+        if text in {"true", "1", "yes"}:
+            return True
+        if text in {"false", "0", "no"}:
+            return False
+        return default
 
     def _parse_sheet(
         self,

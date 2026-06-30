@@ -11,8 +11,8 @@ class InsightDataSourceFetchConfig(BaseModel):
     keywords: list[str] = Field(default_factory=list)
     include_keywords: list[str] = Field(default_factory=list)
     exclude_keywords: list[str] = Field(default_factory=list)
-    max_results: int = Field(default=8, ge=1, le=20)
-    crawl_top_n: int = Field(default=8, ge=0, le=20)
+    max_results: int = Field(default=8, ge=1, le=50)
+    crawl_top_n: int = Field(default=8, ge=0, le=50)
     freshness: str | None = Field(default="noLimit", max_length=50)
     schedule_type: str = Field(default="manual", max_length=30)
     cron_expression: str | None = Field(default=None, max_length=100)
@@ -35,6 +35,13 @@ class InsightDataSourceCreate(BaseModel):
     source_name: str = Field(..., min_length=1, max_length=200)
     source_type: str = Field(..., min_length=1, max_length=50)
     base_url: str | None = Field(default=None, max_length=1000)
+    channel_id: int | None = None
+    monitor_config_id: int | None = None
+    monitor_object_type: str | None = Field(default=None, max_length=30)
+    monitor_object_id: int | None = None
+    execution_role: str | None = Field(default=None, max_length=50)
+    generation_mode: str = Field(default="manual", max_length=30)
+    collection_strategy: str = Field(default="standard", max_length=30)
     company_id: int | None = None
     fetch_frequency: str = Field(default="manual", max_length=50)
     fetch_config: InsightDataSourceFetchConfig | dict[str, Any] | None = None
@@ -51,8 +58,8 @@ class InsightDataSourceBatchCreateRequest(BaseModel):
     include_keywords: list[str] = Field(default_factory=list)
     exclude_keywords: list[str] = Field(default_factory=list)
     fetch_frequency: str = Field(default="daily", max_length=50)
-    max_results: int = Field(default=6, ge=1, le=20)
-    crawl_top_n: int = Field(default=0, ge=0, le=20)
+    max_results: int = Field(default=6, ge=1, le=50)
+    crawl_top_n: int = Field(default=0, ge=0, le=50)
     freshness: str | None = Field(default="noLimit", max_length=50)
     enable_llm_filter: bool = True
     filter_prompt: str | None = Field(default=None, max_length=2000)
@@ -91,6 +98,13 @@ class InsightDataSourceUpdate(BaseModel):
     source_name: str | None = Field(default=None, min_length=1, max_length=200)
     source_type: str | None = Field(default=None, min_length=1, max_length=50)
     base_url: str | None = Field(default=None, max_length=1000)
+    channel_id: int | None = None
+    monitor_config_id: int | None = None
+    monitor_object_type: str | None = Field(default=None, max_length=30)
+    monitor_object_id: int | None = None
+    execution_role: str | None = Field(default=None, max_length=50)
+    generation_mode: str | None = Field(default=None, max_length=30)
+    collection_strategy: str | None = Field(default=None, max_length=30)
     company_id: int | None = None
     fetch_frequency: str | None = Field(default=None, max_length=50)
     fetch_config: InsightDataSourceFetchConfig | dict[str, Any] | None = None
@@ -105,6 +119,15 @@ class InsightDataSourceRead(InsightBaseRead):
     source_name: str
     source_type: str
     base_url: str | None = None
+    channel_id: int | None = None
+    channel_name: str | None = None
+    monitor_config_id: int | None = None
+    monitor_config_name: str | None = None
+    monitor_object_type: str | None = None
+    monitor_object_id: int | None = None
+    execution_role: str | None = None
+    generation_mode: str = "manual"
+    collection_strategy: str = "standard"
     company_id: int | None = None
     company_name: str | None = None
     company_short_name: str | None = None
@@ -128,6 +151,12 @@ class InsightDataSourceRead(InsightBaseRead):
 
 class InsightDataSourceGroupRead(BaseModel):
     group_key: str
+    monitor_config_id: int | None = None
+    monitor_config_name: str | None = None
+    monitor_type: str | None = None
+    execution_role: str | None = None
+    channel_id: int | None = None
+    channel_name: str | None = None
     company_id: int | None = None
     company_name: str | None = None
     company_short_name: str | None = None
@@ -151,7 +180,7 @@ class InsightDataSourceGroupRead(BaseModel):
 
 class InsightDataSourceExecuteRequest(BaseModel):
     keyword: str | None = Field(default=None, max_length=500)
-    crawl_top_n: int | None = Field(default=None, ge=0, le=20)
+    crawl_top_n: int | None = Field(default=None, ge=0, le=50)
 
 
 class InsightDataSourceExecuteResponse(BaseModel):
@@ -198,7 +227,7 @@ class InsightDataSourceBulkActionRequest(BaseModel):
     schedule_enabled: bool | None = None
     visibility_scope: str | None = Field(default=None, max_length=30)
     fetch_config_patch: dict[str, Any] | None = None
-    execute_crawl_top_n: int | None = Field(default=None, ge=0, le=20)
+    execute_crawl_top_n: int | None = Field(default=None, ge=0, le=50)
 
 
 class InsightDataSourceBulkActionResponse(BaseModel):
@@ -214,7 +243,7 @@ class InsightRequirementSeedRequest(BaseModel):
     execute: bool = False
     target_intelligence_count: int = Field(default=2000, ge=1, le=10000)
     max_sources_to_execute: int = Field(default=50, ge=1, le=1000)
-    crawl_top_n: int = Field(default=8, ge=0, le=20)
+    crawl_top_n: int = Field(default=8, ge=0, le=50)
 
 
 class InsightRequirementSeedResponse(BaseModel):
@@ -231,13 +260,19 @@ class InsightStaleTaskCleanupResponse(BaseModel):
 
 
 class InsightDataSourceScheduleExecution(BaseModel):
-    data_source_id: int
+    data_source_id: int | None = None
+    monitor_config_id: int | None = None
     source_name: str
     status: str
     message: str | None = None
     next_run_time: datetime | None = None
     found_count: int = 0
     candidate_count: int = 0
+    planned_channel_count: int = 0
+    executed_channel_count: int = 0
+    skipped_channel_count: int = 0
+    paid_channel_call_count: int = 0
+    plan_summary: dict[str, Any] | None = None
 
 
 class InsightDataSourceScheduleRunResponse(BaseModel):

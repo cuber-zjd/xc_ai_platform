@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { useAuthStore } from "@/store/useAuthStore";
 
 import { insightApi, type InsightCompanyCreate, type InsightCompanyImportResponse, type InsightCompanyListItem } from "../api";
 import { AccessRuleDialog } from "../components";
@@ -38,6 +39,7 @@ const monitorLevelOptions = [
 ];
 
 export function CompanyArchivePage() {
+    const isAdmin = useAuthStore((state) => state.user?.role === "admin");
     const [keywordInput, setKeywordInput] = useState("");
     const [keyword, setKeyword] = useState("");
     const [sysCompanyFilter, setSysCompanyFilter] = useState("");
@@ -121,11 +123,11 @@ export function CompanyArchivePage() {
     };
 
     return (
-        <PageContainer>
-            <div className="insight-page-heading">
-                <div>
-                    <h1 className="text-2xl font-black leading-tight tracking-tight text-slate-950 md:text-3xl">企业档案</h1>
-                    <div className="mt-2 text-sm font-semibold text-slate-500">首页看板 / 企业档案</div>
+        <PageContainer className="flex h-full min-h-0 flex-col gap-3 overflow-hidden">
+            <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
+                <div className="min-w-0">
+                    <div className="text-sm font-black text-slate-900">企业档案</div>
+                    <p className="mt-1 text-xs font-semibold text-slate-500">左侧选择企业，右侧查看档案、情报和监测状态。</p>
                 </div>
                 <div className="insight-actions">
                     <input
@@ -156,24 +158,126 @@ export function CompanyArchivePage() {
                         <Upload className="size-4" />
                         Excel 导入
                     </Button>
-                    <Button className="h-10 rounded-xl px-5" onClick={() => setCreateOpen(true)}>
+                    <Button className="h-10 rounded-xl bg-primary px-5 text-primary-foreground" onClick={() => setCreateOpen(true)}>
                         <Plus className="size-4" />
                         新增企业
                     </Button>
                 </div>
             </div>
 
-            {detail ? (
+            <div className="grid min-h-0 min-w-0 flex-1 gap-3 overflow-hidden lg:grid-cols-[260px_minmax(0,1fr)] xl:grid-cols-[320px_minmax(0,1fr)]">
+                <aside className="insight-card flex min-h-0 min-w-0 flex-col overflow-hidden p-0">
+                    <div className="shrink-0 border-b border-slate-100 p-4">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                                <div className="text-base font-black text-slate-950">企业列表</div>
+                                <p className="mt-1 text-xs font-semibold text-slate-500">共 {totalCompanies} 家，点击切换档案</p>
+                            </div>
+                            {selectedCompanyIds.length ? (
+                                <Button type="button" variant="outline" className="h-8 rounded-xl bg-white text-xs" onClick={() => setBulkAccessOpen(true)}>
+                                    批量授权
+                                </Button>
+                            ) : null}
+                        </div>
+                        <label className="mt-3 flex h-10 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-sm">
+                            <Search className="size-4 text-slate-400" />
+                            <input
+                                value={keywordInput}
+                                onChange={(event) => setKeywordInput(event.target.value)}
+                                onKeyDown={(event) => {
+                                    if (event.key === "Enter") {
+                                        setKeyword(keywordInput.trim());
+                                        setCompanyPage(1);
+                                    }
+                                }}
+                                placeholder="搜索企业名称、简称"
+                                className="min-w-0 flex-1 bg-transparent outline-none placeholder:text-slate-400"
+                            />
+                        </label>
+                        <div className="mt-3 grid gap-2">
+                            <InsightSelect
+                                label="所属公司"
+                                value={sysCompanyFilter}
+                                options={[{ value: "", label: "全部所属公司" }, ...systemCompanyOptions]}
+                                onChange={(value) => {
+                                    setSysCompanyFilter(value);
+                                    setCompanyPage(1);
+                                    setSelectedCompanyIds([]);
+                                }}
+                            />
+                            <div className="insight-action-cluster justify-start">
+                                <Button
+                                    type="button"
+                                    className="h-9 rounded-xl bg-primary px-4 text-primary-foreground"
+                                    onClick={() => {
+                                        setKeyword(keywordInput.trim());
+                                        setCompanyPage(1);
+                                    }}
+                                >
+                                    搜索
+                                </Button>
+                                <Button
+                                    type="button"
+                                    variant="ghost"
+                                    className="h-9 rounded-xl px-3 text-slate-600"
+                                    onClick={() => {
+                                        setKeyword("");
+                                        setKeywordInput("");
+                                        setSysCompanyFilter("");
+                                        setSelectedCompanyIds([]);
+                                        setCompanyPage(1);
+                                    }}
+                                >
+                                    重置
+                                </Button>
+                            </div>
+                        </div>
+                    </div>
+                    <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-3">
+                        {companies.map((company) => (
+                            <CompanyListButton
+                                key={company.id}
+                                company={company}
+                                active={company.id === effectiveSelectedCompanyId}
+                                selected={selectedCompanyIds.includes(company.id)}
+                                onClick={() => setSelectedCompanyId(company.id)}
+                                onToggleSelect={() =>
+                                    setSelectedCompanyIds((current) =>
+                                        current.includes(company.id) ? current.filter((id) => id !== company.id) : [...current, company.id],
+                                    )
+                                }
+                            />
+                        ))}
+                        {companiesQuery.isLoading ? <EmptyPanel text="正在加载企业列表..." /> : null}
+                        {!companiesQuery.isLoading && companies.length === 0 ? <EmptyPanel text="暂无企业档案，可新增或通过 Excel 导入。" /> : null}
+                    </div>
+                    <div className="shrink-0 border-t border-slate-100 px-4 py-3">
+                        <div className="flex items-center justify-between gap-3 text-xs font-semibold text-slate-500">
+                            <span>{companyPage} / {totalCompanyPages}</span>
+                            <div className="flex items-center gap-2">
+                                <Button type="button" variant="outline" className="h-8 rounded-xl bg-white text-xs" disabled={companyPage <= 1} onClick={() => setCompanyPage((page) => Math.max(1, page - 1))}>
+                                    上一页
+                                </Button>
+                                <Button type="button" variant="outline" className="h-8 rounded-xl bg-white text-xs" disabled={companyPage >= totalCompanyPages} onClick={() => setCompanyPage((page) => Math.min(totalCompanyPages, page + 1))}>
+                                    下一页
+                                </Button>
+                            </div>
+                        </div>
+                    </div>
+                </aside>
+
+                <section className="min-h-0 min-w-0 overflow-y-auto rounded-2xl border border-slate-200 bg-slate-100/60 p-3 sm:p-4">
+                {detail ? (
                     <div className="space-y-4">
                         <DemoCard className="p-4 sm:p-6">
-                            <div className="flex flex-col justify-between gap-5 lg:flex-row lg:items-start">
+                            <div className="flex flex-col justify-between gap-5 2xl:flex-row 2xl:items-start">
                                 <div className="flex min-w-0 flex-col gap-4 sm:flex-row sm:gap-5">
-                                    <div className="flex size-16 shrink-0 items-center justify-center rounded-xl bg-linear-to-br from-blue-500 to-cyan-500 text-xl font-black text-white sm:size-20 sm:text-2xl">
+                                    <div className="flex size-14 shrink-0 items-center justify-center rounded-xl bg-linear-to-br from-blue-500 to-cyan-500 text-lg font-black text-white sm:size-16 sm:text-xl">
                                         {(detail.short_name || detail.name).slice(0, 2)}
                                     </div>
                                     <div className="min-w-0">
                                         <div className="flex flex-wrap items-center gap-3">
-                                            <h2 className="text-2xl font-black leading-tight text-slate-950 md:text-3xl">{detail.name}</h2>
+                                            <h2 className="text-xl font-black leading-tight text-slate-950 md:text-2xl">{detail.name}</h2>
                                             <DemoTag tone={detail.monitor_level === "key" ? "orange" : "blue"}>{monitorLevelText[detail.monitor_level] ?? detail.monitor_level}</DemoTag>
                                             {detail.industry ? <DemoTag tone="green">{detail.industry}</DemoTag> : null}
                                         </div>
@@ -194,7 +298,7 @@ export function CompanyArchivePage() {
                                         </div>
                                     </div>
                                 </div>
-                                <div className="insight-actions lg:max-w-[420px]">
+                                <div className="insight-actions 2xl:max-w-[420px]">
                                     <Button
                                         type="button"
                                         variant="outline"
@@ -204,12 +308,14 @@ export function CompanyArchivePage() {
                                         <ShieldCheck className="size-4" />
                                         权限
                                     </Button>
-                                    <Link
-                                        to="/insight/data-sources"
-                                        className="inline-flex h-10 items-center justify-center rounded-xl border border-blue-100 bg-blue-50 px-4 text-sm font-black text-blue-700 hover:bg-blue-100"
-                                    >
-                                        配置数据源
-                                    </Link>
+                                    {isAdmin ? (
+                                        <Link
+                                            to="/insight/data-sources"
+                                            className="inline-flex h-10 items-center justify-center rounded-xl border border-blue-100 bg-blue-50 px-4 text-sm font-black text-blue-700 hover:bg-blue-100"
+                                        >
+                                            配置执行源
+                                        </Link>
+                                    ) : null}
                                     <Link
                                         to={`/insight/intelligence?subject_type=company&keyword=${encodeURIComponent(detail.short_name || detail.name)}`}
                                         className="inline-flex h-10 items-center justify-center rounded-xl border border-slate-200 bg-white px-4 text-sm font-black text-slate-700 hover:bg-slate-50"
@@ -220,7 +326,7 @@ export function CompanyArchivePage() {
                             </div>
                         </DemoCard>
 
-                        <div className="insight-metric-strip">
+                        <div className="grid grid-cols-2 gap-3 2xl:grid-cols-4">
                             {(detail.metrics.length ? detail.metrics : emptyMetrics).map((metric, index) => (
                                 <StatCard
                                     key={metric.key}
@@ -303,10 +409,10 @@ export function CompanyArchivePage() {
                                                 <div className="line-clamp-1 text-sm font-black text-slate-800">{source.source_name}</div>
                                                 <div className="mt-1 text-xs font-semibold text-slate-500">{source.source_type} · {source.status}</div>
                                             </div>
-                                            <Link className="text-xs font-black text-blue-600" to="/insight/data-sources">配置</Link>
+                                            {isAdmin ? <Link className="text-xs font-black text-blue-600" to="/insight/data-sources">配置</Link> : null}
                                         </div>
                                     ))}
-                                    {detail.data_sources.length === 0 ? <EmptyPanel text="暂无关联数据源，可到数据源配置页选择该企业。" /> : null}
+                                    {detail.data_sources.length === 0 ? <EmptyPanel text={isAdmin ? "暂无关联执行源，可到系统设置中的执行源配置维护。" : "暂无关联执行源，后续由管理员统一维护。"} /> : null}
                                 </div>
                             </DemoCard>
 
@@ -328,11 +434,13 @@ export function CompanyArchivePage() {
                         </div>
                     </div>
                 ) : (
-                    <DemoCard className="flex items-center justify-center gap-2 p-10 text-center text-sm font-semibold text-slate-500">
+                    <DemoCard className="flex min-h-[24rem] items-center justify-center gap-2 p-10 text-center text-sm font-semibold text-slate-500">
                         {companiesQuery.isLoading || detailQuery.isLoading ? <Loader2 className="size-4 animate-spin" /> : null}
-                        {companiesQuery.isLoading || detailQuery.isLoading ? "正在加载企业档案" : "请点击“选择企业”查看档案。"}
+                        {companiesQuery.isLoading || detailQuery.isLoading ? "正在加载企业档案" : "请选择左侧企业查看档案。"}
                     </DemoCard>
                 )}
+                </section>
+            </div>
 
             <CompanySelectorDialog
                 open={selectorOpen}
@@ -567,7 +675,7 @@ function CompanySelectorDialog({
                                 ))}
                             </select>
                         </label>
-                        <Button type="button" className="h-11 rounded-xl px-5" onClick={onSearch}>
+                        <Button type="button" className="h-11 rounded-xl bg-primary px-5 text-primary-foreground" onClick={onSearch}>
                             搜索
                         </Button>
                         <Button type="button" variant="ghost" className="h-11 rounded-xl text-slate-600" onClick={onReset}>
@@ -735,7 +843,7 @@ function CreateCompanyDialog({
                     </div>
                     <DialogFooter>
                         <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>取消</Button>
-                        <Button type="submit" disabled={pending || !form.name.trim()}>
+                        <Button type="submit" className="bg-primary text-primary-foreground" disabled={pending || !form.name.trim()}>
                             {pending ? <Loader2 className="size-4 animate-spin" /> : null}
                             保存企业
                         </Button>
@@ -837,7 +945,7 @@ function CompanyImportDialog({
                     ) : null}
                 </div>
                 <DialogFooter>
-                    <Button type="button" onClick={() => onOpenChange(false)}>
+                    <Button type="button" className="bg-primary text-primary-foreground" onClick={() => onOpenChange(false)}>
                         关闭
                     </Button>
                 </DialogFooter>

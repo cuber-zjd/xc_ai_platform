@@ -9,6 +9,8 @@ from app.schemas.agent.insight.common import InsightBaseRead
 class InsightTaskCreate(BaseModel):
     task_type: str = Field(..., min_length=1, max_length=50)
     data_source_id: int | None = None
+    monitor_config_id: int | None = None
+    source_channel_id: int | None = None
     input_payload: dict[str, Any] | None = None
 
 
@@ -16,6 +18,8 @@ class InsightTaskRead(InsightBaseRead):
     task_uid: str
     task_type: str
     data_source_id: int | None = None
+    monitor_config_id: int | None = None
+    source_channel_id: int | None = None
     intelligence_id: int | None = None
     report_id: int | None = None
     status: str

@@ -7,7 +7,7 @@ from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.config import settings
-from app.models.agent.insight import InsightCompany, InsightDataSource, InsightTask, InsightTaskStatus
+from app.models.agent.insight import InsightChannel, InsightCompany, InsightDataSource, InsightMonitorConfig, InsightTask, InsightTaskStatus
 from app.schemas.agent.insight.crawl import InsightManualUrlCrawlRequest, InsightSearchDiscoveryRequest
 from app.schemas.agent.insight.data_source import (
     InsightDataSourceBatchCreateItem,
@@ -26,11 +26,10 @@ from app.schemas.agent.insight.data_source import (
     InsightDataSourceUpdate,
     InsightStaleTaskCleanupResponse,
 )
-from app.schemas.agent.insight.intelligence import InsightCandidatePromoteRequest, InsightPoolUpsertRequest
+from app.schemas.agent.insight.monitor_config import InsightLegacySourceSyncResponse
 from app.schemas.agent.insight.task import InsightTaskRead
 from app.schemas.page import Page
 from app.services.agent.insight.crawler import insight_crawl_service, insight_search_discovery_service
-from app.services.agent.insight.intelligence_service import insight_intelligence_service
 from app.services.agent.insight.permission_service import insight_permission_service
 
 
@@ -38,6 +37,7 @@ class InsightDataSourceService:
     allowed_source_types = {
         "baidu_news",
         "baidu_search",
+        "bocha_search",
         "bocha_news",
         "bocha_web",
         "multi_news",
@@ -55,6 +55,8 @@ class InsightDataSourceService:
     allowed_statuses = {"enabled", "disabled"}
     allowed_visibility_scopes = {"private", "assigned", "dept", "role", "public"}
     allowed_auto_review_modes = {"off", "high_confidence", "all"}
+    allowed_generation_modes = {"manual", "system_generated", "user_created", "legacy_migrated", "imported"}
+    allowed_collection_strategies = {"light", "standard", "deep", "structured"}
 
     async def run_due_data_sources(
         self,
@@ -281,6 +283,9 @@ class InsightDataSourceService:
         keyword: str | None,
         source_type: str | None,
         status: str | None,
+        monitor_config_id: int | None = None,
+        execution_role: str | None = None,
+        channel_id: int | None = None,
         user_id: int,
         is_admin: bool,
     ) -> Page[InsightDataSourceRead]:
@@ -300,6 +305,12 @@ class InsightDataSourceService:
             filters.append(InsightDataSource.source_type == source_type)
         if status:
             filters.append(InsightDataSource.status == status)
+        if monitor_config_id:
+            filters.append(InsightDataSource.monitor_config_id == monitor_config_id)
+        if execution_role:
+            filters.append(InsightDataSource.execution_role == execution_role)
+        if channel_id:
+            filters.append(InsightDataSource.channel_id == channel_id)
         filters.append(
             await insight_permission_service.visibility_filter_for_user(
                 db,
@@ -421,6 +432,9 @@ class InsightDataSourceService:
         keyword: str | None,
         source_type: str | None,
         status: str | None,
+        monitor_config_id: int | None = None,
+        execution_role: str | None = None,
+        channel_id: int | None = None,
         user_id: int,
         is_admin: bool,
     ) -> list[InsightDataSourceGroupRead]:
@@ -440,6 +454,12 @@ class InsightDataSourceService:
             filters.append(InsightDataSource.source_type == source_type)
         if status:
             filters.append(InsightDataSource.status == status)
+        if monitor_config_id:
+            filters.append(InsightDataSource.monitor_config_id == monitor_config_id)
+        if execution_role:
+            filters.append(InsightDataSource.execution_role == execution_role)
+        if channel_id:
+            filters.append(InsightDataSource.channel_id == channel_id)
         filters.append(
             await insight_permission_service.visibility_filter_for_user(
                 db,
@@ -453,40 +473,58 @@ class InsightDataSourceService:
         rows = list(
             (
                 await db.exec(
-                    select(InsightDataSource, InsightCompany)
+                    select(InsightDataSource, InsightCompany, InsightMonitorConfig, InsightChannel)
                     .join(InsightCompany, InsightCompany.id == InsightDataSource.company_id, isouter=True)
+                    .join(InsightMonitorConfig, InsightMonitorConfig.id == InsightDataSource.monitor_config_id, isouter=True)
+                    .join(InsightChannel, InsightChannel.id == InsightDataSource.channel_id, isouter=True)
                     .where(*filters)
-                    .order_by(InsightCompany.name.asc().nullslast(), InsightDataSource.source_type.asc(), InsightDataSource.update_time.desc())
+                    .order_by(
+                        InsightMonitorConfig.config_name.asc().nullslast(),
+                        InsightCompany.name.asc().nullslast(),
+                        InsightDataSource.source_type.asc(),
+                        InsightDataSource.update_time.desc(),
+                    )
                 )
             ).all()
         )
         groups: dict[tuple[int | None, str], dict] = {}
-        for row, company in rows:
-            key = (row.company_id, row.source_type)
+        for row, company, monitor_config, channel in rows:
+            key = (row.monitor_config_id, row.company_id, row.execution_role or row.source_type, row.channel_id)
             group = groups.setdefault(
                 key,
                 {
                     "company": company,
+                    "monitor_config": monitor_config,
+                    "channel": channel,
                     "source_type": row.source_type,
+                    "execution_role": row.execution_role or row.source_type,
                     "rows": [],
                 },
             )
             group["rows"].append(row)
 
         result: list[InsightDataSourceGroupRead] = []
-        for (company_id, group_source_type), group in groups.items():
+        for (group_monitor_config_id, company_id, group_execution_role, group_channel_id), group in groups.items():
             group_rows: list[InsightDataSource] = group["rows"]
             company = group["company"]
+            monitor_config = group["monitor_config"]
+            channel = group["channel"]
             visibility_scopes = sorted({row.visibility_scope for row in group_rows if row.visibility_scope})
             result.append(
                 InsightDataSourceGroupRead(
-                    group_key=f"{company_id or 'none'}:{group_source_type}",
+                    group_key=f"{group_monitor_config_id or 'legacy'}:{company_id or 'none'}:{group_execution_role}:{group_channel_id or 'none'}",
+                    monitor_config_id=group_monitor_config_id,
+                    monitor_config_name=monitor_config.config_name if monitor_config else None,
+                    monitor_type=monitor_config.monitor_type if monitor_config else None,
+                    execution_role=group_execution_role,
+                    channel_id=group_channel_id,
+                    channel_name=channel.channel_name if channel else None,
                     company_id=company_id,
                     company_name=company.name if company else "未关联企业",
                     company_short_name=company.short_name if company else None,
                     sys_company_id=company.sys_company_id if company else None,
-                    source_type=group_source_type,
-                    source_type_label=self._source_type_label(group_source_type),
+                    source_type=group["source_type"],
+                    source_type_label=self._execution_role_label(group_execution_role),
                     total_count=len(group_rows),
                     enabled_count=sum(1 for row in group_rows if row.status == "enabled"),
                     disabled_count=sum(1 for row in group_rows if row.status == "disabled"),
@@ -543,13 +581,24 @@ class InsightDataSourceService:
             schedule_enabled=payload.schedule_enabled,
             status=payload.status,
             visibility_scope=payload.visibility_scope,
+            generation_mode=payload.generation_mode,
+            collection_strategy=payload.collection_strategy,
         )
         await self._ensure_company_access(db, payload.company_id, user_id=user_id, is_admin=is_admin)
+        await self._ensure_monitor_config_exists(db, payload.monitor_config_id)
+        await self._ensure_channel_exists(db, payload.channel_id)
         row = InsightDataSource(
             source_code=source_code,
             source_name=payload.source_name,
             source_type=payload.source_type,
             base_url=payload.base_url,
+            channel_id=payload.channel_id,
+            monitor_config_id=payload.monitor_config_id,
+            monitor_object_type=payload.monitor_object_type,
+            monitor_object_id=payload.monitor_object_id,
+            execution_role=payload.execution_role or self._execution_role_for_source_type(payload.source_type),
+            generation_mode=payload.generation_mode,
+            collection_strategy=payload.collection_strategy,
             company_id=payload.company_id,
             fetch_frequency=payload.fetch_frequency,
             fetch_config=config,
@@ -667,6 +716,17 @@ class InsightDataSourceService:
                         existing.source_name = source_name
                         existing.source_type = source_type
                         existing.base_url = None
+                        existing.monitor_config_id = existing.monitor_config_id or await self._ensure_company_monitor_config(
+                            db,
+                            company,
+                            user_id=user_id,
+                            generation_mode="system_generated",
+                        )
+                        existing.monitor_object_type = "company"
+                        existing.monitor_object_id = company.id
+                        existing.execution_role = self._execution_role_for_source_type(source_type)
+                        existing.generation_mode = existing.generation_mode or "system_generated"
+                        existing.collection_strategy = existing.collection_strategy or "standard"
                         existing.company_id = company.id
                         existing.fetch_frequency = payload.fetch_frequency
                         existing.fetch_config = config
@@ -699,6 +759,17 @@ class InsightDataSourceService:
                         source_code=source_code,
                         source_name=source_name,
                         source_type=source_type,
+                        monitor_config_id=await self._ensure_company_monitor_config(
+                            db,
+                            company,
+                            user_id=user_id,
+                            generation_mode="system_generated",
+                        ),
+                        monitor_object_type="company",
+                        monitor_object_id=company.id,
+                        execution_role=self._execution_role_for_source_type(source_type),
+                        generation_mode="system_generated",
+                        collection_strategy="standard",
                         company_id=company.id,
                         fetch_frequency=payload.fetch_frequency,
                         fetch_config=config,
@@ -760,6 +831,10 @@ class InsightDataSourceService:
             data["fetch_config"] = self._normalize_fetch_config(data["fetch_config"])
         if "company_id" in data:
             await self._ensure_company_access(db, data.get("company_id"), user_id=user_id, is_admin=is_admin)
+        if "monitor_config_id" in data:
+            await self._ensure_monitor_config_exists(db, data.get("monitor_config_id"))
+        if "channel_id" in data:
+            await self._ensure_channel_exists(db, data.get("channel_id"))
         self._validate_data_source_config(
             source_type=data.get("source_type", row.source_type),
             base_url=data.get("base_url", row.base_url),
@@ -768,6 +843,8 @@ class InsightDataSourceService:
             schedule_enabled=data.get("schedule_enabled", row.schedule_enabled),
             status=data.get("status", row.status),
             visibility_scope=data.get("visibility_scope", row.visibility_scope),
+            generation_mode=data.get("generation_mode", row.generation_mode),
+            collection_strategy=data.get("collection_strategy", row.collection_strategy),
         )
         for field, value in data.items():
             setattr(row, field, value)
@@ -796,6 +873,72 @@ class InsightDataSourceService:
         row.update_by = str(user_id) if user_id else None
         row.update_time = datetime.now()
         await db.commit()
+
+    async def sync_legacy_sources(
+        self,
+        db: AsyncSession,
+        *,
+        user_id: int | None,
+    ) -> InsightLegacySourceSyncResponse:
+        rows = list(
+            (
+                await db.exec(
+                    select(InsightDataSource)
+                    .where(InsightDataSource.is_deleted == 0)
+                    .order_by(InsightDataSource.id.asc())
+                    .limit(5000)
+                )
+            ).all()
+        )
+        response = InsightLegacySourceSyncResponse(checked_count=len(rows))
+        legacy_config_count_before = await self._count_legacy_configs(db)
+        channels = list((await db.exec(select(InsightChannel).where(InsightChannel.is_deleted == 0))).all())
+        config_cache: dict[str, int] = {}
+        channel_cache: dict[int, int | None] = {}
+        for row in rows:
+            changed = False
+            legacy_linked = False
+            if not row.monitor_config_id:
+                config_id = await self._legacy_monitor_config_id(db, row, user_id=user_id, cache=config_cache)
+                if config_id:
+                    row.monitor_config_id = config_id
+                    response.linked_source_count += 1
+                    legacy_linked = True
+                    changed = True
+            if not row.monitor_object_type:
+                row.monitor_object_type = "company" if row.company_id else "topic"
+                changed = True
+            if row.monitor_object_id is None and row.company_id:
+                row.monitor_object_id = row.company_id
+                changed = True
+            if not row.execution_role:
+                row.execution_role = self._execution_role_for_source_type(row.source_type)
+                response.updated_role_count += 1
+                changed = True
+            if not row.collection_strategy:
+                row.collection_strategy = "standard"
+                changed = True
+            if legacy_linked and (not row.generation_mode or row.generation_mode == "manual"):
+                row.generation_mode = "legacy_migrated"
+                changed = True
+            if not row.channel_id:
+                cached = channel_cache.get(row.id or 0)
+                channel_id = cached if (row.id or 0) in channel_cache else self._match_channel_id(row, channels)
+                channel_cache[row.id or 0] = channel_id
+                if channel_id:
+                    row.channel_id = channel_id
+                    response.linked_channel_count += 1
+                    changed = True
+            if changed:
+                row.update_by = str(user_id) if user_id else None
+                row.update_time = datetime.now()
+            else:
+                response.skipped_count += 1
+        if rows:
+            await db.commit()
+        legacy_config_count_after = await self._count_legacy_configs(db)
+        response.created_config_count = max(legacy_config_count_after - legacy_config_count_before, 0)
+        return response
 
     async def execute_data_source(
         self,
@@ -913,87 +1056,48 @@ class InsightDataSourceService:
         *,
         is_admin: bool = False,
     ) -> dict:
-        mode = str(config.get("auto_review_mode") or "off")
-        if mode not in {"high_confidence", "all"}:
-            return {
-                "enabled": False,
-                "mode": mode,
-                "checked_count": len(candidates),
-                "promoted_count": 0,
-                "pooled_count": 0,
-                "skipped_count": len(candidates),
-                "items": [],
-            }
-
-        min_confidence = self._float_config(config.get("auto_review_min_confidence"), 0.75)
-        required_tags = {item.strip() for item in self._string_list(config.get("auto_review_required_tags"))}
-        allowed_types = {item.strip() for item in self._string_list(config.get("auto_review_intelligence_types"))}
-        auto_pool = bool(config.get("auto_add_to_report_pool"))
-        folder_name = str(config.get("auto_report_folder") or "").strip() or None
+        _ = db, row, config, user_id, is_admin
         items: list[dict] = []
-        promoted_count = 0
-        pooled_count = 0
-        skipped_count = 0
-
+        formal_count = 0
+        candidate_count = 0
+        noise_count = 0
+        failed_count = 0
         for candidate in candidates:
             candidate_id = getattr(candidate, "id", None)
+            status = str(getattr(candidate, "review_status", "") or "")
             if not candidate_id:
-                skipped_count += 1
+                failed_count += 1
                 continue
-            decision = self._auto_review_decision(
-                candidate,
-                mode=mode,
-                min_confidence=min_confidence,
-                required_tags=required_tags,
-                allowed_types=allowed_types,
+            if status == "promoted":
+                formal_count += 1
+                action = "formal"
+            elif status == "ignored":
+                noise_count += 1
+                action = "noise"
+            elif status == "pending":
+                candidate_count += 1
+                action = "candidate"
+            else:
+                failed_count += 1
+                action = status or "unknown"
+            items.append(
+                {
+                    "candidate_id": candidate_id,
+                    "action": action,
+                    "status": status,
+                    "confidence": float(getattr(candidate, "confidence", 0) or 0),
+                    "title": str(getattr(candidate, "candidate_title", "") or "")[:120],
+                }
             )
-            if not decision["passed"]:
-                skipped_count += 1
-                items.append({"candidate_id": candidate_id, "action": "skip", "reason": decision["reason"]})
-                continue
-
-            try:
-                response = await insight_intelligence_service.promote_candidate(
-                    db,
-                    candidate_id,
-                    InsightCandidatePromoteRequest(
-                        visibility_scope="assigned",
-                        importance_level="medium",
-                        review_comment=f"数据源策略自动通过：{row.source_name}",
-                    ),
-                    user_id,
-                    is_admin=is_admin,
-                )
-                promoted_count += 1
-                intelligence_id = response.intelligence.id if response.intelligence else None
-                pooled = False
-                if auto_pool and intelligence_id and user_id is not None:
-                    await insight_intelligence_service.upsert_user_pool(
-                        db,
-                        intelligence_id,
-                        InsightPoolUpsertRequest(
-                            pool_type="report_material",
-                            folder_name=folder_name,
-                            note=f"数据源策略自动加入报告素材池：{row.source_name}",
-                        ),
-                        user_id=user_id,
-                    )
-                    pooled = True
-                    pooled_count += 1
-                items.append({"candidate_id": candidate_id, "action": "promote", "intelligence_id": intelligence_id, "pooled": pooled})
-            except Exception as exc:
-                skipped_count += 1
-                items.append({"candidate_id": candidate_id, "action": "error", "reason": str(exc)})
 
         return {
             "enabled": True,
-            "mode": mode,
+            "mode": "ai_auto_review",
             "checked_count": len(candidates),
-            "promoted_count": promoted_count,
-            "pooled_count": pooled_count,
-            "skipped_count": skipped_count,
-            "min_confidence": min_confidence,
-            "auto_add_to_report_pool": auto_pool,
+            "formal_count": formal_count,
+            "candidate_count": candidate_count,
+            "noise_count": noise_count,
+            "failed_count": failed_count,
             "items": items[:50],
         }
 
@@ -1099,19 +1203,156 @@ class InsightDataSourceService:
         if sys_company_id is None or company.sys_company_id != sys_company_id:
             raise ValueError("无权为其他所属公司的企业配置数据源")
 
+    async def _ensure_monitor_config_exists(self, db: AsyncSession, monitor_config_id: int | None) -> None:
+        if monitor_config_id is None:
+            return
+        exists_row = (
+            await db.exec(
+                select(InsightMonitorConfig.id).where(
+                    InsightMonitorConfig.id == monitor_config_id,
+                    InsightMonitorConfig.is_deleted == 0,
+                )
+            )
+        ).first()
+        if not exists_row:
+            raise ValueError("关联监测配置不存在")
+
+    async def _ensure_channel_exists(self, db: AsyncSession, channel_id: int | None) -> None:
+        if channel_id is None:
+            return
+        exists_row = (
+            await db.exec(
+                select(InsightChannel.id).where(
+                    InsightChannel.id == channel_id,
+                    InsightChannel.is_deleted == 0,
+                )
+            )
+        ).first()
+        if not exists_row:
+            raise ValueError("关联渠道不存在")
+
+    async def _ensure_company_monitor_config(
+        self,
+        db: AsyncSession,
+        company: InsightCompany,
+        *,
+        user_id: int | None,
+        generation_mode: str,
+    ) -> int:
+        code = f"company_{company.id}_default"
+        existing = (await db.exec(select(InsightMonitorConfig).where(InsightMonitorConfig.config_code == code))).first()
+        if existing:
+            if existing.is_deleted:
+                existing.is_deleted = 0
+                existing.status = "active"
+            return existing.id or 0
+        relation_type = company.company_type or "其他"
+        row = InsightMonitorConfig(
+            config_code=code,
+            config_name=f"{company.short_name or company.name}企业监测",
+            monitor_type="enterprise",
+            object_type="company",
+            object_id=company.id,
+            object_name=company.name,
+            relation_type=relation_type,
+            enabled_modules=["企业新闻", "官网动态", "经营财经", "专利技术", "电商新品"],
+            keywords=[company.name, company.short_name] if company.short_name else [company.name],
+            excluded_keywords=["招聘", "广告招商"],
+            monitor_strength="standard",
+            fetch_frequency="daily",
+            ai_review_prompt=self._default_company_prompt(relation_type),
+            ai_review_policy="ai_auto",
+            owner_user_id=user_id,
+            visibility_scope="assigned",
+            generation_mode=generation_mode,
+            status="active",
+            create_by=str(user_id) if user_id else None,
+            update_by=str(user_id) if user_id else None,
+        )
+        db.add(row)
+        await db.flush()
+        return row.id or 0
+
+    async def _legacy_monitor_config_id(
+        self,
+        db: AsyncSession,
+        row: InsightDataSource,
+        *,
+        user_id: int | None,
+        cache: dict[str, int],
+    ) -> int | None:
+        if row.company_id:
+            company = await db.get(InsightCompany, row.company_id)
+            if company:
+                cache_key = f"company:{company.id}"
+                if cache_key not in cache:
+                    cache[cache_key] = await self._ensure_company_monitor_config(
+                        db,
+                        company,
+                        user_id=user_id,
+                        generation_mode="legacy_migrated",
+                    )
+                return cache[cache_key]
+        role = self._execution_role_for_source_type(row.source_type)
+        cache_key = f"topic:{role}"
+        if cache_key in cache:
+            return cache[cache_key]
+        code = f"legacy_topic_{role}"[:80]
+        existing = (await db.exec(select(InsightMonitorConfig).where(InsightMonitorConfig.config_code == code))).first()
+        if existing:
+            if existing.is_deleted:
+                existing.is_deleted = 0
+                existing.status = "active"
+            cache[cache_key] = existing.id or 0
+            return cache[cache_key]
+        row_config = InsightMonitorConfig(
+            config_code=code,
+            config_name=f"历史迁移-{self._execution_role_label(role)}",
+            monitor_type=self._monitor_type_for_role(role),
+            object_type="topic",
+            object_name=self._execution_role_label(role),
+            enabled_modules=[self._execution_role_label(role)],
+            keywords=[],
+            excluded_keywords=["招聘", "广告招商"],
+            monitor_strength="standard",
+            fetch_frequency=row.fetch_frequency or "daily",
+            ai_review_prompt=self._default_topic_prompt(role),
+            ai_review_policy="ai_auto",
+            owner_user_id=user_id,
+            visibility_scope=row.visibility_scope or "assigned",
+            generation_mode="legacy_migrated",
+            status="active",
+            create_by=str(user_id) if user_id else None,
+            update_by=str(user_id) if user_id else None,
+        )
+        db.add(row_config)
+        await db.flush()
+        cache[cache_key] = row_config.id or 0
+        return cache[cache_key]
+
+    async def _count_legacy_configs(self, db: AsyncSession) -> int:
+        return (
+            await db.exec(
+                select(func.count())
+                .select_from(InsightMonitorConfig)
+                .where(InsightMonitorConfig.is_deleted == 0, InsightMonitorConfig.generation_mode == "legacy_migrated")
+            )
+        ).one()
+
     def _channels_for_source_type(self, source_type: str) -> list[str]:
         mapping = {
             "baidu_news": ["baidu_news"],
             "baidu_search": ["baidu"],
+            "bocha_search": ["bocha"],
             "bocha_news": ["bocha_news"],
             "bocha_web": ["bocha"],
-            "multi_news": ["baidu_news", "bocha_news"],
-            "wechat_public_account": ["baidu_news", "bocha_news"],
-            "ecommerce_search": ["baidu", "bocha"],
-            "government_policy": ["baidu_news", "bocha"],
-            "finance_news": ["baidu_news", "bocha_news"],
-            "patent_search": ["baidu", "bocha"],
-            "industry_media": ["baidu_news", "bocha_news"],
+            "multi_news": ["baidu_news"],
+            "wechat_public_account": ["baidu_news"],
+            "ecommerce_search": ["baidu_news"],
+            "government_policy": ["baidu_news"],
+            "finance_news": ["baidu_news"],
+            "patent_search": ["baidu_news"],
+            "industry_media": ["baidu_news"],
         }
         return mapping.get(source_type, ["baidu_news"])
 
@@ -1171,6 +1412,7 @@ class InsightDataSourceService:
             "industry_media": [f"{name} 食品饮料 行业 新品 趋势"],
             "baidu_news": [f"{name} 新闻 新品 市场"],
             "baidu_search": [f"{name} 新品 市场 竞品"],
+            "bocha_search": [f"{name} 新闻 新品 市场 竞品"],
             "bocha_news": [f"{name} 新闻 新品 市场"],
             "bocha_web": [f"{name} 新品 市场 竞品"],
         }
@@ -1192,6 +1434,7 @@ class InsightDataSourceService:
         labels = {
             "baidu_news": "百度资讯",
             "baidu_search": "百度搜索",
+            "bocha_search": "博查搜索",
             "bocha_news": "博查资讯",
             "bocha_web": "博查网页",
             "multi_news": "综合动态",
@@ -1205,6 +1448,104 @@ class InsightDataSourceService:
             "web_page": "网页",
         }
         return labels.get(source_type, source_type)
+
+    def _execution_role_for_source_type(self, source_type: str) -> str:
+        mapping = {
+            "official_site": "官网动态",
+            "web_page": "官网动态",
+            "finance_news": "经营财经",
+            "patent_search": "专利技术",
+            "government_policy": "政策监管",
+            "ecommerce_search": "电商新品",
+            "industry_media": "行业资讯",
+            "wechat_public_account": "企业新闻",
+            "multi_news": "企业新闻",
+            "baidu_news": "企业新闻",
+            "baidu_search": "综合舆情",
+            "bocha_search": "综合舆情",
+            "bocha_news": "企业新闻",
+            "bocha_web": "综合舆情",
+        }
+        return mapping.get(source_type, "综合舆情")
+
+    def _execution_role_label(self, role: str) -> str:
+        labels = {
+            "企业新闻": "企业新闻",
+            "官网动态": "官网动态",
+            "经营财经": "经营财经",
+            "专利技术": "专利技术",
+            "技术专利": "技术专利",
+            "电商新品": "电商新品",
+            "行业资讯": "行业资讯",
+            "政策监管": "政策监管",
+            "综合舆情": "综合舆情",
+        }
+        return labels.get(role, self._source_type_label(role))
+
+    def _monitor_type_for_role(self, role: str) -> str:
+        if role in {"企业新闻", "官网动态", "经营财经", "电商新品"}:
+            return "enterprise"
+        if role in {"政策监管"}:
+            return "policy"
+        if role in {"专利技术", "技术专利"}:
+            return "technology"
+        if role in {"行业资讯"}:
+            return "industry"
+        return "public_opinion"
+
+    def _default_topic_prompt(self, role: str) -> str:
+        base = "你是研发营销市场洞察平台的情报评审助手。请判断公开资料是否对我司研发、销售、客户经营、产品机会、竞对动态或战略判断有实际参考价值。"
+        additions = {
+            "行业资讯": "重点保留行业趋势、产品创新、消费变化、渠道变化和原料应用信息。",
+            "政策监管": "重点保留政策法规、监管通报、标准发布、许可公示和产业扶持信息。",
+            "专利技术": "重点保留专利申请、技术路线、配方工艺、研发方向和可借鉴方案。",
+            "技术专利": "重点保留专利申请、技术路线、配方工艺、研发方向和可借鉴方案。",
+            "经营财经": "重点保留经营变化、投融资、产能、财报、价格和供应链信号。",
+            "电商新品": "重点保留新品、卖点、规格、配料、价格带、渠道和用户反馈。",
+            "企业新闻": "重点保留企业新品、合作、扩产、渠道、风险和市场动作。",
+        }
+        return f"{base}{additions.get(role, '过滤重复转载、百科泛信息、广告招商、招聘和无业务价值内容。')}"
+
+    def _default_company_prompt(self, relation_type: str | None) -> str:
+        relation = (relation_type or "").strip()
+        if relation == "竞对":
+            return "当前企业是我司竞对。请重点保留新品发布、技术专利、价格策略、渠道动作、营销活动、产能扩张、客户合作、融资并购、战略方向、风险事件等信息；无关转载、低价值财经快讯、重复内容和泛泛介绍不进入正式情报。"
+        if relation in {"潜在客户", "客户"}:
+            return "当前企业是我司客户或潜在客户。请重点保留新品上市、配方变化、采购需求、产能扩张、渠道布局、经营变化、质量风险、政策影响、合作动态和供应链变化；与业务机会无关的信息不进入正式情报。"
+        if relation == "供应商":
+            return "当前企业是我司供应商或潜在供应商。请重点识别价格波动、产能变化、交付风险、质量风险、环保安全、政策影响、财务经营和替代供应可能性。"
+        return "当前企业是我司关注对象。请保留与研发、营销、销售、客户经营、供应链、政策、专利、产品和战略判断相关的信息；过滤重复、泛泛、广告、招聘和低价值内容。"
+
+    def _match_channel_id(self, row: InsightDataSource, channels: list[InsightChannel]) -> int | None:
+        text = " ".join([row.source_name or "", row.source_code or "", row.base_url or ""]).lower()
+        if not text:
+            return None
+        for channel in channels:
+            if channel.channel_url and row.base_url and self._same_domain(channel.channel_url, row.base_url):
+                return channel.id
+        for channel in channels:
+            name = (channel.channel_name or "").lower()
+            code = (channel.channel_code or "").lower()
+            if name and name in text:
+                return channel.id
+            if code and code in text:
+                return channel.id
+        role = self._execution_role_for_source_type(row.source_type)
+        candidates = [
+            channel
+            for channel in channels
+            if role in (channel.applicable_scenarios or []) and channel.access_status in {"supported", "partial", "pending"}
+        ]
+        return candidates[0].id if candidates and candidates[0].id else None
+
+    def _same_domain(self, left: str, right: str) -> bool:
+        def domain(value: str) -> str:
+            text = value.lower().replace("https://", "").replace("http://", "").split("/", 1)[0]
+            return text[4:] if text.startswith("www.") else text
+
+        left_domain = domain(left)
+        right_domain = domain(right)
+        return bool(left_domain and right_domain and (left_domain == right_domain or left_domain in right_domain or right_domain in left_domain))
 
     def _batch_source_code(self, company_id: int, source_type: str) -> str:
         return f"batch_{company_id}_{source_type}"[:64]
@@ -1312,12 +1653,16 @@ class InsightDataSourceService:
         schedule_enabled: bool | None,
         status: str | None,
         visibility_scope: str | None,
+        generation_mode: str | None = None,
+        collection_strategy: str | None = None,
     ) -> None:
         config = fetch_config or {}
         source_type = (source_type or "").strip()
         frequency = (fetch_frequency or "manual").strip()
         current_status = (status or "enabled").strip()
         visibility = (visibility_scope or "private").strip()
+        mode = (generation_mode or "manual").strip()
+        strategy = (collection_strategy or "standard").strip()
         if source_type not in self.allowed_source_types:
             raise ValueError(f"数据源类型不支持：{source_type or '未填写'}")
         if frequency not in self.allowed_fetch_frequencies:
@@ -1326,6 +1671,10 @@ class InsightDataSourceService:
             raise ValueError(f"数据源状态不支持：{current_status or '未填写'}")
         if visibility not in self.allowed_visibility_scopes:
             raise ValueError(f"可见范围不支持：{visibility or '未填写'}")
+        if mode not in self.allowed_generation_modes:
+            raise ValueError(f"生成方式不支持：{mode or '未填写'}")
+        if strategy not in self.allowed_collection_strategies:
+            raise ValueError(f"采集策略不支持：{strategy or '未填写'}")
 
         enabled = current_status == "enabled"
         if enabled and source_type in self.web_source_types and not (base_url or "").strip():
@@ -1387,9 +1736,17 @@ class InsightDataSourceService:
 
     async def _to_read_with_company(self, db: AsyncSession, row: InsightDataSource) -> InsightDataSourceRead:
         company = await db.get(InsightCompany, row.company_id) if row.company_id else None
-        return self._to_read(row, company)
+        channel = await db.get(InsightChannel, row.channel_id) if row.channel_id else None
+        monitor_config = await db.get(InsightMonitorConfig, row.monitor_config_id) if row.monitor_config_id else None
+        return self._to_read(row, company, channel, monitor_config)
 
-    def _to_read(self, row: InsightDataSource, company: InsightCompany | None = None) -> InsightDataSourceRead:
+    def _to_read(
+        self,
+        row: InsightDataSource,
+        company: InsightCompany | None = None,
+        channel: InsightChannel | None = None,
+        monitor_config: InsightMonitorConfig | None = None,
+    ) -> InsightDataSourceRead:
         return InsightDataSourceRead(
             id=row.id,
             create_time=row.create_time,
@@ -1402,6 +1759,15 @@ class InsightDataSourceService:
             source_name=row.source_name,
             source_type=row.source_type,
             base_url=row.base_url,
+            channel_id=row.channel_id,
+            channel_name=channel.channel_name if channel else None,
+            monitor_config_id=row.monitor_config_id,
+            monitor_config_name=monitor_config.config_name if monitor_config else None,
+            monitor_object_type=row.monitor_object_type,
+            monitor_object_id=row.monitor_object_id,
+            execution_role=row.execution_role,
+            generation_mode=row.generation_mode,
+            collection_strategy=row.collection_strategy,
             company_id=row.company_id,
             company_name=company.name if company else None,
             company_short_name=company.short_name if company else None,

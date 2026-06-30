@@ -20,7 +20,7 @@ class InsightReportSubscription(BaseDBModel, table=True):
     sys_company_id: int | None = Field(default=None, foreign_key="sys_company.id", index=True)
     company_ids_json: list[int] = Field(default_factory=list, sa_type=JSONB)
     data_source_ids_json: list[int] = Field(default_factory=list, sa_type=JSONB)
-    folder_name: str | None = Field(default="P1企业档案测试素材", max_length=100)
+    folder_name: str | None = Field(default=None, max_length=100)
     max_materials: int = Field(default=100)
     generation_prompt: str | None = Field(default=None)
     schedule_frequency: str = Field(default="weekly", index=True, max_length=30)

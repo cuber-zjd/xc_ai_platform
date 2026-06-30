@@ -16,6 +16,8 @@ class InsightTask(BaseDBModel, table=True):
     task_uid: str = Field(index=True, unique=True, max_length=64)
     task_type: str = Field(index=True, max_length=50)
     data_source_id: int | None = Field(default=None, foreign_key="insight_data_source.id", index=True)
+    monitor_config_id: int | None = Field(default=None, foreign_key="insight_monitor_config.id", index=True)
+    source_channel_id: int | None = Field(default=None, foreign_key="insight_channel.id", index=True)
     intelligence_id: int | None = Field(default=None, foreign_key="insight_intelligence.id", index=True)
     report_id: int | None = Field(default=None, index=True)
     status: InsightTaskStatus = Field(default=InsightTaskStatus.PENDING, index=True)

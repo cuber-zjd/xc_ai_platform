@@ -112,7 +112,7 @@ pnpm dev
 - API hooks：`frontend/src/features/fr-ai-report/hooks/useFrAiReport.ts`，统一通过 `frontend/src/api/client.ts` 调用 `/api/v1/fr/ai-reports`。
 - 真实报表目录左侧树需要支持用户级显示范围配置：默认显示全部；用户可在“显示范围”弹窗中勾选文件夹或单个报表，保存后主树只展示已选择范围，偏好通过 `GET/PUT /api/v1/fr/ai-reports/files/visibility-preference` 持久化。
 - 选择真实报表文件后，前端通过 `GET /api/v1/fr/ai-reports/files/structure` 在线读取后端解析结果，并在右侧副驾驶区域展示报表结构摘要、数据集、参数和 SQL 片段；中间画布基于 `document.sheets[0]` 渲染真实行列、单元格、合并区域和基础样式，属性面板展示当前单元格坐标、合并跨度、字段绑定、样式摘要和原始节点路径；前端不直接读取或解析 CPT/XML 原文。
-- 当前交互改为步骤工作台，第一步聚焦“生成 SQL 并预览数据”，第二步聚焦“生成 ReportDSL 并基于 DSL 预览”，使用步骤条展示阶段进度。
+- 当前新建入口不再承载 AI 需求收集流程，只创建空白 CPT 并保存到指定目录；后续 SQL、ReportDSL、样式、填报和版本发布都在选中该报表后通过右侧小驰侧边栏完成。
 - 第一步输入区集中承载报表名称、自然语言需求、人工补充修改意见、相关表名和 Excel 模板上传，允许反复调整后重新生成。
 - 第一步结果区优先展示 SQL 文本、SQL 校验摘要、样例数据表格、需求摘要和 Excel 字段识别结果，不再默认展示 FineReport iframe 预览。
 - 第二步结果区展示 ReportDSL JSON 和 DSL 表格预览；DSL 预览由前端根据 `reportDsl.layout`、`horizontalExpansion` 与 `sqlValidation.sampleRows` 渲染，不依赖 FineReport 预览地址。
@@ -121,7 +121,15 @@ pnpm dev
 - 工作台左右两侧都应按当前步骤收拢内容：第一步只展示 SQL 输入、SQL 结果、数据预览、需求摘要和模板字段；第二步只展示 DSL 修改意见、DSL 预览和 ReportDSL，避免跨步骤内容混在同一区域。
 - DSL 预览需要识别 `layout.designHints.specialRows`。当存在 `latest_change_row` 时，预览只取最新日期的涨跌指标，作为单独一行放在横向市场列下方、价格明细行上方。
 - 第一步接口优先调用 `POST /api/v1/fr/ai-reports/steps/sql/generate`；第二步接口调用 `POST /api/v1/fr/ai-reports/steps/dsl/generate`；第三步接口调用 `POST /api/v1/fr/ai-reports/steps/cpt/generate` 或 AI 草稿 CPT 入口生成 CPT，支持用户指定 `webroot/APP/reportlets/` 目标路径，并通过版本中心查看、冲突处理和回档；完整报表生成接口和后续步骤接口并存。
-- 新建报表弹窗优先走 `POST /api/v1/fr/ai-reports/agent/chat`，以聊天驱动需求收集、追问、表结构读取、SQL/DSL 生成和 CPT 保存；报表名、生成目录、上传资料等可作为隐藏上下文编辑区保留，按钮仅作为快捷指令，不再由前端硬编码固定步骤。
+- 新建报表弹窗只保留报表名称和保存目录，调用 `POST /api/v1/fr/ai-reports/empty/create` 生成空白 CPT 并写入版本库；弹窗内不得上传资料、运行 SQL/DSL 或调用 `agent/chat`。侧边栏小驰才负责基于当前报表进行聊天式生成和修改。
+- 侧边栏小驰主界面保持聊天优先：默认只展示对话流、多行输入框、附件入口和少量动作按钮；上下文、工具、技能、待应用修改项、版本和执行轨迹默认折叠或放入弹窗。
+- 小驰工具和技能信息通过 `GET /api/v1/fr/ai-reports/agent/capabilities` 获取，前端只负责展示、启用系统技能和收集个人开发习惯；不得在前端伪造工具成功、扩大工具权限或绕过后端确认门。
+- 小驰聊天输入使用 `POST /api/v1/fr/ai-reports/agent/chat`，后端通过大模型语义路由判断普通沟通、当前报表修改、开始生成或保存 CPT；前端按钮只表达用户明确点击的快捷动作，普通输入不得在前端用关键词重做一套意图判断或固定流程编排。
+- 小驰待应用修改项确认成功后，前端应清空待应用列表和本轮提示词，只保留已应用快照 ID 用于后续生成 CPT；旧修改项不得继续进入下一轮 `agent/chat` 上下文。只有状态为 `draft` 且操作类型全部为 `xml_patch` 的内容才能展示确认按钮；其他操作类型不得伪装成可确认修改。
+- 前端可应用操作白名单需要与后端 CPT 修改主路径同步，`xml_patch` 是唯一可确认类型；前端不得再用“样式、填报、脚本不支持”这类固定能力边界拦截用户需求，是否可写由后端版本控制、XML 校验和预览验证决定。待应用修改项面向用户只展示自然语言修改范围和风险提示，不展示原始 JSON 或 XML；中风险、高风险修改必须让用户在应用前明确确认。
+- 帆软报表助手主界面不得摆放保存、撤销、公式、边框、填充等尚未接入真实行为的类设计器按钮；主操作区只保留真实可用入口，例如新建报表和 FineReport 预览。小驰生成待应用修改项后，应在输入框上方直接展示确认卡片，包含修改范围、风险和确认按钮，弹窗详情只作为补充查看。
+- 小驰主回答优先展示后端返回的自然语言 `assistantMessage` 或工具产物摘要；前端兜底文案必须简短、贴合状态，避免把所有回答套成固定模板。
+- 聊天事件需要以用户可读的执行轨迹展示，展示“计划/工具/结果/风险”，不展示模型原始思考；执行轨迹默认折叠，避免主界面拥挤。
 - 路由：用户侧路由 `/fr-ai-reports`，在 `frontend/src/router/index.tsx` 中懒加载。
 - 交互形态：左侧聊天输入自然语言需求和上传 Excel，右侧展示 SQL、DSL 预览、ReportDSL、Excel 字段分析和校验提示；分步骤阶段不默认展示 FineReport `previewUrl` iframe。
 - 当前阶段只支持表格类报表页面，不展示图表类能力入口；需求引导要贴近周报、分组表、交叉表这类业务样式。
@@ -154,6 +162,13 @@ pnpm dev
 - 新增 Insight 页面优先复用 `frontend/src/app/insight/components/` 下的页面级组件，例如 `PageTitle`、`SectionCard`、`FilterBar`、`InsightTag`、`ChartCard`。
 - Insight 风格 token、业务语义色和图表规范分别维护在 `theme/tokens.css`、`theme/semantic-colors.ts`、`theme/chart-theme.ts`，不得通过修改 `:root` 或旧系统全局样式实现换肤。
 - Insight 可复用 shadcn/ui 基础组件，但对外视觉必须由 insight 局部 token 和封装组件控制，避免旧系统紫蓝玻璃风格污染新业务域。
+- Insight 登录后业务页不使用常驻顶层 Header，用户信息与退出入口放到侧边栏底部；主内容区从业务内容开始，避免顶部壳层占用可视高度。
+- Insight 页面默认不展示占位型大标题和解释型小标题；如需页面级操作，保留紧凑操作区即可，页面语义通过侧栏选中态、Tab、筛选栏和内容本身表达。
+- Insight 页面默认采用固定工作台结构：页面根容器不进行纵向整页滚动，顶部工具条、Tab、筛选和分页等控制区保持稳定，滚动只出现在列表、表格、详情、预览、日志和可展开内容等组件内部。
+- Insight 响应式断点要按真实办公设备设计：1024px 及以上保持桌面侧栏和主内容双栏，不得把常见笔记本宽度误切成移动单列；1023px 及以下再使用底部移动导航。
+- Insight 配置类和列表类页面必须坚持“主信息优先”：默认展示筛选、列表、关键状态和主要操作；新增、编辑、详情、说明、调试信息等次要内容优先放入弹窗、抽屉、折叠区或独立详情页，不要把大表单常驻在列表上方挤压数据区。
+- Insight 页面应控制卡片层级、margin 和 padding，避免标题卡片、Tab 卡片、内容卡片多层嵌套导致小屏幕可视区域被容器占满；Tab 应优先采用紧凑工具条形态，长说明只在需要时展示。
+- Insight 系统设置只承载渠道库、执行源等管理员基础配置；监测配置放在普通菜单 `/insight/monitoring`，分类及标签维护放在普通菜单 `/insight/tags`，业务用户可维护 AI 评审可选的受控分类和标签。配置列表必须分页展示，新增和编辑使用弹窗，列表区域内部滚动，旧 `/insight/data-sources` 仅作为兼容跳转。
  
 ## 泛微流程AI助手补充
 

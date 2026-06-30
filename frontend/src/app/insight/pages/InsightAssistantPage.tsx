@@ -112,11 +112,7 @@ export function InsightAssistantPage() {
 
     return (
         <PageContainer className="flex min-h-0 flex-col gap-4">
-            <div className="flex flex-wrap items-end justify-between gap-3">
-                <div>
-                    <div className="text-sm font-bold text-blue-700">库内证据问答</div>
-                    <h1 className="mt-1 text-3xl font-black tracking-tight text-slate-950">AI 助手</h1>
-                </div>
+            <div className="flex justify-end">
                 <Link className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-black text-slate-700 hover:bg-slate-50" to="/insight/intelligence">
                     情报中心
                 </Link>

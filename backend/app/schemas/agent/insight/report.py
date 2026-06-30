@@ -14,7 +14,7 @@ class InsightReportGenerateRequest(BaseModel):
     company_ids: list[int] = Field(default_factory=list)
     data_source_ids: list[int] = Field(default_factory=list)
     intelligence_ids: list[int] = Field(default_factory=list)
-    folder_name: str | None = Field(default="P1企业档案测试素材", max_length=100)
+    folder_name: str | None = Field(default=None, max_length=100)
     period_start: datetime | None = None
     period_end: datetime | None = None
     max_materials: int = Field(default=60, ge=5, le=120)
@@ -238,7 +238,7 @@ class InsightReportSubscriptionBase(BaseModel):
     sys_company_id: int | None = None
     company_ids: list[int] = Field(default_factory=list)
     data_source_ids: list[int] = Field(default_factory=list)
-    folder_name: str | None = Field(default="P1企业档案测试素材", max_length=100)
+    folder_name: str | None = Field(default=None, max_length=100)
     max_materials: int = Field(default=100, ge=5, le=120)
     generation_prompt: str | None = Field(default=None, max_length=3000)
     schedule_frequency: str = Field(default="weekly", max_length=30)

@@ -127,13 +127,14 @@ class BochaSearchClient:
             raise ValueError("未配置 INSIGHT_BOCHA_API_KEY，无法调用 Bocha/博查搜索")
 
         endpoint = f"{settings.INSIGHT_BOCHA_BASE_URL.rstrip('/')}/v1/web-search"
+        api_freshness = self._api_freshness(freshness)
         payload: dict[str, Any] = {
             "query": query,
             "count": count,
             "summary": True,
         }
-        if freshness:
-            payload["freshness"] = freshness
+        if api_freshness:
+            payload["freshness"] = api_freshness
 
         headers = {
             "Authorization": f"Bearer {settings.INSIGHT_BOCHA_API_KEY}",
@@ -146,6 +147,15 @@ class BochaSearchClient:
 
         return self._parse_response(data, count)
 
+    def _api_freshness(self, freshness: str | None) -> str | None:
+        value = (freshness or "").strip()
+        if not value:
+            return None
+        lower_value = value.lower()
+        if lower_value in {"halfmonth", "half_month", "15d", "recent15d", "recent_15d"}:
+            return "oneMonth"
+        return value
+
     def _parse_response(self, data: dict[str, Any], count: int) -> list[InsightSearchHit]:
         records = self._extract_records(data)
         hits: list[InsightSearchHit] = []
@@ -157,12 +167,17 @@ class BochaSearchClient:
             seen.add(url)
             title = self._first_text(record.get("name"), record.get("title"), url) or url
             snippet = self._first_text(record.get("summary"), record.get("snippet"), record.get("description"))
+            published_at = (
+                insight_content_cleaner.parse_publish_time(record)
+                or insight_content_cleaner.parse_publish_time({}, snippet)
+            )
             hits.append(
                 InsightSearchHit(
                     channel=InsightCrawlerChannel.BOCHA,
                     title=title,
                     url=url,
                     snippet=snippet,
+                    published_at=published_at,
                     raw=record,
                 )
             )

@@ -10,7 +10,7 @@ from app.core.logger import logger
 from app.db.session import async_session
 from app.models.agent.insight import InsightTask, InsightTaskStatus
 from app.schemas.agent.insight.data_source import InsightDataSourceScheduleRunResponse
-from app.services.agent.insight.data_source_service import insight_data_source_service
+from app.services.agent.insight.monitor_execution_service import insight_monitor_execution_service
 from app.services.agent.insight.report_subscription_service import insight_report_subscription_service
 
 
@@ -142,7 +142,7 @@ class InsightSchedulerService:
             await db.commit()
             await db.refresh(task)
             try:
-                result = await insight_data_source_service.run_due_data_sources(
+                result = await insight_monitor_execution_service.run_due_monitor_configs(
                     db,
                     limit=settings.INSIGHT_SCHEDULER_BATCH_LIMIT,
                     user_id=settings.INSIGHT_SCHEDULER_USER_ID,
@@ -157,14 +157,14 @@ class InsightSchedulerService:
                 task.progress = 100
                 task.finished_at = datetime.now()
                 task.output_payload = {
-                    "data_sources": result.model_dump(mode="json"),
+                    "monitor_configs": result.model_dump(mode="json"),
                     "report_subscriptions": report_result.model_dump(mode="json"),
                 }
-                task.error_message = None if total_failed_count == 0 else f"{result.failed_count} 个数据源执行失败，{report_result.failed_count} 个定时报告执行失败"
+                task.error_message = None if total_failed_count == 0 else f"{result.failed_count} 个监测配置执行失败，{report_result.failed_count} 个定时报告执行失败"
                 self._last_success_at = datetime.now() if total_failed_count == 0 else self._last_success_at
                 self._last_error = task.error_message
                 self._last_result = {
-                    "data_sources": result.model_dump(mode="json"),
+                    "monitor_configs": result.model_dump(mode="json"),
                     "report_subscriptions": report_result.model_dump(mode="json"),
                     "triggered_by": triggered_by,
                     "task_id": task.id,

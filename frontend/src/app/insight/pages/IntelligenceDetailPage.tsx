@@ -70,10 +70,6 @@ export function IntelligenceDetailPage() {
     return (
         <PageContainer>
             <div className="insight-page-heading">
-                <div>
-                    <h1 className="text-2xl font-black leading-tight tracking-tight text-slate-950 md:text-3xl">情报详情</h1>
-                    <div className="mt-2 text-sm font-semibold text-slate-500">首页看板 / 情报中心 / 情报详情</div>
-                </div>
                 <div className="insight-actions lg:max-w-[760px]">
                     <Button variant="outline" className="h-10 rounded-xl" onClick={() => {
                         poolMutation.mutate({ intelligenceId: detail.id, data: { pool_type: "favorite" } }, { onSuccess: () => toast.success("已加入收藏") });

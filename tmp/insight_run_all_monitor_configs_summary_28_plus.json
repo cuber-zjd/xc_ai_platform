@@ -1,0 +1,16 @@
+{
+  "started_at": "2026-06-29T10:59:34.085803",
+  "finished_at": "2026-06-29T11:27:23.426754",
+  "seconds": 1669.34,
+  "totals": {
+    "requested": 117,
+    "success": 117,
+    "failed": 0,
+    "hits": 152,
+    "discovered": 152,
+    "candidates": 152,
+    "history_duplicates": 25
+  },
+  "failures": [],
+  "log_file": "..\\tmp\\insight_run_all_monitor_configs.jsonl"
+}

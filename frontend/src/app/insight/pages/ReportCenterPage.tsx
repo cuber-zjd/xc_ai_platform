@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { CalendarClock, Copy, Download, ExternalLink, FileText, Info, Loader2, Pencil, PlayCircle, Plus, RefreshCw, Save, Search, Send, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Trash2, UploadCloud, X } from "lucide-react";
+import { BookOpen, CalendarClock, CheckCircle2, Copy, Download, ExternalLink, FileText, Info, Loader2, Pencil, PlayCircle, Plus, RefreshCw, Save, Search, Send, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Trash2, UploadCloud, X } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 
@@ -15,6 +15,7 @@ import type {
     InsightReportContent,
     InsightReportExportRead,
     InsightReportFinding,
+    InsightReportGenerateStreamEvent,
     InsightCompanyListItem,
     InsightDataSourceRead,
     InsightReportListItem,
@@ -37,7 +38,6 @@ import {
     useInsightCreateReportTemplate,
     useInsightDeleteReportSubscription,
     useInsightDeleteReportTemplate,
-    useInsightGenerateReport,
     useInsightPublishReportTemplate,
     useInsightReportDetail,
     useInsightReportExports,
@@ -59,33 +59,60 @@ import {
 type ReportDetail = NonNullable<ReturnType<typeof useInsightReportDetail>["data"]>;
 type ReportMaterial = ReportDetail["materials"][number];
 type ReportExportFormat = "html" | "pdf" | "docx";
+type ReportScope = "all" | "company" | "topic";
+
+const REPORT_TYPE_OPTIONS = [
+    { value: "日报", label: "日报" },
+    { value: "周报", label: "周报" },
+    { value: "月报", label: "月报" },
+    { value: "专题报告", label: "专题研究" },
+    { value: "客户经营洞察", label: "客户经营洞察" },
+    { value: "竞对报告", label: "竞对分析" },
+    { value: "机会报告", label: "产品机会" },
+    { value: "研发报告", label: "研发趋势" },
+    { value: "政策简报", label: "政策简报" },
+    { value: "深度研究", label: "深度研究" },
+];
 
 export function ReportCenterPage() {
     const [searchParams, setSearchParams] = useSearchParams();
     const reportIdParam = parseOptionalNumber(searchParams.get("report_id") || "");
     const [keyword, setKeyword] = useState("");
+    const [reportTypeFilter, setReportTypeFilter] = useState("");
+    const [hideTestReports, setHideTestReports] = useState(true);
     const [selectedReportId, setSelectedReportId] = useState<number | null>(reportIdParam ?? null);
     const [templateCode, setTemplateCode] = useState("customer_business_review");
     const [reportType, setReportType] = useState("专题报告");
+    const [reportScope, setReportScope] = useState<ReportScope>("all");
     const [companyId, setCompanyId] = useState("");
+    const [customSubject, setCustomSubject] = useState("");
     const [selectedDataSourceIds, setSelectedDataSourceIds] = useState<number[]>([]);
     const [dataSourcePickerOpen, setDataSourcePickerOpen] = useState(false);
-    const [folderName, setFolderName] = useState("P1企业档案测试素材");
+    const [advancedOpen, setAdvancedOpen] = useState(false);
+    const [folderName, setFolderName] = useState("");
     const [maxMaterials, setMaxMaterials] = useState("100");
-    const [prompt, setPrompt] = useState("生成一份可直接交付的 Word 式客户经营洞察报告，正文完整、结论克制、引用可追溯。");
+    const [prompt, setPrompt] = useState("请重点分析近期值得销售、市场和研发关注的变化，说明机会、风险和后续建议。");
     const [templateDialogOpen, setTemplateDialogOpen] = useState(false);
     const [preferenceDialogOpen, setPreferenceDialogOpen] = useState(false);
+    const [generateDialogOpen, setGenerateDialogOpen] = useState(false);
+    const [generationProgressOpen, setGenerationProgressOpen] = useState(false);
+    const [generationStartedAt, setGenerationStartedAt] = useState<number | null>(null);
+    const [generationEvents, setGenerationEvents] = useState<InsightReportGenerateStreamEvent[]>([]);
+    const [streamGenerating, setStreamGenerating] = useState(false);
+    const generationAbortRef = useRef<AbortController | null>(null);
+    const [scheduleManagerOpen, setScheduleManagerOpen] = useState(false);
     const [subscriptionDialogOpen, setSubscriptionDialogOpen] = useState(false);
     const [reportAccessTarget, setReportAccessTarget] = useState<InsightReportListItem | ReportDetail | null>(null);
     const [reportPushTarget, setReportPushTarget] = useState<InsightReportListItem | ReportDetail | null>(null);
 
-    const reportsQuery = useInsightReports({ page: 1, size: 30, keyword: keyword || undefined });
+    const reportsQuery = useInsightReports({ page: 1, size: 100, keyword: keyword || undefined, report_type: reportTypeFilter || undefined });
     const templatesQuery = useInsightReportTemplates();
     const preferenceQuery = useInsightReportPreference();
     const templates = useMemo(() => templatesQuery.data ?? [], [templatesQuery.data]);
-    const reports = useMemo(() => reportsQuery.data?.items ?? [], [reportsQuery.data?.items]);
+    const rawReports = useMemo(() => reportsQuery.data?.items ?? [], [reportsQuery.data?.items]);
+    const reports = useMemo(() => rawReports.filter((report) => !hideTestReports || !isTestReport(report)), [hideTestReports, rawReports]);
     const selectedReport = reports.find((report) => report.id === selectedReportId) ?? reports[0] ?? null;
-    const activeReportId = selectedReportId ?? selectedReport?.id ?? null;
+    const activeReportId = selectedReport?.id ?? null;
     const reportDetailQuery = useInsightReportDetail(activeReportId);
     const reportDetail = reportDetailQuery.data ?? selectedReport;
     const reportExportsQuery = useInsightReportExports(reportDetail?.id ?? null);
@@ -93,7 +120,6 @@ export function ReportCenterPage() {
     const systemCompaniesQuery = useInsightSystemCompanies();
     const dataSourcesQuery = useInsightDataSources({ page: 1, size: 500, status: "enabled" });
     const subscriptionsQuery = useInsightReportSubscriptions({ page: 1, size: 20 });
-    const generateMutation = useInsightGenerateReport();
     const updateMutation = useInsightUpdateReport();
     const exportMutation = useInsightExportReport();
     const createSubscriptionMutation = useInsightCreateReportSubscription();
@@ -115,13 +141,13 @@ export function ReportCenterPage() {
 
     useEffect(() => {
         if (reportIdParam && reportIdParam !== selectedReportId) {
-            setSelectedReportId(reportIdParam);
+            queueMicrotask(() => setSelectedReportId(reportIdParam));
         }
     }, [reportIdParam, selectedReportId]);
 
     useEffect(() => {
         if (!selectedReportId && reports[0]?.id) {
-            setSelectedReportId(reports[0].id);
+            queueMicrotask(() => setSelectedReportId(reports[0].id));
         }
     }, [reports, selectedReportId]);
 
@@ -143,13 +169,15 @@ export function ReportCenterPage() {
         [companiesQuery.data?.items],
     );
     const dataSources = useMemo(() => dataSourcesQuery.data?.items ?? [], [dataSourcesQuery.data?.items]);
+    const reportTypeOptions = useMemo(() => buildReportTypeOptions(templates, rawReports), [rawReports, templates]);
+    const selectedTemplate = useMemo(() => templates.find((item) => item.template_code === templateCode) ?? templates[0] ?? null, [templateCode, templates]);
 
     const handleTemplateChange = (value: string) => {
         setTemplateCode(value);
         const template = templates.find((item) => item.template_code === value);
         if (template) {
             setReportType(template.report_type);
-            setPrompt(template.default_prompt);
+            setPrompt(readablePromptForTemplate(template));
         }
     };
 
@@ -166,39 +194,75 @@ export function ReportCenterPage() {
         }
     };
 
-    const handleGenerate = () => {
-        generateMutation.mutate(
-            {
-                report_type: reportType,
-                template_code: templateCode,
-                company_ids: companyId ? [Number(companyId)] : [],
-                data_source_ids: selectedDataSourceIds,
-                folder_name: folderName || null,
-                max_materials: Number(maxMaterials) || 100,
-                generation_prompt: prompt,
-            },
-            {
-                onSuccess: (response) => {
-                    setSelectedReportId(response.report.id);
-                    toast.success(`报告已生成，引用 ${response.used_material_count} 条素材，${reportGenerationModeLabel(response.generation_mode)}`);
+    const handleGenerate = async () => {
+        if (streamGenerating) return;
+        setGenerationProgressOpen(true);
+        setGenerationStartedAt(Date.now());
+        setGenerationEvents([]);
+        setStreamGenerating(true);
+        const abortController = new AbortController();
+        generationAbortRef.current = abortController;
+        const generationPrompt = buildReportPrompt({
+            prompt,
+            scope: reportScope,
+            customSubject,
+            companyName: companyOptions.find((item) => item.value === companyId)?.label,
+            template: selectedTemplate,
+        });
+        try {
+            await insightApi.generateReportStream(
+                {
+                    report_type: reportType,
+                    template_code: templateCode,
+                    title: buildReportTitle(reportType, reportScope, customSubject, companyOptions.find((item) => item.value === companyId)?.label),
+                    company_ids: reportScope === "company" && companyId ? [Number(companyId)] : [],
+                    data_source_ids: selectedDataSourceIds,
+                    folder_name: folderName || null,
+                    max_materials: Number(maxMaterials) || 100,
+                    generation_prompt: generationPrompt,
                 },
-                onError: () => toast.error("报告生成失败，请确认报告素材池有可用情报"),
-            },
-        );
+                (event) => {
+                    setGenerationEvents((current) => [...current, event]);
+                    if (event.event === "done" && event.data?.report?.id) {
+                        setSelectedReportId(event.data.report.id);
+                        setGenerateDialogOpen(false);
+                        setGenerationProgressOpen(false);
+                        void reportsQuery.refetch();
+                        toast.success(`报告已生成，使用 ${event.data.used_material_count} 条参考素材，${reportGenerationModeLabel(event.data.generation_mode)}`);
+                    }
+                    if (event.event === "error") {
+                        toast.error(event.detail || "报告生成失败，请扩大研究范围或补充可用素材");
+                    }
+                },
+                abortController.signal,
+            );
+        } catch (error) {
+            if (!abortController.signal.aborted) {
+                toast.error(error instanceof Error ? error.message : "报告生成失败，请稍后重试");
+            }
+        } finally {
+            if (generationAbortRef.current === abortController) {
+                generationAbortRef.current = null;
+            }
+            setStreamGenerating(false);
+        }
     };
 
     return (
-        <PageContainer className="flex flex-col gap-4">
-            <div className="insight-page-heading">
-                <div>
-                    <p className="text-sm font-bold text-primary">REPORT CENTER</p>
-                    <h1 className="mt-1 text-2xl font-black leading-tight tracking-tight text-slate-950 md:text-3xl">报告中心</h1>
-                    <p className="mt-2 text-sm leading-6 text-slate-500">按模板生成、阅读和编辑市场洞察研究报告。</p>
-                </div>
+        <PageContainer className="flex h-full min-h-0 flex-col gap-3 overflow-hidden">
+            <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
                 <div className="insight-actions">
+                    <Button type="button" className="h-10 rounded-xl bg-primary px-5 text-primary-foreground" onClick={() => setGenerateDialogOpen(true)}>
+                        <Sparkles className="size-4" />
+                        新建报告
+                    </Button>
                     <Button type="button" variant="outline" className="h-10 rounded-xl border-slate-200 bg-white" onClick={() => setSubscriptionDialogOpen(true)}>
                         <CalendarClock className="size-4" />
-                        定时报告
+                        新建计划
+                    </Button>
+                    <Button type="button" variant="outline" className="h-10 rounded-xl border-slate-200 bg-white" onClick={() => setScheduleManagerOpen(true)}>
+                        <CalendarClock className="size-4" />
+                        定时计划
                     </Button>
                     <Button type="button" variant="outline" className="h-10 rounded-xl border-slate-200 bg-white" onClick={() => void reportsQuery.refetch()}>
                         <RefreshCw className="size-4" />
@@ -207,188 +271,166 @@ export function ReportCenterPage() {
                 </div>
             </div>
 
-            <SectionCard className="p-3 md:hidden">
-                <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
-                        <div className="text-sm font-black text-slate-900">快速生成</div>
-                        <p className="mt-1 line-clamp-2 text-xs font-semibold leading-5 text-slate-500">
-                            {templates.find((item) => item.template_code === templateCode)?.template_name || "客户经营洞察报告"} · {companyOptions.find((item) => item.value === companyId)?.label || "全部企业"}
-                        </p>
-                    </div>
-                    <Button type="button" className="h-10 shrink-0 rounded-xl px-4" onClick={handleGenerate} disabled={generateMutation.isPending}>
-                        {generateMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
-                        生成报告
-                    </Button>
-                </div>
-                <details className="mt-3 rounded-xl border border-slate-100 bg-slate-50/80 px-3 py-2">
-                    <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-black text-slate-700">
-                        <span className="inline-flex items-center gap-2">
-                            <SlidersHorizontal className="size-4 text-slate-500" />
-                            调整生成设置
-                        </span>
-                        <span className="text-xs font-bold text-slate-400">已选 {selectedDataSourceIds.length} 个数据源</span>
-                    </summary>
-                    <div className="mt-3 grid gap-3">
-                        <InsightSelect label="报告模板" value={templateCode} options={templateOptions} onChange={handleTemplateChange} />
-                        <InsightSelect label="报告对象" value={companyId} options={companyOptions} onChange={setCompanyId} />
-                        <label className="space-y-2 text-sm font-bold text-slate-700">
-                            素材池
-                            <input
-                                value={folderName}
-                                onChange={(event) => setFolderName(event.target.value)}
-                                className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none transition focus:border-primary"
-                            />
-                        </label>
-                        <label className="space-y-2 text-sm font-bold text-slate-700">
-                            生成要求
-                            <textarea
-                                value={prompt}
-                                onChange={(event) => setPrompt(event.target.value)}
-                                rows={3}
-                                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm outline-none transition focus:border-primary"
-                            />
-                        </label>
-                        <div className="rounded-xl border border-slate-100 bg-white p-3">
-                            <div className="flex items-center justify-between gap-2">
-                                <div className="text-sm font-black text-slate-800">按数据源选材</div>
-                                {selectedDataSourceIds.length ? (
-                                    <Button type="button" variant="ghost" className="h-8 rounded-xl text-xs" onClick={() => setSelectedDataSourceIds([])}>
-                                        清空
-                                    </Button>
-                                ) : null}
+            <Dialog open={generateDialogOpen} onOpenChange={setGenerateDialogOpen}>
+                <DialogContent className="max-h-[88dvh] overflow-y-auto sm:max-w-[920px]">
+                    <DialogHeader>
+                        <DialogTitle>新建报告</DialogTitle>
+                        <DialogDescription>告诉小驰你想研究什么，选择报告样式和范围，系统会整理素材并生成正式报告。</DialogDescription>
+                    </DialogHeader>
+                    <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
+                        <div className="space-y-4">
+                            <div className="grid gap-4 md:grid-cols-2">
+                                <InsightSelect label="报告类型" value={reportType} options={REPORT_TYPE_OPTIONS} onChange={setReportType} />
+                                <InsightSelect label="报告模板" value={templateCode} options={templateOptions} onChange={handleTemplateChange} />
                             </div>
-                            <div className="mt-3 flex max-h-36 flex-wrap gap-2 overflow-y-auto">
-                                {dataSources.map((source) => {
-                                    const checked = selectedDataSourceIds.includes(source.id);
-                                    return (
+                            <div className="rounded-2xl border border-slate-100 bg-slate-50/80 p-3">
+                                <div className="text-sm font-black text-slate-800">研究范围</div>
+                                <div className="mt-3 grid gap-2 md:grid-cols-3">
+                                    {[
+                                        { value: "all", label: "全部素材", help: "适合行业趋势、日报周报" },
+                                        { value: "company", label: "指定企业", help: "适合客户或竞对分析" },
+                                        { value: "topic", label: "自定义主题", help: "适合产品、政策、技术专题" },
+                                    ].map((item) => (
                                         <button
-                                            key={source.id}
+                                            key={item.value}
                                             type="button"
-                                            onClick={() => setSelectedDataSourceIds(toggleNumber(selectedDataSourceIds, source.id))}
+                                            onClick={() => setReportScope(item.value as ReportScope)}
                                             className={cn(
-                                                "rounded-full border px-3 py-1.5 text-xs font-bold transition",
-                                                checked ? "border-primary/40 bg-primary text-primary-foreground" : "border-slate-200 bg-white text-slate-600 hover:border-primary/30 hover:text-primary",
+                                                "rounded-xl border p-3 text-left transition",
+                                                reportScope === item.value ? "border-primary/40 bg-blue-50 text-slate-950 shadow-sm" : "border-slate-200 bg-white text-slate-600 hover:border-primary/30",
                                             )}
                                         >
-                                            {source.source_name}
+                                            <span className="block text-sm font-black">{item.label}</span>
+                                            <span className="mt-1 block text-xs font-semibold leading-5 text-slate-500">{item.help}</span>
                                         </button>
-                                    );
-                                })}
-                                {!dataSourcesQuery.isLoading && dataSources.length === 0 ? <span className="text-xs text-slate-500">暂无可选数据源。</span> : null}
-                                {dataSourcesQuery.isLoading ? <span className="text-xs text-slate-500">正在读取数据源...</span> : null}
+                                    ))}
+                                </div>
+                                {reportScope === "company" ? <InsightSelect className="mt-3" label="选择企业" value={companyId} options={companyOptions} onChange={setCompanyId} /> : null}
+                                {reportScope === "topic" ? (
+                                    <label className="mt-3 grid gap-2 text-sm font-bold text-slate-700">
+                                        主题名称
+                                        <input
+                                            value={customSubject}
+                                            onChange={(event) => setCustomSubject(event.target.value)}
+                                            placeholder="例如：大豆蛋白新品机会、玉米深加工政策变化"
+                                            className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none transition focus:border-primary"
+                                        />
+                                    </label>
+                                ) : null}
+                            </div>
+                            <label className="grid gap-2 text-sm font-bold text-slate-700">
+                                你希望这份报告重点回答什么？
+                                <textarea
+                                    value={prompt}
+                                    onChange={(event) => setPrompt(event.target.value)}
+                                    rows={6}
+                                    placeholder="例如：最近半个月食品饮料客户有哪些新品机会？哪些竞对动作需要销售关注？"
+                                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm leading-6 outline-none transition focus:border-primary"
+                                />
+                            </label>
+                            <div className="rounded-2xl border border-slate-100 bg-white">
+                                <button
+                                    type="button"
+                                    onClick={() => setAdvancedOpen((open) => !open)}
+                                    className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left text-sm font-black text-slate-800"
+                                >
+                                    <span className="inline-flex items-center gap-2">
+                                        <SlidersHorizontal className="size-4 text-slate-500" />
+                                        高级设置
+                                    </span>
+                                    <span className="text-xs font-bold text-slate-400">{advancedOpen ? "收起" : "展开"}</span>
+                                </button>
+                                {advancedOpen ? (
+                                    <div className="grid gap-4 border-t border-slate-100 p-4 md:grid-cols-2">
+                                        <label className="grid gap-2 text-sm font-bold text-slate-700">
+                                            参考素材数量
+                                            <input
+                                                value={maxMaterials}
+                                                onChange={(event) => setMaxMaterials(event.target.value)}
+                                                className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none transition focus:border-primary"
+                                            />
+                                        </label>
+                                        <label className="grid gap-2 text-sm font-bold text-slate-700">
+                                            素材文件夹
+                                            <input
+                                                value={folderName}
+                                                onChange={(event) => setFolderName(event.target.value)}
+                                                placeholder="不填则使用全部可用素材"
+                                                className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none transition focus:border-primary"
+                                            />
+                                        </label>
+                                        <div className="md:col-span-2">
+                                            <div className="flex items-center justify-between gap-3">
+                                                <div className="text-sm font-bold text-slate-700">限定素材来源</div>
+                                                <Button type="button" variant="outline" className="h-8 rounded-xl border-slate-200 bg-white text-xs" onClick={() => setDataSourcePickerOpen((open) => !open)}>
+                                                    {dataSourcePickerOpen ? "收起" : "选择来源"}
+                                                </Button>
+                                            </div>
+                                            {dataSourcePickerOpen ? (
+                                                <div className="mt-3 flex max-h-28 flex-wrap gap-2 overflow-y-auto">
+                                                    {dataSources.map((source) => {
+                                                        const checked = selectedDataSourceIds.includes(source.id);
+                                                        return (
+                                                            <button
+                                                                key={source.id}
+                                                                type="button"
+                                                                onClick={() => setSelectedDataSourceIds(toggleNumber(selectedDataSourceIds, source.id))}
+                                                                className={cn(
+                                                                    "rounded-full border px-3 py-1.5 text-xs font-bold transition",
+                                                                    checked ? "border-primary/40 bg-primary text-primary-foreground" : "border-slate-200 bg-white text-slate-600 hover:border-primary/30 hover:text-primary",
+                                                                )}
+                                                            >
+                                                                {source.source_name}
+                                                            </button>
+                                                        );
+                                                    })}
+                                                    {!dataSourcesQuery.isLoading && dataSources.length === 0 ? <span className="text-xs text-slate-500">暂无可选来源。</span> : null}
+                                                    {dataSourcesQuery.isLoading ? <span className="text-xs text-slate-500">正在读取来源...</span> : null}
+                                                </div>
+                                            ) : null}
+                                        </div>
+                                    </div>
+                                ) : null}
                             </div>
                         </div>
+                        <TemplatePreviewPanel template={selectedTemplate} reportType={reportType} />
                     </div>
-                </details>
-            </SectionCard>
-
-            <SectionCard className="hidden p-4 md:block">
-                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(180px,1fr)_140px_160px_170px_110px] 2xl:grid-cols-[180px_140px_160px_170px_110px_minmax(320px,1fr)] 2xl:items-end">
-                    <InsightSelect label="报告模板" value={templateCode} options={templateOptions} onChange={handleTemplateChange} />
-                    <label className="space-y-2 text-sm font-bold text-slate-700">
-                        报告类型
-                        <input
-                            value={reportType}
-                            onChange={(event) => setReportType(event.target.value)}
-                            className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none transition focus:border-primary"
-                        />
-                    </label>
-                    <InsightSelect label="报告对象" value={companyId} options={companyOptions} onChange={setCompanyId} />
-                    <label className="space-y-2 text-sm font-bold text-slate-700">
-                        素材池
-                        <input
-                            value={folderName}
-                            onChange={(event) => setFolderName(event.target.value)}
-                            className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none transition focus:border-primary"
-                        />
-                    </label>
-                    <label className="space-y-2 text-sm font-bold text-slate-700">
-                        素材上限
-                        <input
-                            value={maxMaterials}
-                            onChange={(event) => setMaxMaterials(event.target.value)}
-                            className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none transition focus:border-primary"
-                        />
-                    </label>
-                    <label className="space-y-2 text-sm font-bold text-slate-700 md:col-span-2 xl:col-span-5 2xl:col-span-1">
-                        生成要求
-                        <input
-                            value={prompt}
-                            onChange={(event) => setPrompt(event.target.value)}
-                            className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none transition focus:border-primary"
-                        />
-                    </label>
-                </div>
-                <div className="mt-4 flex flex-col gap-3 border-t border-slate-100 pt-4 lg:flex-row lg:items-center lg:justify-between">
-                    <p className="text-xs leading-5 text-slate-500">
-                        生成前可先限定企业、素材池与数据源，避免报告引用范围过宽。
-                    </p>
-                    <div className="insight-actions">
-                        <Button type="button" variant="outline" className="h-10 rounded-xl border-slate-200 bg-white" onClick={() => setTemplateDialogOpen(true)}>
-                            <Settings2 className="size-4" />
-                            自定义模板
-                        </Button>
-                        <Button type="button" variant="outline" className="h-10 rounded-xl border-slate-200 bg-white" onClick={() => setPreferenceDialogOpen(true)}>
-                            <SlidersHorizontal className="size-4" />
-                            生成偏好
-                        </Button>
-                        <Button type="button" variant="outline" className="h-10 rounded-xl border-slate-200 bg-white" onClick={() => setSubscriptionDialogOpen(true)}>
-                            <CalendarClock className="size-4" />
-                            定时生成
-                        </Button>
-                        <Button type="button" className="h-10 rounded-xl bg-primary px-5 text-primary-foreground" onClick={handleGenerate} disabled={generateMutation.isPending}>
-                            {generateMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
-                            生成报告
-                        </Button>
-                    </div>
-                </div>
-                <p className="mt-3 text-xs leading-5 text-slate-500">
-                    当前模板：{templates.find((item) => item.template_code === templateCode)?.description || "用于正式市场洞察报告。"}
-                </p>
-                <div className="mt-4 rounded-2xl border border-slate-100 bg-slate-50/80 p-3">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div>
-                            <div className="text-sm font-black text-slate-800">按数据源选材</div>
-                            <p className="mt-1 text-xs leading-5 text-slate-500">
-                                可指定一个或多个已启用数据源，报告只引用这些数据源采集并入库的正式情报。当前已选 {selectedDataSourceIds.length} 个。
-                            </p>
-                        </div>
-                        <div className="flex flex-wrap items-center gap-2">
-                            {selectedDataSourceIds.length ? (
-                                <Button type="button" variant="ghost" className="h-8 rounded-xl text-xs" onClick={() => setSelectedDataSourceIds([])}>
-                                    清空数据源
-                                </Button>
-                            ) : null}
-                            <Button type="button" variant="outline" className="h-8 rounded-xl border-slate-200 bg-white text-xs" onClick={() => setDataSourcePickerOpen((open) => !open)}>
-                                <SlidersHorizontal className="size-3.5" />
-                                {dataSourcePickerOpen ? "收起选择" : "展开选择"}
+                    <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-4">
+                        <div className="insight-actions">
+                            <Button type="button" variant="outline" className="h-10 rounded-xl border-slate-200 bg-white" onClick={() => setTemplateDialogOpen(true)}>
+                                <Settings2 className="size-4" />
+                                管理模板
+                            </Button>
+                            <Button type="button" variant="outline" className="h-10 rounded-xl border-slate-200 bg-white" onClick={() => setPreferenceDialogOpen(true)}>
+                                <SlidersHorizontal className="size-4" />
+                                生成偏好
                             </Button>
                         </div>
+                        <Button type="button" className="h-10 rounded-xl bg-primary px-5 text-primary-foreground" onClick={() => void handleGenerate()} disabled={streamGenerating}>
+                            {streamGenerating ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
+                            开始研究
+                        </Button>
                     </div>
-                    {dataSourcePickerOpen ? (
-                        <div className="mt-3 flex max-h-28 flex-wrap gap-2 overflow-y-auto">
-                            {dataSources.map((source) => {
-                                const checked = selectedDataSourceIds.includes(source.id);
-                                return (
-                                    <button
-                                        key={source.id}
-                                        type="button"
-                                        onClick={() => setSelectedDataSourceIds(toggleNumber(selectedDataSourceIds, source.id))}
-                                        className={cn(
-                                            "rounded-full border px-3 py-1.5 text-xs font-bold transition",
-                                            checked ? "border-primary/40 bg-primary text-primary-foreground" : "border-slate-200 bg-white text-slate-600 hover:border-primary/30 hover:text-primary",
-                                        )}
-                                    >
-                                        {source.source_name}
-                                    </button>
-                                );
-                            })}
-                            {!dataSourcesQuery.isLoading && dataSources.length === 0 ? <span className="text-xs text-slate-500">暂无可选数据源。</span> : null}
-                            {dataSourcesQuery.isLoading ? <span className="text-xs text-slate-500">正在读取数据源...</span> : null}
-                        </div>
-                    ) : null}
-                </div>
-            </SectionCard>
+                </DialogContent>
+            </Dialog>
+
+            <GenerationProgressDialog
+                open={generationProgressOpen || streamGenerating}
+                startedAt={generationStartedAt}
+                reportType={reportType}
+                scopeLabel={researchScopeDisplay(reportScope, customSubject, companyOptions.find((item) => item.value === companyId)?.label)}
+                materialLimit={Number(maxMaterials) || 100}
+                events={generationEvents}
+                generating={streamGenerating}
+                onCancel={() => {
+                    generationAbortRef.current?.abort();
+                    setStreamGenerating(false);
+                    setGenerationProgressOpen(false);
+                }}
+                onOpenChange={(open) => {
+                    if (!streamGenerating) setGenerationProgressOpen(open);
+                }}
+            />
 
             <TemplateDialog
                 open={templateDialogOpen}
@@ -489,40 +531,49 @@ export function ReportCenterPage() {
                 }
             />
 
-            <ReportSubscriptionPanel
-                subscriptions={subscriptionsQuery.data?.items ?? []}
-                loading={subscriptionsQuery.isLoading}
-                total={subscriptionsQuery.data?.total ?? 0}
-                runningId={runSubscriptionMutation.variables ?? null}
-                saving={createSubscriptionMutation.isPending || updateSubscriptionMutation.isPending || deleteSubscriptionMutation.isPending}
-                onCreate={() => setSubscriptionDialogOpen(true)}
-                onRun={(subscription) =>
-                    runSubscriptionMutation.mutate(subscription.id, {
-                        onSuccess: (response) => {
-                            if (response.report?.id) {
-                                setSelectedReportId(response.report.id);
-                            }
-                            toast.success(response.message || "定时报告已执行");
-                        },
-                        onError: () => toast.error("定时报告执行失败，请检查素材范围和接收人"),
-                    })
-                }
-                onToggle={(subscription) =>
-                    updateSubscriptionMutation.mutate(
-                        { subscriptionId: subscription.id, data: { status: subscription.status === "active" ? "paused" : "active" } },
-                        {
-                            onSuccess: () => toast.success(subscription.status === "active" ? "计划已暂停" : "计划已启用"),
-                            onError: () => toast.error("计划状态更新失败"),
-                        },
-                    )
-                }
-                onDelete={(subscription) =>
-                    deleteSubscriptionMutation.mutate(subscription.id, {
-                        onSuccess: () => toast.success("定时报告计划已删除"),
-                        onError: () => toast.error("计划删除失败"),
-                    })
-                }
-            />
+            <Dialog open={scheduleManagerOpen} onOpenChange={setScheduleManagerOpen}>
+                <DialogContent className="max-h-[86dvh] overflow-y-auto sm:max-w-5xl">
+                    <DialogHeader>
+                        <DialogTitle>定时计划</DialogTitle>
+                        <DialogDescription>定时生成和企微推送放在这里维护，不占用报告正文区域。</DialogDescription>
+                    </DialogHeader>
+                    <ReportSubscriptionPanel
+                        subscriptions={subscriptionsQuery.data?.items ?? []}
+                        loading={subscriptionsQuery.isLoading}
+                        total={subscriptionsQuery.data?.total ?? 0}
+                        runningId={runSubscriptionMutation.variables ?? null}
+                        saving={createSubscriptionMutation.isPending || updateSubscriptionMutation.isPending || deleteSubscriptionMutation.isPending}
+                        onCreate={() => setSubscriptionDialogOpen(true)}
+                        onRun={(subscription) =>
+                            runSubscriptionMutation.mutate(subscription.id, {
+                                onSuccess: (response) => {
+                                    if (response.report?.id) {
+                                        setSelectedReportId(response.report.id);
+                                        setScheduleManagerOpen(false);
+                                    }
+                                    toast.success(response.message || "定时报告已执行");
+                                },
+                                onError: () => toast.error("定时报告执行失败，请检查素材范围和接收人"),
+                            })
+                        }
+                        onToggle={(subscription) =>
+                            updateSubscriptionMutation.mutate(
+                                { subscriptionId: subscription.id, data: { status: subscription.status === "active" ? "paused" : "active" } },
+                                {
+                                    onSuccess: () => toast.success(subscription.status === "active" ? "计划已暂停" : "计划已启用"),
+                                    onError: () => toast.error("计划状态更新失败"),
+                                },
+                            )
+                        }
+                        onDelete={(subscription) =>
+                            deleteSubscriptionMutation.mutate(subscription.id, {
+                                onSuccess: () => toast.success("定时报告计划已删除"),
+                                onError: () => toast.error("计划删除失败"),
+                            })
+                        }
+                    />
+                </DialogContent>
+            </Dialog>
 
             <ReportSubscriptionDialog
                 open={subscriptionDialogOpen}
@@ -548,14 +599,25 @@ export function ReportCenterPage() {
                 }
             />
 
-            <div className="grid min-h-0 min-w-0 gap-4 xl:grid-cols-[310px_minmax(0,1fr)]">
+            <div className="grid min-h-0 min-w-0 flex-1 gap-3 overflow-hidden lg:grid-cols-[260px_minmax(0,1fr)] xl:grid-cols-[300px_minmax(0,1fr)]">
                 <ReportHistoryPanel
                     keyword={keyword}
                     onKeywordChange={setKeyword}
+                    reportType={reportTypeFilter}
+                    reportTypeOptions={reportTypeOptions}
+                    onReportTypeChange={(value) => {
+                        setReportTypeFilter(value);
+                        setSelectedReportId(null);
+                    }}
+                    hideTestReports={hideTestReports}
+                    onHideTestReportsChange={(value) => {
+                        setHideTestReports(value);
+                        setSelectedReportId(null);
+                    }}
                     reports={reports}
                     loading={reportsQuery.isLoading}
                     activeReportId={activeReportId}
-                    total={reportsQuery.data?.total ?? 0}
+                    total={hideTestReports ? reports.length : reportsQuery.data?.total ?? 0}
                     onSelect={handleSelectReport}
                 />
                 <ReportDocument
@@ -655,7 +717,7 @@ function ReportSubscriptionPanel({
                     </div>
                     <p className="mt-1 text-xs font-semibold leading-5 text-slate-500">共 {total} 个计划，到点后按创建者权限自动生成报告并写入企业微信推送记录。</p>
                 </div>
-                <Button type="button" className="h-10 rounded-xl bg-primary text-primary-foreground" onClick={onCreate}>
+                    <Button type="button" className="h-10 rounded-xl bg-blue-600 text-white hover:bg-blue-700" onClick={onCreate}>
                     <Plus className="size-4" />
                     新建计划
                 </Button>
@@ -698,7 +760,7 @@ function ReportSubscriptionPanel({
                                 <div>模板：{subscription.template_code || "默认模板"}</div>
                                 <div>下次：{formatFullDate(subscription.next_run_time)}</div>
                                 <div>接收：{subscription.wecom_recipient_scope === "all" ? "全员" : `${subscription.wecom_recipients.length} 人/对象`}</div>
-                                <div>素材上限：{subscription.max_materials}</div>
+                                <div>素材数量：{subscription.max_materials}</div>
                             </div>
                             {subscription.last_error ? <p className="mt-3 rounded-xl bg-rose-50 px-3 py-2 text-xs font-semibold leading-5 text-rose-700">{subscription.last_error}</p> : null}
                             <div className="mt-3 flex flex-wrap justify-end gap-2">
@@ -765,14 +827,16 @@ function ReportSubscriptionDialog({
 
     useEffect(() => {
         if (open) {
-            setTemplateCode(defaultTemplateCode);
-            setReportType(defaultReportType);
-            setFolder(defaultFolderName);
-            setMaxMaterials(String(defaultMaxMaterials));
-            setPrompt(defaultPrompt);
-            if (!sysCompanyId && systemCompanies[0]?.id) {
-                setSysCompanyId(String(systemCompanies[0].id));
-            }
+            queueMicrotask(() => {
+                setTemplateCode(defaultTemplateCode);
+                setReportType(defaultReportType);
+                setFolder(defaultFolderName);
+                setMaxMaterials(String(defaultMaxMaterials));
+                setPrompt(defaultPrompt);
+                if (!sysCompanyId && systemCompanies[0]?.id) {
+                    setSysCompanyId(String(systemCompanies[0].id));
+                }
+            });
         }
     }, [defaultFolderName, defaultMaxMaterials, defaultPrompt, defaultReportType, defaultTemplateCode, open, sysCompanyId, systemCompanies]);
 
@@ -826,13 +890,13 @@ function ReportSubscriptionDialog({
                     <TemplateField label="计划名称" value={name} onChange={setName} />
                     <InsightSelect label="报告模板" value={templateCode} options={templateOptions} onChange={setTemplateCode} />
                     <TemplateField label="报告类型" value={reportType} onChange={setReportType} />
-                    <TemplateField label="素材上限" value={maxMaterials} onChange={setMaxMaterials} />
+                    <TemplateField label="参考素材数量" value={maxMaterials} onChange={setMaxMaterials} />
                 </div>
                 <div className="mt-4 rounded-2xl border border-slate-100 bg-slate-50/80 p-4">
                     <div className="text-sm font-black text-slate-800">生成范围</div>
                     <div className="mt-3 grid gap-2 md:grid-cols-4">
                         {[
-                            ["material_pool", "素材池"],
+                            ["material_pool", "全部资产库"],
                             ["sys_company", "所属公司"],
                             ["company", "指定企业"],
                             ["data_source", "指定数据源"],
@@ -847,7 +911,7 @@ function ReportSubscriptionDialog({
                             </button>
                         ))}
                     </div>
-                    {scopeType === "material_pool" ? <TemplateField label="素材池名称" value={folder} onChange={setFolder} /> : null}
+                    {scopeType === "material_pool" ? null : null}
                     {scopeType === "sys_company" ? <InsightSelect label="所属公司" value={sysCompanyId} options={sysCompanyOptions} onChange={setSysCompanyId} /> : null}
                     {scopeType === "company" ? (
                         <div className="mt-4 flex max-h-40 flex-wrap gap-2 overflow-y-auto">
@@ -912,6 +976,11 @@ function ReportSubscriptionDialog({
 function ReportHistoryPanel({
     keyword,
     onKeywordChange,
+    reportType,
+    reportTypeOptions,
+    onReportTypeChange,
+    hideTestReports,
+    onHideTestReportsChange,
     reports,
     loading,
     activeReportId,
@@ -920,6 +989,11 @@ function ReportHistoryPanel({
 }: {
     keyword: string;
     onKeywordChange: (value: string) => void;
+    reportType: string;
+    reportTypeOptions: Array<{ value: string; label: string }>;
+    onReportTypeChange: (value: string) => void;
+    hideTestReports: boolean;
+    onHideTestReportsChange: (value: boolean) => void;
     reports: InsightReportListItem[];
     loading: boolean;
     activeReportId: number | null;
@@ -927,7 +1001,7 @@ function ReportHistoryPanel({
     onSelect: (id: number) => void;
 }) {
     return (
-        <aside className="insight-card flex min-h-[18rem] min-w-0 flex-col overflow-hidden p-0 xl:max-h-[calc(100dvh-25rem)]">
+        <aside className="insight-card flex h-full min-h-0 min-w-0 flex-col overflow-hidden p-0">
             <div className="border-b border-slate-100 p-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className="min-w-0">
@@ -945,6 +1019,23 @@ function ReportHistoryPanel({
                         className="min-w-0 flex-1 bg-transparent outline-none placeholder:text-slate-400"
                     />
                 </label>
+                <div className="mt-3 grid gap-2">
+                    <InsightSelect
+                        value={reportType}
+                        options={reportTypeOptions}
+                        onChange={onReportTypeChange}
+                        triggerClassName="h-10"
+                    />
+                    <label className="flex h-9 items-center justify-between gap-3 rounded-xl bg-slate-50 px-3 text-xs font-bold text-slate-600">
+                        隐藏测试/烟测报告
+                        <input
+                            type="checkbox"
+                            checked={hideTestReports}
+                            onChange={(event) => onHideTestReportsChange(event.target.checked)}
+                            className="size-4 accent-primary"
+                        />
+                    </label>
+                </div>
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto p-3">
                 {loading ? <HistorySkeleton /> : null}
@@ -959,6 +1050,145 @@ function ReportHistoryPanel({
             </div>
         </aside>
     );
+}
+
+function TemplatePreviewPanel({ template, reportType }: { template?: InsightReportTemplateRead | null; reportType: string }) {
+    if (!template) {
+        return (
+            <aside className="rounded-2xl border border-slate-100 bg-slate-50/80 p-4 text-sm text-slate-500">
+                暂无可预览模板。
+            </aside>
+        );
+    }
+    return (
+        <aside className="rounded-2xl border border-slate-100 bg-slate-50/80 p-4">
+            <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                    <div className="text-xs font-bold text-primary">模板预览</div>
+                    <h3 className="mt-1 text-base font-black text-slate-950">{template.template_name}</h3>
+                    <p className="mt-2 text-xs font-semibold leading-5 text-slate-500">{normalizeEvidenceText(template.description || `适用于${reportType || "市场洞察"}。`)}</p>
+                </div>
+                <BookOpen className="size-5 shrink-0 text-primary" />
+            </div>
+            <div className="mt-4 space-y-2">
+                {(template.sections ?? []).slice(0, 8).map((section, index) => (
+                    <div key={`${section.section_key}-${index}`} className="rounded-xl border border-slate-100 bg-white p-3">
+                        <div className="text-sm font-black text-slate-800">{normalizeEvidenceText(section.heading || `第 ${index + 1} 部分`)}</div>
+                        <p className="mt-1 line-clamp-2 text-xs font-semibold leading-5 text-slate-500">{normalizeEvidenceText(section.description)}</p>
+                    </div>
+                ))}
+                {(template.sections ?? []).length === 0 ? <div className="rounded-xl border border-dashed border-slate-200 bg-white p-4 text-center text-xs text-slate-500">这个模板还没有配置章节。</div> : null}
+            </div>
+            <div className="mt-4 rounded-xl bg-white px-3 py-2 text-xs font-semibold leading-5 text-slate-500">
+                生成后可继续编辑正文、导出 Word/PDF，或推送企业微信。
+            </div>
+        </aside>
+    );
+}
+
+function GenerationProgressDialog({
+    open,
+    startedAt,
+    reportType,
+    scopeLabel,
+    materialLimit,
+    events,
+    generating,
+    onCancel,
+    onOpenChange,
+}: {
+    open: boolean;
+    startedAt: number | null;
+    reportType: string;
+    scopeLabel: string;
+    materialLimit: number;
+    events: InsightReportGenerateStreamEvent[];
+    generating: boolean;
+    onCancel: () => void;
+    onOpenChange: (open: boolean) => void;
+}) {
+    const steps = generationSteps(materialLimit);
+    const [elapsed, setElapsed] = useState(0);
+    useEffect(() => {
+        if (!open) return;
+        const timer = window.setInterval(() => {
+            setElapsed(startedAt ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000)) : 0);
+        }, 1000);
+        return () => window.clearInterval(timer);
+    }, [open, startedAt]);
+    const latest = [...events].reverse().find((event) => event.event !== "connected") ?? events[events.length - 1];
+    const stepIndex = latest?.step ? steps.findIndex((step) => step.step === latest.step) : -1;
+    const activeIndex = stepIndex >= 0 ? stepIndex : 0;
+    const progress = latest?.progress ?? 3;
+    const hasError = latest?.event === "error";
+    return (
+        <Dialog open={open} onOpenChange={onOpenChange}>
+            <DialogContent className="sm:max-w-2xl">
+                <DialogHeader>
+                    <DialogTitle>正在生成报告</DialogTitle>
+                    <DialogDescription>
+                        {reportType || "市场洞察报告"} · {scopeLabel}
+                    </DialogDescription>
+                </DialogHeader>
+                <div className="rounded-2xl border border-slate-100 bg-slate-50/80 p-4">
+                    <div className="flex items-center justify-between gap-3">
+                        <div>
+                            <div className="text-sm font-black text-slate-900">{latest?.title || steps[activeIndex]?.title || "准备生成报告"}</div>
+                            <p className="mt-1 text-xs font-semibold leading-5 text-slate-500">{latest?.detail || steps[activeIndex]?.detail || "正在启动研究任务。"}</p>
+                        </div>
+                        <div className={cn("inline-flex h-10 w-10 items-center justify-center rounded-full", hasError ? "bg-rose-50 text-rose-600" : "bg-blue-50 text-primary")}>
+                            {hasError ? <X className="size-5" /> : generating ? <Loader2 className="size-5 animate-spin" /> : <CheckCircle2 className="size-5" />}
+                        </div>
+                    </div>
+                    <div className="mt-4 h-2 overflow-hidden rounded-full bg-white">
+                        <div className={cn("h-full rounded-full transition-all duration-500", hasError ? "bg-rose-500" : "bg-primary")} style={{ width: `${Math.max(1, Math.min(100, progress))}%` }} />
+                    </div>
+                </div>
+                <div className="grid gap-2">
+                    {steps.map((step, index) => {
+                        const done = stepDone(step.step, events, index, activeIndex);
+                        const active = index === activeIndex;
+                        return (
+                            <div key={step.title} className={cn("flex items-start gap-3 rounded-xl border px-3 py-2", active ? "border-primary/30 bg-blue-50" : "border-slate-100 bg-white")}>
+                                <span className={cn("mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full", done ? "bg-emerald-100 text-emerald-700" : active ? "bg-primary text-white" : "bg-slate-100 text-slate-400")}>
+                                    {done ? <CheckCircle2 className="size-3.5" /> : <span className="text-[10px] font-black">{index + 1}</span>}
+                                </span>
+                                <span className="min-w-0">
+                                    <span className="block text-sm font-black text-slate-800">{step.title}</span>
+                                    <span className="mt-0.5 block text-xs font-semibold leading-5 text-slate-500">{step.detail}</span>
+                                </span>
+                            </div>
+                        );
+                    })}
+                </div>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                    <p className="text-xs font-semibold leading-5 text-slate-500">已运行约 {elapsed} 秒。完成后会自动切换到新报告。</p>
+                    {generating ? (
+                        <Button type="button" variant="outline" className="h-9 rounded-xl border-slate-200 bg-white" onClick={onCancel}>
+                            取消生成
+                        </Button>
+                    ) : null}
+                </div>
+            </DialogContent>
+        </Dialog>
+    );
+}
+
+function generationSteps(materialLimit: number) {
+    return [
+        { step: "understand", title: "理解研究问题", detail: "确认报告类型、研究范围和重点问题。" },
+        { step: "search", title: "查找参考素材", detail: `从已入库素材中挑选最多 ${materialLimit} 条相关内容。` },
+        { step: "screen", title: "整理可用素材", detail: "合并同一事件，保留能支撑判断的来源。" },
+        { step: "link", title: "补充关联线索", detail: "按企业、产品、行业、风险和机会整理线索。" },
+        { step: "outline", title: "形成报告大纲", detail: "先确定章节和主要观点，再开始写正文。" },
+        { step: "write", title: "撰写报告正文", detail: "按模板生成报告，并为关键判断保留引用来源。" },
+        { step: "check", title: "检查质量", detail: "检查空话、弱结论、重复内容和需要继续验证的地方。" },
+        { step: "save", title: "保存正式报告", detail: "保存版本并准备打开报告。" },
+    ];
+}
+
+function stepDone(step: string, events: InsightReportGenerateStreamEvent[], index: number, activeIndex: number) {
+    return events.some((event) => event.step === step && (event.progress ?? 0) >= 100) || index < activeIndex || events.some((event) => event.event === "done");
 }
 
 function TemplateDialog({
@@ -1358,9 +1588,67 @@ function templatePlannedCapabilityLabel(template?: InsightReportTemplateRead | n
 }
 
 function reportGenerationModeLabel(mode?: string | null) {
-    if (mode === "llm") return "AI 生成";
-    if (mode === "rules") return "证据草稿";
-    return "库内证据";
+    if (mode === "asset_rag_deep_research") return "深度研究";
+    if (mode?.includes("asset_rag")) return "素材研究";
+    if (mode === "llm") return "AI 成稿";
+    if (mode === "rules") return "基础成稿";
+    return "素材整理";
+}
+
+function readablePromptForTemplate(template: InsightReportTemplateRead) {
+    if (template.report_type.includes("竞对")) return "请重点分析竞对近期动作、可能影响、机会风险和后续销售关注点。";
+    if (template.report_type.includes("研发")) return "请重点分析技术趋势、产品应用、客户需求变化和研发可验证方向。";
+    if (template.report_type.includes("机会")) return "请重点分析新品、渠道、消费趋势和可跟进的客户机会。";
+    if (template.report_type.includes("政策")) return "请重点分析政策变化、影响范围、风险点和需要业务关注的事项。";
+    if (template.report_type.includes("周报") || template.report_type.includes("日报") || template.report_type.includes("月报")) return "请整理本期最重要的行业、客户、竞对、产品和风险变化，给出清晰摘要和建议。";
+    return "请重点分析近期值得销售、市场和研发关注的变化，说明机会、风险和后续建议。";
+}
+
+function buildReportPrompt({
+    prompt,
+    scope,
+    customSubject,
+    companyName,
+    template,
+}: {
+    prompt: string;
+    scope: ReportScope;
+    customSubject: string;
+    companyName?: string;
+    template?: InsightReportTemplateRead | null;
+}) {
+    const scopeText = scope === "company" ? `研究对象：${companyName || "指定企业"}` : scope === "topic" ? `研究主题：${customSubject || "自定义主题"}` : "研究范围：全部可用素材";
+    const templateText = template ? `报告模板：${template.template_name}。模板用途：${template.description}` : "";
+    return [scopeText, templateText, `用户重点问题：${prompt}`].filter(Boolean).join("\n");
+}
+
+function buildReportTitle(reportType: string, scope: ReportScope, customSubject: string, companyName?: string) {
+    if (scope === "company" && companyName && companyName !== "全部企业") return `${companyName}${reportType}`;
+    if (scope === "topic" && customSubject.trim()) return `${customSubject.trim()}${reportType}`;
+    return `${reportType || "市场洞察报告"}`;
+}
+
+function researchScopeDisplay(scope: ReportScope, customSubject: string, companyName?: string) {
+    if (scope === "company") return companyName && companyName !== "全部企业" ? companyName : "指定企业";
+    if (scope === "topic") return customSubject.trim() || "自定义主题";
+    return "全部可用素材";
+}
+
+function buildReportTypeOptions(templates: InsightReportTemplateRead[], reports: InsightReportListItem[]) {
+    const types = new Set<string>();
+    ["日报", "周报", "月报", "专题报告", "企业动态报告", "竞对报告", "机会报告", "研发报告", "政策简报", "电商监测", "深度研究"].forEach((type) => types.add(type));
+    templates.forEach((template) => {
+        if (template.report_type?.trim()) types.add(template.report_type.trim());
+    });
+    reports.forEach((report) => {
+        if (report.report_type?.trim()) types.add(report.report_type.trim());
+    });
+    return [{ value: "", label: "全部报告类型" }, ...Array.from(types).map((type) => ({ value: type, label: type }))];
+}
+
+function isTestReport(report: InsightReportListItem) {
+    const text = `${report.title || ""} ${report.summary || ""} ${report.content_json?.template_name || ""}`.toLowerCase();
+    return ["测试", "烟测", "smoke", "test", "样本", "期初运行", "demo"].some((token) => text.includes(token.toLowerCase()));
 }
 
 function reportScheduleLabel(subscription: InsightReportSubscriptionRead) {
@@ -1373,7 +1661,7 @@ function reportScopeLabel(subscription: InsightReportSubscriptionRead) {
     if (subscription.scope_type === "sys_company") return "所属公司全部企业";
     if (subscription.scope_type === "company") return `指定 ${subscription.company_ids.length} 家企业`;
     if (subscription.scope_type === "data_source") return `指定 ${subscription.data_source_ids.length} 个数据源`;
-    return `素材池：${subscription.folder_name || "默认素材池"}`;
+    return "全部正式情报资产";
 }
 
 function weekdayOptions() {
@@ -1498,8 +1786,8 @@ function PreferenceDialog({
                 <div className="grid gap-4 md:grid-cols-2">
                     <InsightSelect label="默认模板" value={defaultTemplateCode} options={templateOptions} onChange={setDefaultTemplateCode} />
                     <TemplateField label="默认报告类型" value={defaultReportType} onChange={setDefaultReportType} />
-                    <TemplateField label="默认素材池" value={defaultFolderName} onChange={setDefaultFolderName} />
-                    <TemplateField label="默认素材上限" value={defaultMaxMaterials} onChange={setDefaultMaxMaterials} />
+                    <TemplateField label="默认素材范围" value={defaultFolderName} onChange={setDefaultFolderName} />
+                    <TemplateField label="默认素材数量" value={defaultMaxMaterials} onChange={setDefaultMaxMaterials} />
                     <PreferenceSelect label="写作立场" value={writingStance} options={["客户经营视角", "销售跟进视角", "行业研究视角", "风险预警视角"]} onChange={setWritingStance} />
                     <PreferenceSelect label="报告深度" value={reportDepth} options={["简版", "标准", "深度研究"]} onChange={setReportDepth} />
                     <PreferenceSelect label="引用方式" value={citationStyle} options={["正文上标引用", "章节末引用", "参考文献列表"]} onChange={setCitationStyle} />
@@ -1702,7 +1990,7 @@ function ReportDocument({
     };
 
     return (
-        <article className="min-h-0 min-w-0 overflow-y-auto rounded-2xl border border-slate-200 bg-slate-100/60 px-3 py-4 shadow-sm xl:max-h-[calc(100dvh-25rem)] sm:px-4 sm:py-6">
+        <article className="h-full min-h-0 min-w-0 overflow-y-auto overflow-x-hidden rounded-2xl border border-slate-200 bg-slate-100/60 px-3 py-4 shadow-sm sm:px-4 sm:py-6">
             <div className="mx-auto mb-4 flex max-w-[920px] flex-wrap items-center justify-between gap-3">
                 <div className="text-xs font-semibold text-slate-500">
                     {content.template_name ? `模板：${content.template_name}` : "Word 式报告"}
@@ -1783,7 +2071,7 @@ function ReportDocument({
                     <>
                         <header className="border-b border-slate-200 pb-10 text-center">
                             <div className="text-sm font-semibold text-slate-500">{report.report_type}</div>
-                            <h2 className="mt-6 text-3xl font-black leading-tight tracking-tight text-slate-950">{report.title}</h2>
+                            <h2 className="mt-6 text-3xl font-black leading-tight tracking-tight text-slate-950">{normalizeEvidenceText(report.title)}</h2>
                             <div className="mt-6 flex flex-wrap justify-center gap-x-6 gap-y-2 text-xs font-semibold text-slate-500">
                                 <span>版本：第 {report.version_no} 版</span>
                                 <span>素材：{report.material_count} 条</span>
@@ -1792,7 +2080,7 @@ function ReportDocument({
                         </header>
 
                         <WordSection title="摘要">
-                            <ReportParagraph text={content.executive_summary || report.summary || "暂无摘要。"} evidenceIds={firstEvidenceIds(materials, 3)} materialMap={materialMap} />
+                            <ReportParagraph text={content.executive_summary || report.summary || "暂无摘要。"} evidenceIds={[]} materialMap={materialMap} />
                         </WordSection>
 
                         {chapters.length > 0 ? (
@@ -1802,7 +2090,7 @@ function ReportDocument({
                                         <ReportParagraph
                                             key={`${chapter.heading}-${paragraphIndex}`}
                                             text={paragraph}
-                                            evidenceIds={chapter.evidence_ids?.length ? chapter.evidence_ids : firstEvidenceIds(materials, 2, index * 3)}
+                                            evidenceIds={chapter.evidence_ids?.length ? chapter.evidence_ids : []}
                                             materialMap={materialMap}
                                         />
                                     ))}
@@ -1820,7 +2108,7 @@ function ReportDocument({
                         )}
 
                         <WordSection title="结论与建议">
-                            <ReportParagraph text={stringValue(content.conclusion) || buildConclusion(findings, opportunities, risks)} evidenceIds={firstEvidenceIds(materials, 4, 8)} materialMap={materialMap} />
+                            <ReportParagraph text={stringValue(content.conclusion) || buildConclusion(findings, opportunities, risks)} evidenceIds={[]} materialMap={materialMap} />
                         </WordSection>
 
                         {charts.length > 0 ? <ReportChartsAppendix charts={charts} /> : null}
@@ -1951,7 +2239,7 @@ function FallbackReportBody({
                     companySections.map((section, index) => (
                         <ReportParagraph
                             key={`${section.company_name}-${index}`}
-                            text={`${section.company_name || "相关企业"}方面：${section.summary || "当前素材尚未形成完整判断。"}`}
+                            text={`${section.company_name || "相关企业"}方面：${section.summary || "当前证据尚未形成完整判断。"}`}
                             evidenceIds={firstEvidenceIds(materials, 2, index * 2)}
                             materialMap={materialMap}
                         />
@@ -2000,10 +2288,11 @@ function ReportChartsAppendix({ charts }: { charts: InsightReportChartRead[] }) 
 }
 
 function ReportParagraph({ text, evidenceIds, materialMap }: { text: string; evidenceIds?: number[]; materialMap: Map<number, ReportMaterial> }) {
+    const displayText = normalizeEvidenceText(text);
     const references = (evidenceIds ?? []).map((id) => materialMap.get(id)).filter((item): item is ReportMaterial => Boolean(item)).slice(0, 3);
     return (
         <p className="text-justify text-[15px] leading-8 text-slate-800">
-            {text}
+            {displayText}
             {references.map((material, index) => (
                 <CitationMarker key={`${material.id}-${index}`} index={index + 1} material={material} />
             ))}
@@ -2019,8 +2308,8 @@ function CitationMarker({ index, material }: { index: number; material: ReportMa
             </button>
             <span className="absolute left-1/2 top-full z-30 hidden w-80 -translate-x-1/2 pt-2 normal-case group-hover:block">
                 <span className="block rounded-xl border border-slate-200 bg-white p-4 text-left text-xs leading-5 text-slate-600 shadow-xl">
-                    <span className="block font-black text-slate-950">{material.intelligence_title || material.source_title || `素材 ${material.intelligence_id}`}</span>
-                    {material.quote_text || material.intelligence_summary ? <span className="mt-2 line-clamp-4 block">{material.quote_text || material.intelligence_summary}</span> : null}
+                    <span className="block font-black text-slate-950">{normalizeEvidenceText(material.intelligence_title || material.source_title || `证据 ${material.intelligence_id}`)}</span>
+                    {material.quote_text || material.intelligence_summary ? <span className="mt-2 line-clamp-4 block">{normalizeEvidenceText(material.quote_text || material.intelligence_summary || "")}</span> : null}
                     {material.source_url ? (
                         <a href={material.source_url} target="_blank" rel="noreferrer" className="mt-3 inline-flex items-center gap-1 font-bold text-primary">
                             打开原文
@@ -2044,10 +2333,10 @@ function ReferenceList({ materials }: { materials: ReportMaterial[] }) {
                     <span className="shrink-0 text-slate-400">[{index + 1}]</span>
                     {material.source_url ? (
                         <a href={material.source_url} target="_blank" rel="noreferrer" className="min-w-0 text-primary hover:underline">
-                            {material.intelligence_title || material.source_title || `素材 ${material.intelligence_id}`}
+                            {normalizeEvidenceText(material.intelligence_title || material.source_title || `证据 ${material.intelligence_id}`)}
                         </a>
                     ) : (
-                        <span>{material.intelligence_title || material.source_title || `素材 ${material.intelligence_id}`}</span>
+                        <span>{normalizeEvidenceText(material.intelligence_title || material.source_title || `证据 ${material.intelligence_id}`)}</span>
                     )}
                 </li>
             ))}
@@ -2067,10 +2356,10 @@ function ReportHistoryItem({ report, active, onClick }: { report: InsightReportL
         >
             <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0">
-                    <div className="line-clamp-2 text-sm font-black leading-5">{report.title}</div>
+                    <div className="line-clamp-2 text-sm font-black leading-5">{normalizeEvidenceText(report.title)}</div>
                     <div className="mt-1 text-xs text-slate-500">{formatDate(report.update_time)} 更新</div>
                 </div>
-                <span className="shrink-0 rounded-full bg-emerald-50 px-2 py-1 text-xs font-bold text-emerald-600">{report.status === "draft" ? "草稿" : report.status}</span>
+                <span className="shrink-0 rounded-full bg-emerald-50 px-2 py-1 text-xs font-bold text-emerald-600">{reportStatusLabel(report.status)}</span>
             </div>
             <div className="mt-3 flex items-center gap-2 text-xs font-bold text-slate-500">
                 <FileText className="size-3.5" />
@@ -2078,6 +2367,12 @@ function ReportHistoryItem({ report, active, onClick }: { report: InsightReportL
             </div>
         </button>
     );
+}
+
+function reportStatusLabel(status?: string | null) {
+    if (status === "final" || status === "published" || status === "ready") return "正式报告";
+    if (status === "draft") return "已生成";
+    return status || "已生成";
 }
 
 function HistorySkeleton() {
@@ -2112,6 +2407,17 @@ function stringValue(value: unknown): string {
 
 function splitParagraphs(value: string): string[] {
     return value.split(/\n{2,}/).map((item) => item.trim());
+}
+
+function normalizeEvidenceText(text: string) {
+    return text
+        .replace(/正式情报资产库/g, "正式素材库")
+        .replace(/报告素材池/g, "正式素材库")
+        .replace(/素材池/g, "资产库")
+        .replace(/测试素材/g, "测试数据")
+        .replace(/引用证据/g, "引用素材")
+        .replace(/报告证据/g, "报告素材")
+        .replace(/证据/g, "素材");
 }
 
 function defaultSections(): InsightReportTemplateSection[] {

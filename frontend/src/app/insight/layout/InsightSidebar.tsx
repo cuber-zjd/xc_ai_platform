@@ -1,32 +1,37 @@
-import { BarChart3, Building2, Database, FileBarChart, FileText, Home, Settings } from "lucide-react";
-import { NavLink } from "react-router-dom";
+import { BarChart3, Building2, ChevronDown, FileBarChart, FileText, Home, LogOut, Settings, SlidersHorizontal, Tags } from "lucide-react";
+import { NavLink, useNavigate } from "react-router-dom";
 
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/store/useAuthStore";
-
-import sidebarLandscape from "../assets/sidebar-landscape.png";
 
 const insightNavItems = [
     { label: "首页看板", path: "/insight", icon: Home },
     { label: "情报中心", path: "/insight/intelligence", icon: FileText },
     { label: "企业档案", path: "/insight/companies", icon: Building2 },
+    { label: "监测配置", path: "/insight/monitoring", icon: SlidersHorizontal },
+    { label: "分类标签", path: "/insight/tags", icon: Tags },
     { label: "报告中心", path: "/insight/reports", icon: FileBarChart },
-    { label: "数据源配置", path: "/insight/data-sources", icon: Database },
     { label: "质量运营", path: "/insight/quality", icon: BarChart3, adminOnly: true },
     { label: "系统设置", path: "/insight/settings", icon: Settings, adminOnly: true },
 ];
 
 export function InsightSidebar() {
-    const isAdmin = useAuthStore((state) => state.user?.role === "admin");
+    const user = useAuthStore((state) => state.user);
+    const logout = useAuthStore((state) => state.logout);
+    const navigate = useNavigate();
+    const isAdmin = user?.role === "admin";
     const visibleItems = insightNavItems.filter((item) => !item.adminOnly || isAdmin);
+    const displayName = user?.full_name?.trim() || user?.username?.trim() || "当前用户";
+    const avatarText = getAvatarText(displayName);
+
+    const handleLogout = () => {
+        logout();
+        navigate("/insight/login", { replace: true });
+    };
 
     return (
         <aside className="relative hidden h-screen overflow-hidden border-r border-slate-200 bg-white text-slate-800 lg:flex lg:flex-col">
-            <div className="pointer-events-none absolute inset-x-0 bottom-0 h-[46%]">
-                <img src={sidebarLandscape} alt="" className="absolute inset-x-0 bottom-0 h-full w-full object-contain object-bottom" />
-                <div className="absolute inset-0 bg-linear-to-b from-white via-white/70 to-white/10" />
-            </div>
-
             <div className="relative z-10 flex h-[88px] shrink-0 items-center gap-3 px-5">
                 <div className="relative size-11 overflow-hidden rounded-2xl bg-linear-to-br from-blue-600 to-cyan-400 shadow-[0_12px_24px_rgba(37,99,235,0.18)]">
                     <div className="absolute -left-1 top-3 h-8 w-12 rotate-[-32deg] rounded-[100%] bg-white/80" />
@@ -61,14 +66,36 @@ export function InsightSidebar() {
                 })}
             </nav>
 
-            <div className="relative z-10 mt-auto flex min-h-[240px] shrink-0 items-start justify-center px-8 pt-8 text-center">
-                <div className="rounded-2xl bg-white/55 px-5 py-3 backdrop-blur-[2px]">
-                    <div className="text-lg font-semibold leading-8 text-blue-600">
-                        洞察行业趋势
-                        <br />
-                        驱动研发与增长
-                    </div>
-                </div>
+            <div className="relative z-10 mt-auto border-t border-slate-100 p-3">
+                <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                        <button
+                            type="button"
+                            className="flex w-full min-w-0 items-center gap-3 rounded-xl px-3 py-3 text-left transition hover:bg-slate-50"
+                            title={displayName}
+                        >
+                            <span className="grid size-10 shrink-0 place-items-center rounded-full border border-blue-100 bg-linear-to-br from-blue-100 to-cyan-100 text-sm font-black text-blue-700">
+                                {avatarText}
+                            </span>
+                            <span className="min-w-0 flex-1">
+                                <span className="block truncate text-sm font-black text-slate-900">{displayName}</span>
+                                <span className="mt-0.5 block truncate text-xs font-semibold text-slate-500">@{user?.username || "user"}</span>
+                            </span>
+                            <ChevronDown className="size-4 shrink-0 text-slate-400" />
+                        </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent side="right" align="end" className="w-56 rounded-xl border-slate-200 p-2 shadow-xl">
+                        <DropdownMenuLabel className="px-3 py-2">
+                            <div className="truncate text-sm font-bold text-slate-900">{displayName}</div>
+                            <div className="truncate text-xs font-medium text-slate-500">@{user?.username || "user"}</div>
+                        </DropdownMenuLabel>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem className="cursor-pointer rounded-lg px-3 py-2 text-red-600 focus:text-red-600" onClick={handleLogout}>
+                            <LogOut className="mr-2 size-4" />
+                            退出登录
+                        </DropdownMenuItem>
+                    </DropdownMenuContent>
+                </DropdownMenu>
             </div>
         </aside>
     );
@@ -104,4 +131,9 @@ export function InsightMobileNav() {
             </div>
         </nav>
     );
+}
+
+function getAvatarText(name: string) {
+    const first = Array.from(name.trim())[0];
+    return first ? first.toUpperCase() : "用";
 }

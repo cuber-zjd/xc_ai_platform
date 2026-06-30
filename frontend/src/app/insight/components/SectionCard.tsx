@@ -16,7 +16,7 @@ export function SectionCard({ title, description, action, children, className }:
                 <div className="mb-4 flex flex-col justify-between gap-3 md:flex-row md:items-start">
                     <div className="min-w-0">
                         {title && <h2 className="text-base font-bold text-foreground">{title}</h2>}
-                        {description && <p className="mt-1 text-sm leading-6 text-muted-foreground">{description}</p>}
+                        {description && <p className="mt-1 hidden text-sm leading-6 text-muted-foreground sm:block">{description}</p>}
                     </div>
                     {action ? <div className="insight-actions">{action}</div> : null}
                 </div>

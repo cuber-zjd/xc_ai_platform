@@ -11,9 +11,18 @@ TRACKING_QUERY_KEYS = {
     "utm_campaign",
     "utm_term",
     "utm_content",
+    "utm_id",
+    "utm_source_platform",
     "spm",
     "ivk_sa",
     "from",
+    "source",
+    "ref",
+    "fr",
+    "bd_vid",
+    "eqid",
+    "fbclid",
+    "gclid",
 }
 
 
@@ -22,11 +31,14 @@ class InsightContentCleaner:
 
     def normalize_url(self, url: str) -> str:
         parsed = urlsplit(url.strip())
-        query_items = [
-            (key, value)
-            for key, value in parse_qsl(parsed.query, keep_blank_values=True)
-            if key.lower() not in TRACKING_QUERY_KEYS
-        ]
+        query_items = sorted(
+            [
+                (key, value)
+                for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+                if key.lower() not in TRACKING_QUERY_KEYS
+            ],
+            key=lambda item: (item[0].lower(), item[1]),
+        )
         netloc = parsed.netloc.lower()
         path = parsed.path or "/"
         query = urlencode(query_items, doseq=True)
@@ -151,9 +163,13 @@ class InsightContentCleaner:
             return None
         text = value.strip()
 
+        relative = self._parse_relative_datetime(text)
+        if relative:
+            return relative
+
         absolute_patterns = (
-            r"(?P<year>20\d{2})[-/.年](?P<month>0?[1-9]|1[0-2])[-/.月](?P<day>0?[1-9]|[12]\d|3[01])(?:日)?(?:\s+(?P<hour>[01]?\d|2[0-3]):(?P<minute>[0-5]\d))?",
-            r"(?P<month>0?[1-9]|1[0-2])[-/.月](?P<day>0?[1-9]|[12]\d|3[01])(?:日)?(?:\s+(?P<hour>[01]?\d|2[0-3]):(?P<minute>[0-5]\d))?",
+            r"(?P<year>20\d{2})[-/.年](?P<month>1[0-2]|0?[1-9])[-/.月](?P<day>3[01]|[12]\d|0?[1-9])(?:日)?(?:\s+(?P<hour>[01]?\d|2[0-3]):(?P<minute>[0-5]\d))?",
+            r"(?P<month>1[0-2]|0?[1-9])[-/.月](?P<day>3[01]|[12]\d|0?[1-9])(?:日)?(?:\s+(?P<hour>[01]?\d|2[0-3]):(?P<minute>[0-5]\d))?",
         )
         for pattern in absolute_patterns:
             match = search(pattern, text)
@@ -172,7 +188,9 @@ class InsightContentCleaner:
             if parsed > now + timedelta(days=2) and "year" not in match.groupdict():
                 parsed = parsed.replace(year=year - 1)
             return parsed
+        return None
 
+    def _parse_relative_datetime(self, text: str) -> datetime | None:
         relative_match = search(r"(?P<num>\d+)\s*(?P<unit>分钟|小时|天|日|周|个月|月)前", text)
         if relative_match:
             number = int(relative_match.group("num"))
@@ -187,6 +205,14 @@ class InsightContentCleaner:
                 return datetime.now() - timedelta(days=number * 7)
             if unit in {"个月", "月"}:
                 return datetime.now() - timedelta(days=number * 30)
+        if "刚刚" in text:
+            return datetime.now()
+        if "今天" in text:
+            base = datetime.now()
+            time_match = search(r"(?P<hour>[01]?\d|2[0-3]):(?P<minute>[0-5]\d)", text)
+            if time_match:
+                return base.replace(hour=int(time_match.group("hour")), minute=int(time_match.group("minute")), second=0, microsecond=0)
+            return base.replace(hour=0, minute=0, second=0, microsecond=0)
         if "昨天" in text:
             base = datetime.now() - timedelta(days=1)
             time_match = search(r"(?P<hour>[01]?\d|2[0-3]):(?P<minute>[0-5]\d)", text)

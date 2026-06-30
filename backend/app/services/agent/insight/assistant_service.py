@@ -13,6 +13,7 @@ from app.core.llm_factory import LLMFactory
 from app.core.logger import logger
 from app.models.agent.insight import InsightCompany, InsightIntelligence, InsightIntelligenceSource
 from app.models.agent.insight.report import InsightReport, InsightReportMaterial, InsightReportVersion
+from app.schemas.agent.insight.asset import InsightAssetSearchRequest, InsightAssetSearchHit
 from app.schemas.agent.insight.intelligence import (
     InsightAssistantChatRequest,
     InsightAssistantChatResponse,
@@ -21,6 +22,7 @@ from app.schemas.agent.insight.intelligence import (
     InsightDeepResearchResponse,
     InsightEvidenceMatrixItem,
 )
+from app.services.agent.insight.asset_service import insight_asset_service
 from app.services.agent.insight.permission_service import insight_permission_service
 
 
@@ -99,6 +101,10 @@ class InsightAssistantService:
         user_id: int | None,
         is_admin: bool,
     ) -> list[dict[str, Any]]:
+        asset_evidences = await self._retrieve_asset_evidence(db, payload, user_id=user_id, is_admin=is_admin)
+        if asset_evidences:
+            return asset_evidences
+
         filters = [InsightIntelligence.is_deleted == 0, InsightIntelligence.status == "active", InsightIntelligence.review_status == "approved"]
         keyword = payload.keyword or payload.question
         tokens = [item for item in re.split(r"[\s,，;；、]+", keyword) if len(item.strip()) >= 2][:8]
@@ -163,6 +169,39 @@ class InsightAssistantService:
         source_map = await self._source_map(db, [row.id for row in rows if row.id])
         return [self._evidence_item(row, source_map.get(row.id or 0)) for row in rows]
 
+    async def _retrieve_asset_evidence(
+        self,
+        db: AsyncSession,
+        payload: InsightAssistantChatRequest,
+        *,
+        user_id: int | None,
+        is_admin: bool,
+    ) -> list[dict[str, Any]]:
+        query = (payload.keyword or payload.question or "").strip()
+        if not query:
+            return []
+        try:
+            result = await insight_asset_service.search_assets(
+                db,
+                InsightAssetSearchRequest(
+                    query=query,
+                    top_k=min(max(payload.limit or 8, 1), 30),
+                    include_candidates=False,
+                    company_id=payload.company_id,
+                    subject_type=None,
+                    intelligence_type=payload.intelligence_type,
+                    date_from=payload.date_from,
+                    date_to=payload.date_to,
+                ),
+                user_id=user_id,
+                is_admin=is_admin,
+            )
+        except Exception as exc:
+            logger.warning(f"Insight 资产 RAG 检索失败，回退旧情报检索：{exc}")
+            return []
+        evidences = [self._asset_evidence_item(hit) for hit in result.hits if hit.asset.intelligence_id]
+        return evidences
+
     async def _company_isolation_filter(
         self,
         db: AsyncSession,
@@ -213,14 +252,42 @@ class InsightAssistantService:
             "source_title": source.source_title if source else None,
         }
 
+    def _asset_evidence_item(self, hit: InsightAssetSearchHit) -> dict[str, Any]:
+        asset = hit.asset
+        return {
+            "intelligence_id": asset.intelligence_id,
+            "asset_id": asset.id,
+            "title": asset.title,
+            "summary": asset.summary,
+            "content_excerpt": (asset.evidence or asset.summary or asset.source_title or "")[:1200],
+            "intelligence_type": asset.intelligence_type,
+            "business_value": asset.business_value,
+            "sentiment": asset.sentiment,
+            "entities": asset.entities,
+            "related_products": asset.related_products,
+            "opportunities": asset.opportunities,
+            "risks": asset.risks,
+            "keywords": asset.keywords,
+            "publish_time": asset.publish_time.isoformat() if asset.publish_time else None,
+            "source_url": asset.source_url,
+            "source_title": asset.source_title,
+            "rag_score": hit.score,
+            "vector_score": hit.vector_score,
+            "keyword_score": hit.keyword_score,
+            "match_reason": hit.match_reason,
+        }
+
     async def _ask_llm_for_answer(self, question: str, evidences: list[dict[str, Any]]) -> tuple[str, str]:
         try:
             response = await LLMFactory.safe_invoke(
                 [
                     SystemMessage(
                         content=(
-                            "你是研发营销市场洞察平台的库内证据问答助手。只能依据给定情报证据回答，"
-                            "每个关键判断必须引用情报ID和来源URL；证据不足时明确说明不足，不得编造。"
+                            "你是香驰控股研发营销市场洞察平台的情报助手。香驰重点关注大豆、玉米精深加工，"
+                            "果葡糖浆、麦芽糖、糖醇、植物蛋白、豆粕、粮油，以及食品饮料、营养健康、植物基、饲料等下游机会。"
+                            "必须优先依据给定的正式情报资产、RAG 分数、结构化机会/风险/实体回答；可以使用模型世界知识解释背景，"
+                            "但关键判断必须回到情报ID和来源URL，证据不足时明确说明不足，不得编造。"
+                            "请主动指出与香驰业务相关的蛛丝马迹，例如客户新品、配方变化、竞对产能、原料价格、政策标准、专利和质量风险。"
                         )
                     ),
                     HumanMessage(content=json.dumps({"question": question, "evidences": evidences}, ensure_ascii=False)),
@@ -228,7 +295,7 @@ class InsightAssistantService:
                 capability="general",
                 temperature=0,
             )
-            return str(getattr(response, "content", response)).strip(), "llm"
+            return str(getattr(response, "content", response)).strip(), "asset_rag"
         except Exception as exc:
             logger.warning(f"Insight AI 助手调用失败，使用证据摘要兜底：{exc}")
             return self._fallback_answer(question, evidences), "rules"
@@ -239,19 +306,22 @@ class InsightAssistantService:
                 [
                     SystemMessage(
                         content=(
-                            "你是研发营销市场洞察平台的深度研究助手。只能使用给定情报证据，输出严格 JSON，"
+                            "你是香驰控股研发营销市场洞察平台的深度研究助手。"
+                            "研究时以正式情报资产为证据，结合结构化字段、RAG 相关性、实体/产品/机会/风险线索和模型世界知识做解释。"
+                            "请采用 ReAct 式研究流程：明确问题、检索证据、抽取关系、交叉验证、识别弱信号和证据缺口，最后给结论。"
+                            "最终只能输出严格 JSON，不输出隐藏推理；"
                             "字段：title、conclusion、findings、opportunities、risks、evidence_matrix、follow_up_questions。"
                             "evidence_matrix 每项包含 intelligence_id、title、evidence、source_url、publish_time。"
                         )
                     ),
                     HumanMessage(content=json.dumps({"question": question, "evidences": evidences}, ensure_ascii=False)),
                 ],
-                capability="general",
+                capability="complex-reasoning",
                 temperature=0,
                 json_mode=True,
             )
             content = str(getattr(response, "content", response))
-            return json.loads(self._strip_json_fence(content)), "llm"
+            return json.loads(self._strip_json_fence(content)), "asset_rag_deep_research"
         except Exception as exc:
             logger.warning(f"Insight 深度研究调用失败，使用规则草稿兜底：{exc}")
             return self._fallback_research(question, evidences), "rules"

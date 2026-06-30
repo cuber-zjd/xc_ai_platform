@@ -6,6 +6,7 @@ from datetime import datetime
 from html import escape
 from io import BytesIO
 from pathlib import Path
+from collections.abc import Awaitable, Callable
 from typing import Any
 from uuid import uuid4
 from xml.etree import ElementTree as ET
@@ -18,7 +19,10 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from app.core.llm_factory import LLMFactory
 from app.models.agent.insight import (
     InsightCompany,
+    InsightGraphEdge,
+    InsightGraphNode,
     InsightIntelligence,
+    InsightIntelligenceAsset,
     InsightIntelligenceSource,
     InsightReport,
     InsightReportExport,
@@ -28,8 +32,8 @@ from app.models.agent.insight import (
     InsightReportVersion,
     InsightTask,
     InsightTaskStatus,
-    InsightUserIntelligencePool,
 )
+from app.schemas.agent.insight.asset import InsightAssetSearchRequest
 from app.schemas.agent.insight.report import (
     InsightReportChartPoint,
     InsightReportChartRead,
@@ -53,7 +57,10 @@ from app.schemas.agent.insight.report import (
     InsightReportVersionRead,
 )
 from app.schemas.page import Page
+from app.services.agent.insight.asset_service import insight_asset_service
 from app.services.agent.insight.permission_service import insight_permission_service
+
+ReportProgressCallback = Callable[[dict[str, Any]], Awaitable[None]]
 
 
 REPORT_TEMPLATES: list[InsightReportTemplateRead] = [
@@ -64,7 +71,7 @@ REPORT_TEMPLATES: list[InsightReportTemplateRead] = [
         report_type="专题报告",
         default_prompt="生成一份可直接交付的 Word 式客户经营洞察报告，正文完整、结论克制、引用可追溯，立场是帮助客户识别机会和风险。",
         sections=[
-            InsightReportTemplateSection(section_key="background", heading="一、研究背景与客户概况", description="说明报告范围、素材口径、客户所处市场与当前关注重点。"),
+            InsightReportTemplateSection(section_key="background", heading="一、研究背景与客户概况", description="说明报告范围、证据口径、客户所处市场与当前关注重点。"),
             InsightReportTemplateSection(section_key="signals", heading="二、关键动态与证据交叉验证", description="按主题整合多来源资讯，说明哪些信号较强、哪些仍需验证。"),
             InsightReportTemplateSection(section_key="implications", heading="三、经营含义与合作机会", description="把公开资讯转化为客户经营、产品方案、渠道或合作跟进启发。"),
             InsightReportTemplateSection(section_key="risks", heading="四、风险提醒与待验证事项", description="客观指出不确定性、潜在风险和后续补充数据口径。"),
@@ -91,7 +98,7 @@ REPORT_TEMPLATES: list[InsightReportTemplateRead] = [
         report_type="专题报告",
         default_prompt="围绕行业专题生成正式研究报告，要求多来源归纳、证据分层、观点克制，并给出对客户经营和产品方案的启发。",
         sections=[
-            InsightReportTemplateSection(section_key="topic_scope", heading="一、专题范围与研究口径", description="界定主题边界、时间范围和素材来源。"),
+            InsightReportTemplateSection(section_key="topic_scope", heading="一、专题范围与研究口径", description="界定主题边界、时间范围和证据来源。"),
             InsightReportTemplateSection(section_key="market_signals", heading="二、市场信号与结构变化", description="归纳行业变化、需求趋势、竞争动作与政策影响。"),
             InsightReportTemplateSection(section_key="client_relevance", heading="三、客户相关性与业务启发", description="连接到目标客户、产品方案或合作场景。"),
             InsightReportTemplateSection(section_key="uncertainty", heading="四、不确定性与补充验证", description="说明证据缺口、冲突信息和后续数据需求。"),
@@ -116,7 +123,7 @@ REPORT_TEMPLATES: list[InsightReportTemplateRead] = [
         template_name="竞对动态报告",
         description="围绕竞对企业的新品、产能、渠道、专利、价格和风险动作形成可跟踪报告。",
         report_type="竞对报告",
-        default_prompt="生成一份竞对动态报告，要求按竞对动作、业务影响、机会风险和后续监测重点组织，所有判断必须基于引用素材。",
+        default_prompt="生成一份竞对动态报告，要求按竞对动作、业务影响、机会风险和后续监测重点组织，所有判断必须基于引用证据。",
         sections=[
             InsightReportTemplateSection(section_key="summary", heading="一、竞对动态摘要", description="概括本期高价值竞对信号和结论边界。"),
             InsightReportTemplateSection(section_key="moves", heading="二、重点竞对动作", description="按企业或主题梳理新品、渠道、产能、技术、资本等动作。"),
@@ -132,7 +139,7 @@ REPORT_TEMPLATES: list[InsightReportTemplateRead] = [
         default_prompt="生成一份客户新品机会报告，把公开新品与渠道动态转化为产品方案、样品推荐和客户拜访建议。",
         sections=[
             InsightReportTemplateSection(section_key="signals", heading="一、新品与渠道信号", description="汇总客户和下游品牌的新品、渠道、传播和消费趋势。"),
-            InsightReportTemplateSection(section_key="needs", heading="二、潜在需求判断", description="结合素材判断甜味、功能、风味、成本、合规等潜在需求。"),
+            InsightReportTemplateSection(section_key="needs", heading="二、潜在需求判断", description="结合证据判断甜味、功能、风味、成本、合规等潜在需求。"),
             InsightReportTemplateSection(section_key="opportunities", heading="三、合作机会与方案建议", description="提出可跟进客户、产品方向和销售动作。"),
             InsightReportTemplateSection(section_key="risks", heading="四、风险与待验证问题", description="说明需要业务或研发进一步验证的假设。"),
         ],
@@ -144,7 +151,7 @@ REPORT_TEMPLATES: list[InsightReportTemplateRead] = [
         report_type="研发报告",
         default_prompt="生成一份研发课题趋势报告，突出技术路线、专利信号、产品应用场景、机会风险和待验证实验方向。",
         sections=[
-            InsightReportTemplateSection(section_key="topic_scope", heading="一、课题范围与证据口径", description="说明课题边界、素材来源和证据强弱。"),
+            InsightReportTemplateSection(section_key="topic_scope", heading="一、课题范围与证据口径", description="说明课题边界、证据来源和证据强弱。"),
             InsightReportTemplateSection(section_key="trend", heading="二、技术与应用趋势", description="归纳技术、专利、配方、应用场景和客户需求变化。"),
             InsightReportTemplateSection(section_key="rd_actions", heading="三、研发启发与验证建议", description="输出可落地的研发验证、样品开发或情报补采方向。"),
             InsightReportTemplateSection(section_key="uncertainty", heading="四、不确定性与补充数据", description="列出证据缺口和需要补充的实验或市场数据。"),
@@ -181,7 +188,7 @@ REPORT_TEMPLATES: list[InsightReportTemplateRead] = [
         template_name="深度研究报告",
         description="针对开放式研究问题，基于库内情报形成证据矩阵、结论、机会风险和后续验证问题。",
         report_type="深度研究",
-        default_prompt="生成一份深度研究报告，必须先给结论，再列证据矩阵、机会风险、反证和后续待验证问题，禁止脱离素材编造。",
+        default_prompt="生成一份深度研究报告，必须先给结论，再列证据矩阵、机会风险、反证和后续待验证问题，禁止脱离证据编造。",
         sections=[
             InsightReportTemplateSection(section_key="answer", heading="一、研究结论", description="直接回答研究问题并说明置信边界。"),
             InsightReportTemplateSection(section_key="evidence_matrix", heading="二、证据矩阵", description="按证据主题列出情报、来源、日期和支撑关系。"),
@@ -552,7 +559,22 @@ class InsightReportService:
         *,
         user_id: int,
         is_admin: bool,
+        progress_callback: ReportProgressCallback | None = None,
     ) -> InsightReportGenerateResponse:
+        async def publish(step: str, title: str, detail: str, progress: int, **extra: Any) -> None:
+            if progress_callback:
+                await progress_callback(
+                    {
+                        "event": "progress",
+                        "step": step,
+                        "title": title,
+                        "detail": detail,
+                        "progress": progress,
+                        **extra,
+                    }
+                )
+
+        await publish("understand", "理解研究问题", "正在确认报告类型、研究范围和重点问题。", 5)
         task = InsightTask(
             task_uid=f"insight_report_{uuid4().hex}",
             task_type="report_generate",
@@ -569,18 +591,46 @@ class InsightReportService:
         try:
             preference = await self.get_preference(db, user_id=user_id)
             payload = self._apply_preference_to_payload(payload, preference)
+            await publish("search", "查找参考素材", "正在从已入库素材中查找与主题相关的内容。", 16)
             intelligence_rows = await self._select_materials(db, payload, user_id=user_id, is_admin=is_admin)
             if not intelligence_rows:
-                raise ValueError("报告素材为空，请先把正式情报加入报告素材池，或手动指定情报 ID")
+                raise ValueError("没有检索到可用于报告的正式情报资产，请先扩大主题、企业或时间范围，或补充采集。")
+            await publish(
+                "screen",
+                "整理可用素材",
+                f"已找到 {len(intelligence_rows)} 条候选素材，正在去重、分组并判断相关性。",
+                32,
+                material_count=len(intelligence_rows),
+            )
 
             source_map = await self._list_primary_sources(db, [row.id for row in intelligence_rows if row.id])
             company_map = await self._list_companies(db, [row.company_id for row in intelligence_rows if row.company_id])
-            material_payload = [self._material_payload(row, source_map.get(row.id or 0), company_map) for row in intelligence_rows]
+            asset_map = await self._asset_map_for_intelligences(db, [row.id for row in intelligence_rows if row.id])
+            material_payload = [self._material_payload(row, source_map.get(row.id or 0), company_map, asset_map.get(row.id or 0)) for row in intelligence_rows]
+            graph_context = await self._graph_context_for_materials(db, material_payload, user_id=user_id, is_admin=is_admin)
+            await publish(
+                "link",
+                "补充关联线索",
+                "正在按企业、产品、市场动作、风险和机会整理线索。",
+                46,
+                material_count=len(material_payload),
+                relation_count=len(graph_context.get("edges", [])),
+            )
             template = await self._get_template(db, payload.template_code, user_id=user_id, is_admin=is_admin)
-            content_json, generation_mode = await self._generate_content(payload, material_payload, template)
+            await publish("outline", "形成报告大纲", f"正在按“{template.template_name}”组织章节和重点观点。", 58)
+            await publish("write", "撰写报告正文", "正在把素材整理成可直接查看的正式报告，并保留关键引用来源。", 70)
+            content_json, generation_mode = await self._generate_content(payload, material_payload, template, graph_context)
+            await publish("check", "检查报告质量", "正在检查空话、弱结论、重复内容和需要继续验证的问题。", 86)
             content_json["template_code"] = template.template_code
             content_json["template_name"] = template.template_name
             content_json["generation_mode"] = generation_mode
+            content_json["evidence_retrieval"] = {
+                "source": "formal_asset_rag",
+                "query": await self._asset_query_from_payload(db, payload),
+                "asset_count": len([item for item in material_payload if item.get("asset_id")]),
+                "graph_node_count": len(graph_context.get("nodes", [])),
+                "graph_edge_count": len(graph_context.get("edges", [])),
+            }
             title = payload.title or content_json.get("title") or self._default_title(payload, material_payload)
             summary = self._short_text(content_json.get("executive_summary") or content_json.get("summary"), 1200)
             primary_company = self._primary_company(material_payload)
@@ -595,7 +645,7 @@ class InsightReportService:
                 company_name=primary_company.get("company_name") if primary_company else None,
                 content_json=content_json,
                 summary=summary,
-                status="draft",
+                status="final",
                 version_no=1,
                 material_count=len(material_payload),
                 owner_user_id=user_id,
@@ -626,7 +676,7 @@ class InsightReportService:
                     report_id=report.id or 0,
                     version_no=1,
                     content_json=content_json,
-                    change_summary="首次生成报告草稿",
+                    change_summary="首次生成正式报告",
                     created_by_user_id=user_id,
                 )
             )
@@ -642,6 +692,15 @@ class InsightReportService:
             await db.commit()
             await db.refresh(report)
             detail = await self.get_report_detail(db, report.id or 0, user_id=user_id, is_admin=True)
+            await publish(
+                "save",
+                "保存正式报告",
+                "报告已生成，正在切换到正文预览。",
+                100,
+                report_id=report.id,
+                material_count=len(material_payload),
+                generation_mode=generation_mode,
+            )
             return InsightReportGenerateResponse(
                 report=detail,
                 task_id=task.id,
@@ -809,6 +868,8 @@ class InsightReportService:
         is_admin: bool,
     ) -> list[InsightIntelligence]:
         filters = [InsightIntelligence.is_deleted == 0, InsightIntelligence.status == "active"]
+        if not payload.intelligence_ids:
+            filters.append(self._exclude_test_intelligence_filter())
         if payload.company_ids:
             filters.append(InsightIntelligence.company_id.in_(payload.company_ids))
         if payload.data_source_ids:
@@ -843,61 +904,283 @@ class InsightReportService:
             )
             return list((await db.exec(statement)).all())
 
-        pool_filters = [
-            InsightUserIntelligencePool.user_id == user_id,
-            InsightUserIntelligencePool.pool_type == "report_material",
-            InsightUserIntelligencePool.status == "active",
-            InsightUserIntelligencePool.is_deleted == 0,
-        ]
-        if payload.folder_name:
-            pool_filters.append(InsightUserIntelligencePool.folder_name == payload.folder_name)
-        pool_ids = list(
+        return await self._select_materials_from_assets(db, payload, filters, user_id=user_id, is_admin=is_admin)
+
+    async def _select_materials_from_assets(
+        self,
+        db: AsyncSession,
+        payload: InsightReportGenerateRequest,
+        intelligence_filters: list[Any],
+        *,
+        user_id: int,
+        is_admin: bool,
+    ) -> list[InsightIntelligence]:
+        query = await self._asset_query_from_payload(db, payload)
+        selected_ids: list[int] = []
+        try:
+            search_result = await insight_asset_service.search_assets(
+                db,
+                InsightAssetSearchRequest(
+                    query=query,
+                    top_k=min(max(payload.max_materials, 5), 30),
+                    include_candidates=False,
+                    company_id=payload.company_ids[0] if len(payload.company_ids) == 1 else None,
+                    date_from=payload.period_start,
+                    date_to=payload.period_end,
+                ),
+                user_id=user_id,
+                is_admin=is_admin,
+            )
+            for hit in search_result.hits:
+                intelligence_id = hit.asset.intelligence_id
+                if intelligence_id and intelligence_id not in selected_ids:
+                    selected_ids.append(intelligence_id)
+        except Exception:
+            selected_ids = []
+
+        if selected_ids:
+            rows = list(
+                (
+                    await db.exec(
+                        select(InsightIntelligence)
+                        .where(*intelligence_filters, InsightIntelligence.id.in_(selected_ids))
+                        .limit(payload.max_materials)
+                    )
+                ).all()
+            )
+            row_map = {row.id: row for row in rows}
+            ordered = [row_map[item_id] for item_id in selected_ids if item_id in row_map]
+            if ordered:
+                return ordered[: payload.max_materials]
+        else:
+            ordered = []
+
+        direct_filters = list(intelligence_filters)
+        if selected_ids:
+            direct_filters.append(InsightIntelligence.id.not_in(selected_ids))
+        relevance_filter = self._keyword_relevance_filter(query)
+        if relevance_filter is not None:
+            direct_filters.append(relevance_filter)
+        direct_rows = list(
             (
                 await db.exec(
-                    select(InsightUserIntelligencePool.intelligence_id)
-                    .where(*pool_filters)
-                    .order_by(InsightUserIntelligencePool.update_time.desc())
+                    select(InsightIntelligence)
+                    .where(*direct_filters)
+                    .order_by(InsightIntelligence.importance_level.desc(), InsightIntelligence.publish_time.desc().nullslast(), InsightIntelligence.create_time.desc())
+                    .limit(max(payload.max_materials - len(ordered), 0))
                 )
             ).all()
         )
-        if not pool_ids:
-            return []
-        filters.append(InsightIntelligence.id.in_(pool_ids))
-        statement = (
-            select(InsightIntelligence)
-            .where(*filters)
-            .order_by(InsightIntelligence.importance_level.desc(), InsightIntelligence.publish_time.desc().nullslast(), InsightIntelligence.create_time.desc())
-            .limit(payload.max_materials)
+        return (ordered + direct_rows)[: payload.max_materials]
+
+    def _exclude_test_intelligence_filter(self) -> Any:
+        test_terms = ("测试", "烟测", "smoke", "test", "demo", "样本", "P1企业档案测试", "测试客户")
+        clauses = []
+        for term in test_terms:
+            like_term = f"%{term}%"
+            clauses.extend(
+                [
+                    InsightIntelligence.title.ilike(like_term),
+                    InsightIntelligence.summary.ilike(like_term),
+                    InsightIntelligence.subject_name.ilike(like_term),
+                ]
+            )
+        return ~or_(*clauses)
+
+    def _keyword_relevance_filter(self, query: str) -> Any | None:
+        stop_words = {
+            "专题报告",
+            "深度研究",
+            "客户经营洞察",
+            "正式素材库",
+            "报告模板",
+            "模板用途",
+            "用户重点问题",
+            "研究范围",
+            "全部可用素材",
+            "香驰控股",
+            "机会",
+            "风险",
+            "战略",
+            "客户",
+            "竞对",
+        }
+        terms: list[str] = []
+        for raw_term in re.split(r"[\s,，。；;：:\n\r、/|]+", query or ""):
+            term = raw_term.strip()
+            if len(term) < 2 or term in stop_words or term in terms:
+                continue
+            terms.append(term[:80])
+            if len(terms) >= 12:
+                break
+        if not terms:
+            return None
+        clauses = []
+        for term in terms:
+            like_term = f"%{term}%"
+            clauses.extend(
+                [
+                    InsightIntelligence.title.ilike(like_term),
+                    InsightIntelligence.summary.ilike(like_term),
+                    InsightIntelligence.content.ilike(like_term),
+                    InsightIntelligence.subject_name.ilike(like_term),
+                    InsightIntelligence.business_domain.ilike(like_term),
+                ]
+            )
+        return or_(*clauses)
+
+    async def _asset_query_from_payload(self, db: AsyncSession, payload: InsightReportGenerateRequest) -> str:
+        parts = [
+            payload.title,
+            payload.report_type,
+            payload.generation_prompt,
+            "香驰控股 大豆 玉米 果葡糖浆 麦芽糖 植物蛋白 豆粕 粮油 客户 竞对 机会 风险 战略",
+        ]
+        if payload.company_ids:
+            rows = list(
+                (
+                    await db.exec(
+                        select(InsightCompany).where(
+                            InsightCompany.id.in_(payload.company_ids),
+                            InsightCompany.is_deleted == 0,
+                        )
+                    )
+                ).all()
+            )
+            for row in rows:
+                parts.extend([row.name, row.short_name, row.company_type, row.industry])
+        return " ".join(str(part).strip() for part in parts if str(part or "").strip())[:1000]
+
+    async def _asset_map_for_intelligences(
+        self,
+        db: AsyncSession,
+        intelligence_ids: list[int],
+    ) -> dict[int, InsightIntelligenceAsset]:
+        if not intelligence_ids:
+            return {}
+        rows = list(
+            (
+                await db.exec(
+                    select(InsightIntelligenceAsset).where(
+                        InsightIntelligenceAsset.intelligence_id.in_(intelligence_ids),
+                        InsightIntelligenceAsset.is_deleted == 0,
+                    )
+                )
+            ).all()
         )
-        return list((await db.exec(statement)).all())
+        return {row.intelligence_id: row for row in rows if row.intelligence_id}
+
+    async def _graph_context_for_materials(
+        self,
+        db: AsyncSession,
+        materials: list[dict[str, Any]],
+        *,
+        user_id: int,
+        is_admin: bool,
+    ) -> dict[str, Any]:
+        asset_ids = [int(item["asset_id"]) for item in materials if item.get("asset_id")]
+        if not asset_ids:
+            return {"nodes": [], "edges": []}
+        visible_asset_filters = [
+            InsightIntelligenceAsset.id.in_(asset_ids),
+            InsightIntelligenceAsset.is_deleted == 0,
+            InsightIntelligenceAsset.status == "active",
+        ]
+        if not is_admin:
+            visible_asset_filters.append(
+                await insight_permission_service.visibility_filter_for_user(
+                    db,
+                    InsightIntelligenceAsset,
+                    target_type="asset",
+                    user_id=user_id,
+                    is_admin=is_admin,
+                )
+            )
+        visible_asset_ids = list((await db.exec(select(InsightIntelligenceAsset.id).where(*visible_asset_filters))).all())
+        if not visible_asset_ids:
+            return {"nodes": [], "edges": []}
+        edges = list(
+            (
+                await db.exec(
+                    select(InsightGraphEdge)
+                    .where(
+                        InsightGraphEdge.source_asset_id.in_(visible_asset_ids),
+                        InsightGraphEdge.is_deleted == 0,
+                        InsightGraphEdge.status == "active",
+                    )
+                    .order_by(InsightGraphEdge.confidence.desc(), InsightGraphEdge.update_time.desc())
+                    .limit(80)
+                )
+            ).all()
+        )
+        node_ids = sorted({edge.source_node_id for edge in edges} | {edge.target_node_id for edge in edges})
+        nodes = list(
+            (
+                await db.exec(
+                    select(InsightGraphNode)
+                    .where(
+                        InsightGraphNode.id.in_(node_ids) if node_ids else InsightGraphNode.source_asset_id.in_(visible_asset_ids),
+                        InsightGraphNode.is_deleted == 0,
+                        InsightGraphNode.status == "active",
+                    )
+                    .limit(80)
+                )
+            ).all()
+        )
+        node_map = {node.id: node for node in nodes}
+        return {
+            "nodes": [
+                {
+                    "id": node.id,
+                    "type": node.node_type,
+                    "name": node.node_name,
+                    "company_id": node.company_id,
+                }
+                for node in nodes
+            ],
+            "edges": [
+                {
+                    "source": node_map.get(edge.source_node_id).node_name if node_map.get(edge.source_node_id) else edge.source_node_id,
+                    "target": node_map.get(edge.target_node_id).node_name if node_map.get(edge.target_node_id) else edge.target_node_id,
+                    "relation": edge.relation_type,
+                    "confidence": edge.confidence,
+                    "asset_id": edge.source_asset_id,
+                    "evidence": self._short_text(edge.evidence_text, 260),
+                }
+                for edge in edges
+            ],
+        }
 
     async def _generate_content(
         self,
         payload: InsightReportGenerateRequest,
         materials: list[dict[str, Any]],
         template: InsightReportTemplateRead,
+        graph_context: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], str]:
         fallback = self._fallback_content(payload, materials, template)
         try:
+            research_notes = await self._generate_research_notes(payload, materials, template, graph_context or {})
             messages = [
                 SystemMessage(
                     content=(
                         "你是研发营销市场洞察平台的报告生成 Agent。"
-                        "只能基于给定情报素材写报告，不得编造事实。"
+                        "只能基于给定参考素材写报告，不得编造事实。"
                         "默认报告对象是我们的客户或潜在客户，报告立场是客户经营洞察和客户成功支持，不是第三方投研唱空、媒体评论或竞品攻击。"
                         "可以客观指出风险、压力和不确定性，但表达方式应服务于客户维护、销售跟进、产品方案匹配和合作机会识别。"
                         "涉及负面事件时避免情绪化措辞，优先写成'需要关注/需要验证/可能影响客户经营的信号'。"
-                        "你需要在内部按深度研究方式工作：按企业、主题、时间、来源分组，做多来源交叉验证，识别冲突和证据缺口。"
-                        "但最终报告正文必须像 Word 研究报告，不要把'研究过程'、'思考过程'、'证据矩阵'作为正文大章节展示。"
+                        "你将收到上一步研究整理出的研究问题、素材分组、强弱信号、缺口和建议大纲。"
+                        "最终报告正文必须像 Word 研究报告，不要把'研究过程'、'思考过程'、'证据矩阵'作为正文大章节展示。"
                         "正文应包含摘要、背景、分章节分析、客户经营含义、合作机会、风险提醒、结论与建议，语气正式、段落完整、少用列表。"
-                        "报告应先根据素材摘要判断与用户目标的相关性，优先保留对研发、市场、营销、销售有直接价值的新品、品类、消费、价格、渠道、客户痛点和合作机会。"
+                        "报告应优先保留对研发、市场、营销、销售有直接价值的新品、品类、消费、价格、渠道、客户痛点和合作机会。"
+                        "最终只输出报告 JSON，不输出隐藏推理；reflection 字段用简短中文说明素材强弱、关联线索和仍需验证的问题。"
                         "素材中如包含 content_excerpt，表示系统已提供可参考的正文摘录；只有当摘要不足以支撑判断时，才结合正文摘录补充细节。"
                         "对供应链数字化、环保、资本市场、雇主品牌等偏远信息，除非用户明确要求或与销售切入直接相关，否则只作为背景，不要占据主要篇幅。"
                         "如果不同素材互相矛盾，要在正文中自然说明冲突和不确定性。"
                         "输出严格 JSON，字段包括 title、executive_summary、chapters、conclusion、key_findings、company_sections、risks、opportunities、evidence_matrix、reflection、follow_up_questions、source_notes。"
                         "chapters 是数组，每项包含 heading、paragraphs、evidence_ids；paragraphs 是适合直接放进报告正文的中文段落。"
-                        "正文 paragraphs 不得出现'证据ID'、'证据 ID'、'证据编号'、'ID:'等内部编号表达；引用关系只放在 evidence_ids 字段，由报告渲染层展示。"
-                        "必须优先按照用户选择的报告模板组织 chapters，章节标题尽量与模板章节一致；如果素材不足，可以合并相邻章节，但不能输出空洞模板话。"
+                        "正文 paragraphs 不得出现'素材ID'、'证据ID'、'证据编号'、'ID:'等内部编号表达；引用关系只放在 evidence_ids 字段，由报告渲染层展示。"
+                        "必须优先按照用户选择的报告模板组织 chapters，章节标题尽量与模板章节一致；如果证据不足，可以合并相邻章节，但不能输出空洞模板话。"
                         "所有标题、类型、原因和正文必须使用中文。"
                     )
                 ),
@@ -909,10 +1192,11 @@ class InsightReportService:
                             "material_scope": {
                                 "company_ids": payload.company_ids,
                                 "data_source_ids": payload.data_source_ids,
-                                "folder_name": payload.folder_name,
+                                "material_source": "正式素材库",
                                 "max_materials": payload.max_materials,
                             },
                             "user_prompt": payload.generation_prompt,
+                            "research_notes": research_notes,
                             "materials": materials[:120],
                         },
                         ensure_ascii=False,
@@ -928,9 +1212,115 @@ class InsightReportService:
                 max_retries=4,
             )
             content = self._parse_llm_json(getattr(response, "content", str(response)))
-            return self._normalize_content(content, fallback), "llm"
+            normalized = self._normalize_content(content, fallback)
+            normalized["research_method"] = normalized.get("research_method") or [
+                "先理解研究问题并拆成可回答的子问题。",
+                "整理已入库素材，筛掉重复和明显无关的内容。",
+                "按企业、产品、风险和机会归类，形成报告大纲后再撰写正文。",
+                "检查结论是否有素材支撑，并标出仍需验证的问题。",
+            ]
+            normalized["research_process"] = research_notes
+            return normalized, "asset_rag_deep_research"
         except Exception:
             return fallback, "rules"
+
+    async def _generate_research_notes(
+        self,
+        payload: InsightReportGenerateRequest,
+        materials: list[dict[str, Any]],
+        template: InsightReportTemplateRead,
+        graph_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        fallback = self._fallback_research_notes(payload, materials, template, graph_context)
+        try:
+            messages = [
+                SystemMessage(
+                    content=(
+                        "你是企业市场洞察研究员。请先做研究整理，不写正式报告。"
+                        "你需要把用户问题拆成子问题，按企业、产品、市场、政策、风险和机会整理素材，"
+                        "判断哪些素材支撑强、哪些只是弱线索，哪些地方缺资料。"
+                        "只输出 JSON，字段包括 research_questions、material_groups、strong_signals、weak_signals、gaps、outline、quality_checks。"
+                        "所有内容必须使用中文，避免技术术语。"
+                    )
+                ),
+                HumanMessage(
+                    content=json.dumps(
+                        {
+                            "report_type": payload.report_type,
+                            "template_name": template.template_name,
+                            "template_sections": [section.model_dump(mode="json") for section in template.sections],
+                            "user_prompt": payload.generation_prompt,
+                            "materials": materials[:120],
+                            "relations": graph_context,
+                        },
+                        ensure_ascii=False,
+                    )
+                ),
+            ]
+            response = await LLMFactory.safe_invoke(
+                messages,
+                capability="complex-reasoning",
+                temperature=0.15,
+                json_mode=True,
+                enable_reasoning=True,
+                max_retries=2,
+            )
+            notes = self._parse_llm_json(getattr(response, "content", str(response)))
+            return notes if isinstance(notes, dict) else fallback
+        except Exception:
+            return fallback
+
+    def _fallback_research_notes(
+        self,
+        payload: InsightReportGenerateRequest,
+        materials: list[dict[str, Any]],
+        template: InsightReportTemplateRead,
+        graph_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        type_counts = Counter(item.get("intelligence_type") or "未分类" for item in materials)
+        company_counts = Counter(item.get("company_name") or item.get("subject_name") or "未归属主题" for item in materials)
+        groups = [
+            {
+                "name": name,
+                "material_count": count,
+                "focus": "优先检查是否与用户问题、客户机会或风险判断直接相关。",
+            }
+            for name, count in type_counts.most_common(8)
+        ]
+        return {
+            "research_questions": [
+                payload.generation_prompt or f"围绕{payload.report_type}形成可交付报告",
+                "哪些变化对客户经营、销售跟进、产品方案或风险预警最有价值？",
+                "哪些判断素材充分，哪些仍需要后续验证？",
+            ],
+            "material_groups": groups,
+            "strong_signals": [
+                {
+                    "title": f"{name}相关素材较多",
+                    "summary": f"当前共有 {count} 条相关素材，可作为报告重点方向之一。",
+                }
+                for name, count in company_counts.most_common(5)
+                if count >= 2
+            ],
+            "weak_signals": [
+                {
+                    "title": item.get("title"),
+                    "summary": item.get("summary") or "该素材可作为线索，但仍需要更多来源验证。",
+                }
+                for item in materials[:5]
+            ],
+            "gaps": [
+                "当前主要依赖已入库公开素材，部分主题可能缺少企业官网、公告、招投标、招聘或内部经营数据印证。",
+                "如果报告用于重要决策，建议后续补充关键企业的官方来源和内部客户合作记录。",
+            ],
+            "outline": [section.heading for section in template.sections] or ["摘要", "重点分析", "机会风险", "结论建议"],
+            "quality_checks": [
+                "优先写有素材支撑的判断。",
+                "弱线索只作为待验证问题，不写成确定结论。",
+                "避免空泛口号，尽量给出可跟进动作。",
+                f"已识别 {len(graph_context.get('edges', [])) if isinstance(graph_context, dict) else 0} 条关联线索。",
+            ],
+        }
 
     def _fallback_content(
         self,
@@ -945,7 +1335,7 @@ class InsightReportService:
         key_findings = [
             {
                 "title": item["title"],
-                "insight": item.get("summary") or "该情报可作为报告素材进一步研判。",
+                "insight": item.get("summary") or "该情报可作为后续研判线索。",
                 "evidence_ids": [item["id"]],
             }
             for item in materials[:8]
@@ -955,7 +1345,7 @@ class InsightReportService:
                 "theme": theme,
                 "material_count": count,
                 "evidence_strength": "中",
-                "note": f"该主题目前有 {count} 条正式情报支撑，需结合后续来源继续验证。",
+                "note": f"该主题目前有 {count} 条正式素材支撑，需结合后续来源继续验证。",
             }
             for theme, count in type_counts.most_common(8)
         ]
@@ -968,17 +1358,23 @@ class InsightReportService:
             for company_name, rows in company_groups.items()
         ]
         title = payload.title or self._default_title(payload, materials)
+        lead_items = [self._material_sentence(item) for item in materials[:5]]
+        lead_text = "；".join(item for item in lead_items if item)
         return {
             "title": title,
             "template_code": template.template_code,
             "template_name": template.template_name,
-            "executive_summary": f"本报告基于 {len(materials)} 条已审核情报生成，覆盖 {len(company_groups)} 个企业或主题。素材类型以 {', '.join([f'{k}{v}条' for k, v in type_counts.most_common(5)])} 为主。",
+            "executive_summary": (
+                f"本报告基于 {len(materials)} 条正式素材整理，覆盖 {len(company_groups)} 个企业或主题。"
+                f"当前可直接使用的素材包括：{lead_text or '暂无可概括的核心素材'}。"
+                f"类型分布以 {', '.join([f'{k}{v}条' for k, v in type_counts.most_common(5)]) or '未分类素材'} 为主。"
+            ),
             "chapters": self._fallback_chapters(company_sections, key_findings, materials, template),
-            "conclusion": "总体看，当前素材已经能够支撑一份阶段性客户经营洞察报告，但关键经营判断仍需要结合企业官方公告、工商变化、渠道数据和内部客户合作记录继续验证。",
+            "conclusion": "总体看，当前素材适合形成阶段性整理稿。涉及客户经营判断、销售跟进优先级和合作机会判断时，仍需要结合企业官方公告、渠道数据和内部客户合作记录继续验证。",
             "research_method": [
-                "按企业和主题聚合正式情报素材，先识别高频议题和异常信号。",
+                "按企业和主题聚合正式素材，先识别高频议题和异常信号。",
                 "对同一企业下的新品、经营、市场、风险信息进行交叉比对，避免单条资讯直接下结论。",
-                "将结论分为已被多条素材支撑的发现、需要持续观察的机会和证据不足的风险假设。",
+                "将结论分为已被多条素材支撑的发现、需要持续观察的机会和素材不足的风险假设。",
             ],
             "evidence_matrix": evidence_matrix,
             "key_findings": key_findings,
@@ -987,7 +1383,7 @@ class InsightReportService:
             "opportunities": self._opportunity_items(materials),
             "reflection": [
                 "当前报告主要依赖公开资讯和已入库网页正文，暂未接入工商变更、招投标、招聘和内部客户合作数据。",
-                "部分素材缺少文章发布时间或完整正文，相关结论只能作为弱信号处理。",
+                "部分证据缺少文章发布时间或完整正文，相关结论只能作为弱信号处理。",
                 "同一事件可能被多个媒体转载，已做 URL 和正文去重，但仍需要在正式报告前人工复核关键事实。",
             ],
             "follow_up_questions": [
@@ -996,7 +1392,7 @@ class InsightReportService:
                 "后续接入启信宝、招聘和内部合作数据后，哪些结论可能被增强或推翻？",
             ],
             "source_notes": [
-                "报告仅引用已入库正式情报和来源证据。",
+                "报告仅引用已入库正式情报和来源素材。",
                 "竞品、行业和供应链背景素材会作为上下文进入报告，但不等同于目标企业自身事件。",
             ],
             "stats": {
@@ -1031,7 +1427,9 @@ class InsightReportService:
     ) -> list[dict[str, Any]]:
         template_sections = template.sections if template else []
         company_paragraphs = [
-            f"{section['company_name']}相关素材显示，{section['summary']}"
+            f"{section['company_name']}相关素材显示，{section['summary']}主要素材包括："
+            + "；".join(self._material_sentence(signal) for signal in section.get("signals", [])[:3] if self._material_sentence(signal))
+            + "。"
             for section in company_sections[:4]
             if section.get("summary")
         ]
@@ -1044,7 +1442,7 @@ class InsightReportService:
             {
                 "heading": template_sections[0].heading if len(template_sections) > 0 else "一、市场与企业动态概览",
                 "paragraphs": company_paragraphs
-                or [f"本期共引用 {len(materials)} 条正式情报，素材覆盖目标企业动态、行业趋势、产品创新和潜在风险。"],
+                or [f"本期共引用 {len(materials)} 条正式素材，覆盖目标企业动态、行业趋势、产品创新和潜在风险。"],
                 "evidence_ids": [item["id"] for item in materials[:6] if item.get("id")],
             },
             {
@@ -1061,6 +1459,13 @@ class InsightReportService:
                 "evidence_ids": [item["id"] for item in materials[12:18] if item.get("id")],
             },
         ]
+
+    def _material_sentence(self, item: dict[str, Any]) -> str:
+        title = self._short_text(item.get("title") or "", 120)
+        summary = self._short_text(item.get("summary") or item.get("insight") or "", 180)
+        if title and summary:
+            return f"{title}，{summary}"
+        return title or summary
 
     def _normalize_content(self, content: dict[str, Any], fallback: dict[str, Any]) -> dict[str, Any]:
         result = fallback | {key: value for key, value in content.items() if value}
@@ -1112,7 +1517,7 @@ class InsightReportService:
             user_id=user_id,
             default_template_code="customer_business_review",
             default_report_type="专题报告",
-            default_folder_name="P1企业档案测试素材",
+            default_folder_name=None,
             default_max_materials=100,
             writing_stance="客户经营视角",
             report_depth="深度研究",
@@ -1163,7 +1568,7 @@ class InsightReportService:
             f"写作立场：{preference.writing_stance}。",
             f"报告深度：{preference.report_depth}。",
             f"引用方式：{preference.citation_style}。",
-            "需要包含风险提醒。" if preference.include_risks else "除非素材强相关，否则减少风险提醒篇幅。",
+            "需要包含风险提醒。" if preference.include_risks else "除非证据强相关，否则减少风险提醒篇幅。",
             "需要包含合作机会和业务建议。" if preference.include_opportunities else "减少合作机会展开，优先事实归纳。",
             "需要包含后续跟进问题。" if preference.include_follow_up_questions else "不需要单独输出后续跟进问题。",
             preference.custom_prompt_suffix,
@@ -1177,8 +1582,8 @@ class InsightReportService:
         if payload.data_source_ids:
             return "data_source_filter"
         if payload.company_ids:
-            return "company_filter"
-        return "report_material_pool"
+            return "company_asset_rag"
+        return "formal_asset_rag"
 
     def _parse_template_file(self, file_name: str, file_bytes: bytes) -> dict[str, Any]:
         suffix = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else ""
@@ -1355,9 +1760,9 @@ class InsightReportService:
     def _prompt_from_structure(self, structure: dict[str, Any], report_type: str) -> str:
         base = [
             f"请按上传的 {structure.get('file_type', '').upper()} 模板结构生成{report_type or '专题报告'}。",
-            "报告正文必须服务于客户经营洞察，基于已选情报素材写作，不编造事实。",
+            "报告正文必须服务于客户经营洞察，基于已选情报证据写作，不编造事实。",
             "尽量保留模板的标题层级、字段顺序、表格逻辑和措辞风格；模板中像占位符、表格字段、Sheet 名称的内容，应转化为报告输出约束。",
-            "如果素材不足以填满某个模板模块，需要明确说明证据不足，不要空泛补字。",
+            "如果证据不足以填满某个模板模块，需要明确说明证据不足，不要空泛补字。",
         ]
         if structure.get("summary"):
             base.append(str(structure["summary"]))
@@ -1402,7 +1807,7 @@ class InsightReportService:
     def _default_template_sections(self) -> list[InsightReportTemplateSection]:
         return [
             InsightReportTemplateSection(section_key="summary", heading="一、核心摘要", description="概括报告主要发现和判断边界。"),
-            InsightReportTemplateSection(section_key="analysis", heading="二、重点分析", description="围绕素材做正式正文分析。"),
+            InsightReportTemplateSection(section_key="analysis", heading="二、重点分析", description="围绕证据做正式正文分析。"),
             InsightReportTemplateSection(section_key="recommendations", heading="三、结论与建议", description="形成客户经营和业务跟进建议。"),
         ]
 
@@ -1609,17 +2014,17 @@ class InsightReportService:
         charts = [
             self._counter_chart(
                 "subject_distribution",
-                "企业与主题素材分布",
+                "企业与主题证据分布",
                 subject_counts,
                 chart_type="bar",
-                description="按报告引用素材归属的企业或主题统计。",
+                description="按报告引用证据归属的企业或主题统计。",
             ),
             self._counter_chart(
                 "type_distribution",
                 "情报类型分布",
                 type_counts,
                 chart_type="donut",
-                description="观察报告素材主要集中在哪些经营信号。",
+                description="观察报告证据主要集中在哪些经营信号。",
             ),
             self._counter_chart(
                 "source_distribution",
@@ -1684,7 +2089,7 @@ class InsightReportService:
         ]
         return InsightReportChartRead(
             chart_key="publish_trend",
-            title="素材发布时间趋势",
+            title="证据发布时间趋势",
             description="按文章发布时间聚合；若来源未提供发布时间，则使用情报创建时间兜底。",
             chart_type="line",
             unit="条",
@@ -1694,6 +2099,8 @@ class InsightReportService:
     def _source_type_label(self, source_type: str | None) -> str:
         labels = {
             "baidu_news": "百度资讯",
+            "bocha": "博查搜索",
+            "bocha_search": "博查搜索",
             "bocha_news": "博查资讯",
             "bocha_web": "博查网页",
             "official_site": "官网",
@@ -1737,24 +2144,36 @@ class InsightReportService:
         row: InsightIntelligence,
         source: InsightIntelligenceSource | None,
         company_map: dict[int, InsightCompany],
+        asset: InsightIntelligenceAsset | None = None,
     ) -> dict[str, Any]:
         company = company_map.get(row.company_id or 0)
         raw_payload = row.raw_payload or {}
+        structured_payload = asset.structured_payload if asset and isinstance(asset.structured_payload, dict) else {}
+        review_payload = asset.review_payload if asset and isinstance(asset.review_payload, dict) else raw_payload.get("ai_review")
         return {
             "id": row.id,
+            "asset_id": asset.id if asset else None,
             "title": row.title,
             "summary": self._short_text(row.summary, 600),
             "company_id": row.company_id,
             "company_name": (company.short_name or company.name) if company else row.subject_name,
             "subject_name": row.subject_name,
             "intelligence_type": row.intelligence_type,
+            "business_value": row.business_domain or (asset.business_value if asset else None),
             "importance_level": row.importance_level,
+            "confidence": asset.confidence if asset else None,
             "publish_time": (row.publish_time or row.create_time).isoformat() if (row.publish_time or row.create_time) else None,
             "source_url": source.source_url if source else None,
             "source_title": source.source_title if source else None,
-            "content_excerpt": self._short_text(row.content, 1800) if self._should_include_content_excerpt(row) else None,
-            "tags": raw_payload.get("suggested_tags") if isinstance(raw_payload, dict) else [],
-            "selection_reason": f"{row.importance_level} 关注度，{row.intelligence_type} 类素材",
+            "content_excerpt": self._short_text((asset.evidence_text if asset else None) or row.content, 1800) if self._should_include_content_excerpt(row) else None,
+            "tags": (asset.tags if asset else raw_payload.get("suggested_tags")) if isinstance(raw_payload, dict) else [],
+            "entities": asset.entities if asset else structured_payload.get("entities", []),
+            "related_products": structured_payload.get("related_products", []),
+            "opportunities": asset.opportunities if asset else structured_payload.get("opportunities", []),
+            "risks": asset.risks if asset else structured_payload.get("risks", []),
+            "keywords": asset.keywords if asset else [],
+            "review_reason": review_payload.get("reason") if isinstance(review_payload, dict) else None,
+            "selection_reason": f"{row.importance_level} 关注度，{row.intelligence_type} 类资产；{row.business_domain or (asset.business_value if asset else '')}".strip("；"),
         }
 
     def _should_include_content_excerpt(self, row: InsightIntelligence) -> bool:
@@ -1952,7 +2371,7 @@ class InsightReportService:
             Paragraph(
                 self._pdf_escape(
                     f"报告类型：{report.report_type} · 版本：第 {report.version_no} 版 · "
-                    f"素材：{report.material_count} 条 · 导出时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                    f"证据：{report.material_count} 条 · 导出时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
                 ),
                 meta_style,
             ),
@@ -1974,12 +2393,12 @@ class InsightReportService:
             for paragraph in self._chapter_paragraphs(chapter):
                 story.append(Paragraph(self._pdf_escape(self._strip_inline_evidence_ids(paragraph)), base))
             story.extend(self._pdf_evidence_flowables(chapter.get("evidence_ids"), material_map, font_name, small_style, Table, TableStyle, colors))
-        story.extend([PageBreak(), Paragraph("参考素材", h2_style)])
+        story.extend([PageBreak(), Paragraph("参考证据", h2_style)])
         if materials:
             for index, item in enumerate(materials, start=1):
                 story.append(
                     self._pdf_info_box(
-                        f"来源 {index}：{item.source_title or item.intelligence_title or f'素材 {item.intelligence_id}'}",
+                        f"来源 {index}：{item.source_title or item.intelligence_title or f'证据 {item.intelligence_id}'}",
                         "\n".join(
                             value
                             for value in [
@@ -1997,7 +2416,7 @@ class InsightReportService:
                 )
                 story.append(Spacer(1, 6))
         else:
-            story.append(Paragraph("暂无引用素材。", base))
+            story.append(Paragraph("暂无引用证据。", base))
 
         doc = SimpleDocTemplate(
             str(file_path),
@@ -2050,7 +2469,7 @@ class InsightReportService:
         meta.alignment = WD_ALIGN_PARAGRAPH.CENTER
         meta_text = (
             f"报告类型：{report.report_type}  |  版本：第 {report.version_no} 版  |  "
-            f"素材：{report.material_count} 条  |  导出时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            f"证据：{report.material_count} 条  |  导出时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
         meta_run = meta.add_run(meta_text)
         self._docx_set_run_font(meta_run, font_name, Pt(9), RGBColor(102, 122, 119), qn)
@@ -2093,10 +2512,10 @@ class InsightReportService:
             )
 
         doc.add_page_break()
-        doc.add_heading("参考素材", level=1)
+        doc.add_heading("参考证据", level=1)
         if materials:
             for index, item in enumerate(materials, start=1):
-                source_title = item.source_title or item.intelligence_title or f"素材 {item.intelligence_id}"
+                source_title = item.source_title or item.intelligence_title or f"证据 {item.intelligence_id}"
                 body = "\n".join(
                     value
                     for value in [
@@ -2117,7 +2536,7 @@ class InsightReportService:
                     fill="F7FBFA",
                 )
         else:
-            self._docx_add_body_paragraph(doc, "暂无引用素材。", font_name, qn, Pt, RGBColor)
+            self._docx_add_body_paragraph(doc, "暂无引用证据。", font_name, qn, Pt, RGBColor)
 
         doc.core_properties.title = report.title
         doc.core_properties.author = "研发营销市场洞察平台"
@@ -2154,7 +2573,7 @@ class InsightReportService:
 
     def _docx_add_body_paragraph(self, doc: Any, text: str, font_name: str, qn: Any, pt_cls: Any, rgb_cls: Any) -> None:
         paragraph = doc.add_paragraph()
-        run = paragraph.add_run(text)
+        run = paragraph.add_run(self._normalize_evidence_text(text))
         self._docx_set_run_font(run, font_name, pt_cls(10.5), rgb_cls(52, 72, 70), qn)
         self._docx_set_paragraph_spacing(paragraph, after=pt_cls(6))
 
@@ -2176,10 +2595,10 @@ class InsightReportService:
         cell = table.cell(0, 0)
         self._docx_shade_cell(cell, fill, qn, oxml_element_cls)
         title_paragraph = cell.paragraphs[0]
-        title_run = title_paragraph.add_run(title)
+        title_run = title_paragraph.add_run(self._normalize_evidence_text(title))
         self._docx_set_run_font(title_run, font_name, pt_cls(10.5), rgb_cls(15, 118, 110), qn, bold=True)
         self._docx_set_paragraph_spacing(title_paragraph, after=pt_cls(4))
-        for line in self._split_pdf_lines(body):
+        for line in self._split_pdf_lines(self._normalize_evidence_text(body)):
             paragraph = cell.add_paragraph()
             run = paragraph.add_run(line)
             self._docx_set_run_font(run, font_name, pt_cls(9.5), rgb_cls(80, 100, 97), qn)
@@ -2220,7 +2639,7 @@ class InsightReportService:
                 continue
             self._docx_add_info_box(
                 doc,
-                f"证据：{item.source_title or item.intelligence_title or f'素材 {intelligence_id}'}",
+                f"证据：{item.source_title or item.intelligence_title or f'情报记录 {intelligence_id}'}",
                 item.quote_text or item.intelligence_summary or "",
                 font_name,
                 qn,
@@ -2318,7 +2737,7 @@ class InsightReportService:
 
             flowables.append(
                 self._pdf_info_box(
-                    f"证据：{item.source_title or item.intelligence_title or f'素材 {intelligence_id}'}",
+                    f"证据：{item.source_title or item.intelligence_title or f'情报记录 {intelligence_id}'}",
                     item.quote_text or item.intelligence_summary or "",
                     font_name,
                     paragraph_style,
@@ -2333,9 +2752,9 @@ class InsightReportService:
     def _chapter_paragraphs(self, chapter: dict[str, Any]) -> list[str]:
         body = chapter.get("body") or chapter.get("content") or chapter.get("paragraphs") or ""
         if isinstance(body, list):
-            paragraphs = [str(item).strip() for item in body if str(item).strip()]
+            paragraphs = [self._normalize_evidence_text(str(item).strip()) for item in body if str(item).strip()]
         else:
-            paragraphs = [part.strip() for part in str(body).split("\n") if part.strip()]
+            paragraphs = [self._normalize_evidence_text(part.strip()) for part in str(body).split("\n") if part.strip()]
         return paragraphs or ["暂无正文。"]
 
     def _split_pdf_lines(self, text: str) -> list[str]:
@@ -2343,7 +2762,7 @@ class InsightReportService:
         return parts or ["暂无内容。"]
 
     def _pdf_escape(self, text: str) -> str:
-        return escape(str(text or "")).replace("\n", "<br/>")
+        return escape(self._normalize_evidence_text(str(text or ""))).replace("\n", "<br/>")
 
     def _render_report_html(self, report: InsightReportDetail) -> str:
         content = report.content_json or {}
@@ -2358,8 +2777,8 @@ class InsightReportService:
             (
                 f'<article class="source-card" id="source-{item.intelligence_id}">'
                 f'<div class="source-index">来源 {index}</div>'
-                f"<h3>{escape(item.source_title or item.intelligence_title or f'素材 {item.intelligence_id}')}</h3>"
-                f"<p>{escape(item.quote_text or item.intelligence_summary or '')}</p>"
+                f"<h3>{escape(self._normalize_evidence_text(item.source_title or item.intelligence_title or f'证据 {item.intelligence_id}'))}</h3>"
+                f"<p>{escape(self._normalize_evidence_text(item.quote_text or item.intelligence_summary or ''))}</p>"
                 f"{self._render_source_link(item.source_url)}"
                 "</article>"
             )
@@ -2369,7 +2788,7 @@ class InsightReportService:
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
-  <title>{escape(report.title)}</title>
+  <title>{escape(self._normalize_evidence_text(report.title))}</title>
   <style>
     :root {{ color-scheme: light; }}
     * {{ box-sizing: border-box; }}
@@ -2402,30 +2821,41 @@ class InsightReportService:
 </head>
 <body>
   <main>
-    <h1>{escape(report.title)}</h1>
-    <div class="meta">报告类型：{escape(report.report_type)} · 版本：第 {report.version_no} 版 · 素材：{report.material_count} 条 · 导出时间：{generated_at}</div>
+    <h1>{escape(self._normalize_evidence_text(report.title))}</h1>
+    <div class="meta">报告类型：{escape(report.report_type)} · 版本：第 {report.version_no} 版 · 证据：{report.material_count} 条 · 导出时间：{generated_at}</div>
     <section class="summary">
       <strong>摘要</strong>
-      <p>{escape(self._strip_inline_evidence_ids(str(content.get("executive_summary") or report.summary or "暂无摘要。")))}</p>
+      <p>{escape(self._normalize_evidence_text(self._strip_inline_evidence_ids(str(content.get("executive_summary") or report.summary or "暂无摘要。"))))}</p>
     </section>
     {chapter_html}
-    <h2>参考素材</h2>
-    <div class="source-list">{material_html or "<p>暂无引用素材。</p>"}</div>
+    <h2>参考证据</h2>
+    <div class="source-list">{material_html or "<p>暂无引用证据。</p>"}</div>
   </main>
 </body>
 </html>
 """
 
     def _render_chapter_html(self, chapter: dict[str, Any], material_map: dict[int, InsightReportMaterialRead]) -> str:
-        heading = escape(str(chapter.get("heading") or chapter.get("title") or "未命名章节"))
+        heading = escape(self._normalize_evidence_text(str(chapter.get("heading") or chapter.get("title") or "未命名章节")))
         body = chapter.get("body") or chapter.get("content") or chapter.get("paragraphs") or ""
         if isinstance(body, list):
             paragraphs = [str(item) for item in body]
         else:
             paragraphs = [part.strip() for part in str(body).split("\n") if part.strip()]
-        paragraph_html = "".join(f"<p>{escape(self._strip_inline_evidence_ids(item))}</p>" for item in paragraphs) or "<p>暂无正文。</p>"
+        paragraph_html = "".join(f"<p>{escape(self._normalize_evidence_text(self._strip_inline_evidence_ids(item)))}</p>" for item in paragraphs) or "<p>暂无正文。</p>"
         evidence_html = self._render_evidence_cards(chapter.get("evidence_ids"), material_map)
         return f"<section><h2>{heading}</h2>{paragraph_html}{evidence_html}</section>"
+
+    def _normalize_evidence_text(self, text: str) -> str:
+        return (
+            str(text or "")
+            .replace("报告素材池", "正式情报资产库")
+            .replace("素材池", "资产库")
+            .replace("测试素材", "测试数据")
+            .replace("证据矩阵", "素材清单")
+            .replace("引用证据", "引用素材")
+            .replace("报告证据", "报告素材")
+        )
 
     def _strip_inline_evidence_ids(self, text: str) -> str:
         text = re.sub(r"[（(]\s*证据\s*(?:ID|编号|id)?\s*[:：]?\s*[\d,，、\s]+[）)]", "", text)
@@ -2448,15 +2878,15 @@ class InsightReportService:
             item = material_map.get(intelligence_id)
             if not item:
                 continue
-            title = escape(item.source_title or item.intelligence_title or f"素材 {intelligence_id}")
-            summary = escape(item.quote_text or item.intelligence_summary or "")
+            title = escape(self._normalize_evidence_text(item.source_title or item.intelligence_title or f"情报记录 {intelligence_id}"))
+            summary = escape(self._normalize_evidence_text(item.quote_text or item.intelligence_summary or ""))
             source_link = self._render_source_link(item.source_url)
             cards.append(
                 '<details class="evidence-card">'
                 f"<summary>来源：{title}</summary>"
                 "<div>"
                 f"<p>{summary}</p>"
-                f'<a href="#source-{intelligence_id}">定位到参考素材</a>'
+                f'<a href="#source-{intelligence_id}">定位到参考证据</a>'
                 f"{' · ' + source_link if source_link else ''}"
                 "</div>"
                 "</details>"

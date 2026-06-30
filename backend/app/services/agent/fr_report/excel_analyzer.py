@@ -13,6 +13,11 @@ from app.schemas.agent.fr_report.ai_report import (
 from app.schemas.agent.fr_report.report_dsl import FieldRole, FieldType
 
 
+MAX_SCAN_ROWS = 160
+MAX_SCAN_COLUMNS = 512
+MAX_TRAILING_COLUMN_GAP = 20
+
+
 class ExcelAnalyzer:
     def analyze(self, file_content: bytes, file_name: str | None = None) -> ExcelAnalysisResult:
         try:
@@ -21,13 +26,20 @@ class ExcelAnalyzer:
             raise RuntimeError("缺少 openpyxl 依赖，无法读取 Excel 文件") from exc
 
         workbook = load_workbook(BytesIO(file_content), read_only=False, data_only=True)
+        formula_workbook = load_workbook(BytesIO(file_content), read_only=False, data_only=False)
         sheets: list[ExcelSheetAnalysis] = []
 
         for worksheet in workbook.worksheets:
+            formula_worksheet = formula_workbook[worksheet.title]
+            bounds = self._effective_bounds(worksheet, formula_worksheet)
+            if bounds is None:
+                continue
             rows = list(
                 worksheet.iter_rows(
                     min_row=1,
-                    max_row=min(worksheet.max_row or 1, 120),
+                    max_row=bounds["max_row"],
+                    min_col=1,
+                    max_col=bounds["max_col"],
                     values_only=True,
                 )
             )
@@ -60,6 +72,29 @@ class ExcelAnalyzer:
                 header_matrix,
                 header_meta,
             )
+            template_analysis["effectiveRange"] = {
+                "minRow": 1,
+                "minColumn": 1,
+                "maxRow": bounds["max_row"],
+                "maxColumn": bounds["max_col"],
+                "address": f"A1:{self._column_letter(bounds['max_col'])}{bounds['max_row']}",
+                "worksheetMaxColumn": worksheet.max_column,
+                "worksheetMaxRow": worksheet.max_row,
+                "truncatedColumns": bool(bounds.get("truncated_columns")),
+            }
+            formula_rules = self._extract_formula_rules(
+                formula_worksheet,
+                header_meta,
+                table_region,
+                bounds["max_row"],
+                bounds["max_col"],
+            )
+            formula_conflicts = self._detect_formula_conflicts(
+                formula_rules,
+                template_analysis.get("calculationRules") or [],
+            )
+            template_analysis["formulaRules"] = formula_rules
+            template_analysis["formulaConflicts"] = formula_conflicts
 
             sheets.append(
                 ExcelSheetAnalysis(
@@ -74,6 +109,57 @@ class ExcelAnalyzer:
 
         primary_sheet = max(sheets, key=lambda item: item.rowCount).sheetName if sheets else None
         return ExcelAnalysisResult(fileName=file_name, sheets=sheets, primarySheet=primary_sheet)
+
+    def _effective_bounds(self, worksheet, formula_worksheet=None) -> dict[str, int | bool] | None:
+        value_cells: list[tuple[int, int]] = []
+        for source in [worksheet, formula_worksheet]:
+            if source is None:
+                continue
+            for (row_index, column_index), cell in getattr(source, "_cells", {}).items():
+                if row_index > MAX_SCAN_ROWS:
+                    continue
+                value = cell.value
+                if value not in (None, ""):
+                    value_cells.append((row_index, column_index))
+
+        if not value_cells:
+            return None
+
+        merged_cells: list[tuple[int, int]] = []
+        meaningful_positions = set(value_cells)
+        for cell_range in getattr(worksheet, "merged_cells", []).ranges:
+            top_left = (cell_range.min_row, cell_range.min_col)
+            if top_left in meaningful_positions or any(
+                cell_range.min_row <= row <= cell_range.max_row
+                and cell_range.min_col <= col <= cell_range.max_col
+                for row, col in meaningful_positions
+            ):
+                merged_cells.extend(
+                    [
+                        (min(cell_range.max_row, MAX_SCAN_ROWS), cell_range.max_col),
+                        (cell_range.min_row, cell_range.min_col),
+                    ]
+                )
+
+        positions = value_cells + merged_cells
+        max_row = min(max(row for row, _ in positions), MAX_SCAN_ROWS)
+        meaningful_columns = sorted({col for _, col in positions if col <= MAX_SCAN_COLUMNS})
+        if not meaningful_columns:
+            return None
+
+        kept_max_col = meaningful_columns[0]
+        for column in meaningful_columns[1:]:
+            if column - kept_max_col > MAX_TRAILING_COLUMN_GAP:
+                break
+            kept_max_col = column
+
+        raw_max_col = max(col for _, col in positions)
+        truncated_columns = raw_max_col > kept_max_col or raw_max_col > MAX_SCAN_COLUMNS
+        return {
+            "max_row": max_row,
+            "max_col": min(kept_max_col, MAX_SCAN_COLUMNS),
+            "truncated_columns": truncated_columns,
+        }
 
     def _detect_table_region(self, rows: list[tuple[Any, ...]]) -> dict[str, int] | None:
         data_row_index: int | None = None
@@ -307,10 +393,45 @@ class ExcelAnalyzer:
         header_meta: dict[str, Any] | None = None,
     ) -> FieldRole:
         lowered = header.lower()
-        date_keywords = ["date", "time", "日期", "时间", "月份", "年度", "年份", "年", "月", "日"]
-        measure_keywords = ["金额", "数量", "销量", "收入", "成本", "利润", "单价", "余额", "合计", "均价", "涨跌", "成交量", "手续费", "收益", "持仓量", "执行价", "sum", "amount", "qty", "price"]
+        date_keywords = ["date", "time", "日期", "时间", "月份", "年度", "年份"]
+        measure_keywords = [
+            "金额",
+            "数量",
+            "销量",
+            "收入",
+            "成本",
+            "利润",
+            "单价",
+            "余额",
+            "合计",
+            "均价",
+            "涨跌",
+            "成交量",
+            "手续费",
+            "收益",
+            "持仓量",
+            "执行价",
+            "订单量",
+            "签单量",
+            "发货量",
+            "需求量",
+            "库存",
+            "采购",
+            "到货",
+            "出库",
+            "结余",
+            "签订",
+            "待执行",
+            "头寸",
+            "吨",
+            "手",
+            "sum",
+            "amount",
+            "qty",
+            "price",
+        ]
         text_keywords = ["备注", "说明", "描述", "地址", "内容", "comment", "desc"]
-        if field_type in {FieldType.DATE, FieldType.DATETIME} or any(key in lowered for key in date_keywords):
+        if field_type in {FieldType.DATE, FieldType.DATETIME} or self._is_date_like_header(header) or any(key in lowered for key in date_keywords):
             return FieldRole.DATE
         if any(key in lowered for key in measure_keywords):
             return FieldRole.MEASURE
@@ -458,12 +579,38 @@ class ExcelAnalyzer:
 
     def _detect_note_texts(self, non_empty_rows: list[dict[str, Any]]) -> list[str]:
         notes: list[str] = []
-        note_keywords = ["显示数据关联", "涨跌", "自动计算", "显示颜色", "价格显示", "备注", "说明", "维护", "下拉框", "平仓", "持仓", "合约"]
+        note_keywords = [
+            "显示数据关联",
+            "涨跌",
+            "自动计算",
+            "显示颜色",
+            "价格显示",
+            "备注",
+            "说明",
+            "维护",
+            "下拉框",
+            "平仓",
+            "持仓",
+            "合约",
+            "需求",
+            "SAP",
+            "采购",
+            "库存",
+            "公式",
+            "计算",
+            "头寸",
+            "手工录入",
+            "取自",
+            "出库",
+            "发货",
+            "溢余",
+            "SAP",
+        ]
         for row in non_empty_rows:
             joined = "\n".join(str(value).strip() for value in row["values"] if str(value).strip())
             if joined and any(keyword in joined for keyword in note_keywords):
                 notes.append(joined)
-        return notes[:8]
+        return notes[:30]
 
     def _detect_requirement_lines(self, non_empty_rows: list[dict[str, Any]]) -> list[str]:
         lines: list[str] = []
@@ -580,6 +727,21 @@ class ExcelAnalyzer:
     def _infer_calculation_rules(self, note_texts: list[str]) -> list[dict[str, Any]]:
         rules: list[dict[str, Any]] = []
         joined = "\n".join(note_texts)
+        for note in note_texts:
+            clean_note = re.sub(r"^\s*\d+[、.．]\s*", "", note.strip())
+            for statement in re.findall(r"([^。\n；;]*[=＝][^。\n；;]*)", clean_note):
+                left, right = re.split(r"[=＝]", statement, maxsplit=1)
+                label = left.strip(" ：:，,")
+                expression = right.strip(" 。；;")
+                if not label or not expression:
+                    continue
+                rules.append(
+                    {
+                        "label": label[-30:],
+                        "expression": expression[:120],
+                        "source": "template_note",
+                    }
+                )
         if "涨跌" in joined:
             rules.append(
                 {
@@ -592,7 +754,165 @@ class ExcelAnalyzer:
             )
         if "价格显示整数" in joined:
             rules.append({"label": "价格", "formatIntent": "整数显示", "sqlFieldCandidates": ["price"]})
-        return rules
+        return rules[:30]
+
+    def _extract_formula_rules(
+        self,
+        worksheet,
+        header_meta: list[dict[str, Any]],
+        table_region: dict[str, int],
+        max_row: int,
+        max_col: int,
+    ) -> list[dict[str, Any]]:
+        rules: list[dict[str, Any]] = []
+        seen_targets: set[str] = set()
+        min_row = table_region["dataStartIndex"] + 1
+        for row_index in range(min_row, min(max_row, min_row + 40) + 1):
+            for col_index in range(1, max_col + 1):
+                value = worksheet.cell(row_index, col_index).value
+                if not isinstance(value, str) or not value.startswith("="):
+                    continue
+                target_label = self._label_for_column(header_meta, col_index)
+                target_key = f"{col_index}:{self._normalize_formula_pattern(value)}"
+                if target_key in seen_targets:
+                    continue
+                seen_targets.add(target_key)
+                source_terms = self._formula_source_terms(value, header_meta)
+                rules.append(
+                    {
+                        "targetLabel": target_label,
+                        "targetColumn": self._column_letter(col_index),
+                        "sampleCell": f"{self._column_letter(col_index)}{row_index}",
+                        "sampleFormula": value,
+                        "sourceLabels": list(dict.fromkeys(term["label"] for term in source_terms if term.get("label"))),
+                        "sourceTerms": source_terms,
+                        "constants": self._formula_constants(value),
+                    }
+                )
+        return rules[:80]
+
+    def _detect_formula_conflicts(
+        self,
+        formula_rules: list[dict[str, Any]],
+        calculation_rules: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        conflicts: list[dict[str, Any]] = []
+        for note_rule in calculation_rules:
+            if note_rule.get("source") != "template_note":
+                continue
+            note_label = str(note_rule.get("label") or "")
+            note_expression = str(note_rule.get("expression") or "")
+            if not note_label or not note_expression:
+                continue
+            for formula_rule in formula_rules:
+                target_label = str(formula_rule.get("targetLabel") or "")
+                if not self._labels_overlap(note_label, target_label):
+                    continue
+                formula_constants = {str(item) for item in formula_rule.get("constants") or []}
+                note_constants = set(self._formula_constants(note_expression))
+                if formula_constants and note_constants and formula_constants != note_constants:
+                    conflicts.append(
+                        {
+                            "type": "constant_mismatch",
+                            "targetLabel": target_label,
+                            "formula": formula_rule.get("sampleFormula"),
+                            "noteExpression": note_expression,
+                            "formulaConstants": sorted(formula_constants),
+                            "noteConstants": sorted(note_constants),
+                            "message": f"{target_label} 的 Excel 公式常数与文字说明不一致，需要人工确认。",
+                        }
+                    )
+
+                note_signs = self._note_expression_signs(note_expression)
+                formula_signs = {
+                    str(term.get("label")): str(term.get("operator") or "+")
+                    for term in formula_rule.get("sourceTerms") or []
+                    if term.get("label")
+                }
+                for label, note_sign in note_signs.items():
+                    matched_formula_label = next(
+                        (item for item in formula_signs if self._labels_overlap(label, item)),
+                        None,
+                    )
+                    if not matched_formula_label:
+                        continue
+                    formula_sign = formula_signs[matched_formula_label]
+                    if formula_sign in {"+", "-"} and note_sign in {"+", "-"} and formula_sign != note_sign:
+                        conflicts.append(
+                            {
+                                "type": "operator_mismatch",
+                                "targetLabel": target_label,
+                                "sourceLabel": matched_formula_label,
+                                "formula": formula_rule.get("sampleFormula"),
+                                "noteExpression": note_expression,
+                                "message": f"{target_label} 中 {matched_formula_label} 的 Excel 公式符号与文字说明不一致，需要人工确认。",
+                            }
+                        )
+        return conflicts[:20]
+
+    def _formula_source_terms(self, formula: str, header_meta: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        terms: list[dict[str, Any]] = []
+        for match in re.finditer(r"([+\-*/]?)\s*\$?([A-Z]{1,3})\$?\d+", formula.upper()):
+            operator = match.group(1) or "+"
+            column_index = self._column_index(match.group(2))
+            terms.append(
+                {
+                    "operator": operator,
+                    "column": match.group(2),
+                    "label": self._label_for_column(header_meta, column_index),
+                }
+            )
+        return terms
+
+    def _formula_constants(self, formula: str) -> list[str]:
+        text = re.sub(r"\$?[A-Z]{1,3}\$?\d+", " ", formula.upper())
+        text = re.sub(r"^\s*\d+[、.．]\s*", "", text)
+        return re.findall(r"(?<![\w.])\d+(?:\.\d+)?(?![\w.])", text)
+
+    def _normalize_formula_pattern(self, formula: str) -> str:
+        return re.sub(r"(\$?[A-Z]{1,3}\$?)\d+", r"\1#", formula.upper())
+
+    def _note_expression_signs(self, expression: str) -> dict[str, str]:
+        normalized = expression.replace("－", "-").replace("＋", "+")
+        parts = re.findall(r"([+\-]?)\s*([\u4e00-\u9fa5A-Za-z_][\u4e00-\u9fa5A-Za-z0-9_（）()]*)(?=\s*(?:[+\-*/]|$))", normalized)
+        signs: dict[str, str] = {}
+        for operator, label in parts:
+            clean_label = label.strip(" ：:，,。；;")
+            if clean_label:
+                signs[clean_label] = operator or "+"
+        return signs
+
+    def _labels_overlap(self, left: str, right: str) -> bool:
+        left_text = self._normalize_formula_label(left)
+        right_text = self._normalize_formula_label(right)
+        if not left_text or not right_text:
+            return False
+        return left_text in right_text or right_text in left_text
+
+    def _normalize_formula_label(self, value: str) -> str:
+        text = re.sub(r"\s+", "", value)
+        text = re.sub(r"[（(][^）)]*[）)]", "", text)
+        text = text.replace("原料", "")
+        return text
+
+    def _label_for_column(self, header_meta: list[dict[str, Any]], column_index: int) -> str:
+        if 1 <= column_index <= len(header_meta):
+            return str(header_meta[column_index - 1].get("label") or f"字段{column_index}")
+        return f"字段{column_index}"
+
+    def _column_letter(self, column_index: int) -> str:
+        letters = ""
+        value = column_index
+        while value:
+            value, remainder = divmod(value - 1, 26)
+            letters = chr(65 + remainder) + letters
+        return letters or "A"
+
+    def _column_index(self, column_letter: str) -> int:
+        value = 0
+        for char in column_letter.upper():
+            value = value * 26 + (ord(char) - 64)
+        return value
 
     def _normalize_row_dimension_labels(self, labels: list[str]) -> list[str]:
         normalized: list[str] = []
@@ -667,9 +987,12 @@ class ExcelAnalyzer:
         generic_parents = {"项目", "基本信息", "基础信息", "明细", "数据"}
         standalone_children = {"收益情况", "持仓量", "备注", "合计"}
         group_prefixes = {"开仓", "平仓", "持仓"}
+        semantic_prefixes = {"合同"}
         if parent in generic_parents or child in standalone_children:
             return child
         if parent in group_prefixes and not child.startswith(parent):
+            return f"{parent}{child}"
+        if parent in semantic_prefixes and not child.startswith(parent):
             return f"{parent}{child}"
         if parent == child:
             return child

@@ -58,7 +58,7 @@ pnpm dev
 - Milvus：`MILVUS_HOST`、`MILVUS_PORT`
 - LangFuse：`LANGFUSE_PUBLIC_KEY`、`LANGFUSE_SECRET_KEY`、`LANGFUSE_HOST`
 - OnlyOffice：`ONLYOFFICE_SERVER_URL`、`ONLYOFFICE_JWT_SECRET`
-- Insight 通用采集：`INSIGHT_FIRECRAWL_BASE_URL`、`INSIGHT_FIRECRAWL_API_KEY`、`INSIGHT_FIRECRAWL_TIMEOUT_SECONDS`、`INSIGHT_BOCHA_API_KEY`、`INSIGHT_BOCHA_BASE_URL`、`INSIGHT_SEARCH_TIMEOUT_SECONDS`
+- Insight 通用采集：`INSIGHT_FIRECRAWL_BASE_URL`、`INSIGHT_FIRECRAWL_API_KEY`、`INSIGHT_FIRECRAWL_TIMEOUT_SECONDS`、`INSIGHT_BOCHA_API_KEY`、`INSIGHT_BOCHA_BASE_URL`、`INSIGHT_SEARCH_TIMEOUT_SECONDS`、`INSIGHT_OWN_BUSINESS_PROFILE`
 - Insight 周期调度：`INSIGHT_SCHEDULER_ENABLED`、`INSIGHT_SCHEDULER_INTERVAL_SECONDS`、`INSIGHT_SCHEDULER_BATCH_LIMIT`、`INSIGHT_SCHEDULER_STARTUP_DELAY_SECONDS`、`INSIGHT_SCHEDULER_ADVISORY_LOCK_ID`、`INSIGHT_SCHEDULER_USER_ID`、`INSIGHT_SCHEDULER_FAILURE_PAUSE_THRESHOLD`
 - 安全：`SECRET_KEY`、`MCP_API_KEY`、`EXTERNAL_API_KEYS`
 
@@ -138,6 +138,7 @@ uv sync
 ## 9. 模型服务代理配置
 
 - 后端模型调用统一经过 `backend/app/core/llm_factory.py`，不得在业务代码里绕过工厂直接实例化 `ChatOpenAI`。
+- Insight 情报资产 RAG 使用 `sys_model.model_type=embedding` 的模型配置；当前默认补齐火山方舟 `doubao-embedding-vision-251215`，调用 `/api/v3/embeddings/multimodal`，Key 和 base_url 继承已有火山引擎模型配置。
 - 代理策略由 `LLM_PROXY_MODE` 控制：`auto` 为默认值；`off` 表示模型调用忽略系统代理；`env` 表示使用 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 及其小写形式；`url` 表示只使用 `LLM_PROXY_URL`。
 - `auto` 模式下，如果配置了 `LLM_PROXY_URL`，模型调用使用该显式代理并忽略系统代理；如果未配置，则兼容系统代理环境变量。这样本地无代理可以直连，服务器有代理也可以按需接入。
 - 如果服务器使用 SOCKS 代理，必须使用 `socks5://host:port`，不要使用 `socks://host:port`；LLM 工厂会将遗留的 `socks://` 自动规范为 `socks5://`，避免 `ChatOpenAI` 初始化时报 `Unknown scheme for proxy URL`。
@@ -158,6 +159,10 @@ uv sync
 - 可见性授权接口包括 `GET/POST /api/v1/insight/intelligence/{intelligence_id}/visibility-rules`，支持 `user`、`role`、`dept`、`all` 四类主体；用户情报池接口包括 `GET /api/v1/insight/intelligence-pool`、`POST /api/v1/insight/intelligence/{intelligence_id}/pool` 和 `DELETE /api/v1/insight/intelligence/{intelligence_id}/pool/{pool_type}`。
 - Bocha/博查 API Key 通过 `INSIGHT_BOCHA_API_KEY` 配置，默认接口根地址为 `INSIGHT_BOCHA_BASE_URL=https://api.bocha.cn`，完整 Web Search 地址为 `/v1/web-search`；未配置 Key 时不要启用 `bocha` 通道。
 - 搜索发现超时由 `INSIGHT_SEARCH_TIMEOUT_SECONDS` 控制，默认 30 秒。
+  - Insight 全渠道适配器依赖 `beautifulsoup4`、`requests` 和 `playwright`；服务器部署后需要执行 `uv sync` 并安装 Playwright 浏览器运行环境。近半月补数与调度模拟入口为 `uv run python scripts/insight_run_all_channel_adapters.py --mode backfill|simulate-daily|simulate-weekly|simulate-monthly --days 15`，默认把运行报告写入 `backend/storage/insight_adapter_run_reports`，适配器原始输出和运行副作用写入 `backend/storage/insight_adapter_runs`。脚本支持受控并行：`--api-concurrency` 控制百度、博查和 HTTP 适配器，`--playwright-concurrency` 控制 Playwright 站点适配器，同一渠道仍串行，`--adapter-timeout` 控制单渠道超时，`--shard-index/--shard-total` 用于夜间分片补数。正式夜间采集建议在 01:00-06:00 分批执行，失败记录可通过 `/api/v1/insight/quality/adapter-runs` 查询。
+  - Insight 测试/烟测/样例数据清理入口为 `uv run python scripts/cleanup_insight_test_data.py`。默认只预览命中数量和样例；确认范围后加 `--execute` 才会软删除候选线索、正式情报、来源证据、报告、资产、向量、图谱、采集任务等关联数据。清理规则只匹配“测试客户、烟测、样例、仅用于测试、smoke=true”等明确测试痕迹，避免因真实网页正文中的普通 `Demo` 或“测试数据”字样误删业务数据。
+  - AI 自动评审会默认注入香驰控股有限公司的大豆、玉米精深加工，功能糖、糖醇、植物蛋白、豆粕、粮油和营养健康应用画像；如需补充内部战略、重点客户群或阶段性经营口径，可用 `INSIGHT_OWN_BUSINESS_PROFILE` 配置额外文本，系统会合并进评审上下文。
+- Insight 企业微信推送卡片默认使用 `INSIGHT_PUBLIC_BASE_URL=https://ai.xiangchi.com` 拼接报告和情报链接；真实发送仍必须配置 `INSIGHT_WECOM_CORP_ID`、`INSIGHT_WECOM_AGENT_ID`、`INSIGHT_WECOM_SECRET` 并开启 `INSIGHT_WECOM_SEND_ENABLED`。
 - Insight 首页看板接口为 `GET /api/v1/insight/dashboard`，聚合当前用户可见的正式情报，返回 KPI、近 7 日趋势、来源分布、重点动态和最新情报；权限过滤和隐藏池过滤必须在后端完成。
 - Insight 数据源配置需要支持手动和周期采集。第一版数据源类型包括官网、通用网页、百度资讯、博查资讯和博查网页搜索；百度资讯通道需要显式走资讯搜索参数，不应复用普通网页搜索结果。
 - 数据源周期配置支持 `manual`、`15m`、`hourly`、`daily` 和自定义 cron。当前正式运行推荐 `INSIGHT_SCHEDULER_ENABLED=true`，`.env.example` 已按开启配置；仅在纯开发调试且不希望消耗外部搜索/抓取额度时手动改为 `false`。调度器只读取启用且到期的数据源创建采集任务，每轮写入 `scheduler_tick` 任务日志，并通过 PostgreSQL advisory lock 避免多实例重复执行。周期调度推荐搜索类数据源配置 `crawl_top_n=0`、`create_candidate_from_hits=true`、`enable_llm_filter=true` 和明确的 `filter_prompt`：平台会先做搜索发现、LLM 结果筛选和搜索摘要级 AI 初筛，再把候选入库；正文级深挖由批处理脚本分时执行，避免常驻调度器被慢 URL 阻塞。搜索通道可用但结果被规则或 LLM 全部过滤时，应记录为成功的 0 候选任务，并保留 `filter_summary`、`rejected_items` 和 LLM 判分信息；只有未配置搜索通道或外部通道调用失败时才标记失败。调度器对单个数据源有超时保护，超时后按失败写回该源状态并进入下一源，不允许长期占用 `scheduler_tick`。前端数据源配置页通过 `/api/v1/insight/scheduler/status` 查看运行状态，通过 `/scheduler/run-once` 立即扫描到期任务，通过 `/scheduler/start` 和 `/scheduler/stop` 做运行态控制。连续失败达到 `INSIGHT_SCHEDULER_FAILURE_PAUSE_THRESHOLD` 后数据源会自动暂停周期采集，人工排查后可调用 `/api/v1/insight/data-sources/{data_source_id}/schedule/retry` 加入下一轮调度。

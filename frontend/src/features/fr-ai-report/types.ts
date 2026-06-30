@@ -217,10 +217,22 @@ export interface GenerateCptStepPayload {
     conflictStrategy?: 'abort' | 'archive_and_overwrite' | 'import_external';
 }
 
+export interface CreateEmptyReportPayload {
+    reportName: string;
+    targetFolder: string;
+    targetObjectPath?: string | null;
+    conflictStrategy?: 'abort' | 'archive_and_overwrite' | 'import_external';
+}
+
 export interface FrAiReportAgentContext {
     reportName?: string | null;
     targetFolder?: string | null;
     targetObjectPath?: string | null;
+    currentObjectPath?: string | null;
+    selectedCell?: string | null;
+    selectedDataset?: string | null;
+    previewColumns?: string[];
+    previewRows?: Record<string, unknown>[];
     sourceTableName?: string | null;
     templateObjectPath?: string | null;
     taskId?: string | null;
@@ -228,15 +240,19 @@ export interface FrAiReportAgentContext {
     requirement?: string | null;
     ddlDialect?: 'sqlserver' | 'mysql' | 'postgresql' | string;
     idAutoIncrement?: boolean;
+    activeSkillIds?: string[];
+    skillInstruction?: string | null;
+    allowedToolNames?: string[];
 }
 
-export type FrAiReportAgentAction = 'chat' | 'start_generate' | 'save_cpt';
+export type FrAiReportAgentAction = 'chat' | 'start_generate' | 'save_cpt' | 'modify_current_report';
 
 export interface FrAiReportAgentChatPayload {
     message: string;
     action?: FrAiReportAgentAction;
     context?: FrAiReportAgentContext;
     file?: File | null;
+    files?: File[];
 }
 
 export interface FrAiReportAgentEvent {
@@ -246,10 +262,53 @@ export interface FrAiReportAgentEvent {
     payload: Record<string, unknown>;
 }
 
+export interface FrAiReportAgentToolRead {
+    name: string;
+    label: string;
+    category: string;
+    riskLevel: 'low' | 'medium' | 'high' | string;
+    autoExecutable: boolean;
+    requiresApproval: boolean;
+    description: string;
+    inputSchema: Record<string, unknown>;
+    outputSchema: Record<string, unknown>;
+    enabled: boolean;
+}
+
+export interface FrAiReportAgentSkillRead {
+    skillId: string;
+    name: string;
+    scope: string;
+    enabled: boolean;
+    priority: number;
+    description?: string | null;
+    instruction: string;
+    appliesTo: string[];
+    tokenBudget: number;
+}
+
+export interface FrAiReportAgentRuntimePolicy {
+    strategy: string;
+    maxToolSteps: number;
+    contextTokenBudget: number;
+    autoRunReadOnlyTools: boolean;
+    autoCreateDraft: boolean;
+    requireApprovalForWrite: boolean;
+    memoryPolicy: string;
+}
+
+export interface FrAiReportAgentCapabilitiesResponse {
+    strategy: FrAiReportAgentRuntimePolicy;
+    tools: FrAiReportAgentToolRead[];
+    skills: FrAiReportAgentSkillRead[];
+    boundaries: string[];
+}
+
 export interface FrAiReportAgentChatResponse {
     status: string;
     conversationId?: string | null;
     taskId?: string | null;
+    assistantMessage?: string | null;
     context: FrAiReportAgentContext;
     events: FrAiReportAgentEvent[];
     questions: string[];
@@ -257,6 +316,8 @@ export interface FrAiReportAgentChatResponse {
     sqlStep?: GenerateSqlStepResponse | null;
     dslStep?: GenerateDslStepResponse | null;
     cptStep?: GenerateCptStepResponse | null;
+    operationDraft?: FrReportAiOperationDraftResponse | null;
+    capabilities?: FrAiReportAgentCapabilitiesResponse | null;
     warnings: string[];
     errors: string[];
 }
@@ -525,6 +586,26 @@ export interface FrReportDimensionRead {
     size?: number | null;
 }
 
+export interface FrReportParameterWidgetRead {
+    name: string;
+    label?: string | null;
+    widgetType?: string | null;
+    defaultValue?: string | null;
+    x?: number | null;
+    y?: number | null;
+    width?: number | null;
+    height?: number | null;
+}
+
+export interface FrReportParameterPanelRead {
+    showWindow: boolean;
+    delayPlaying: boolean;
+    useParamsTemplate?: boolean | null;
+    width?: number | null;
+    height?: number | null;
+    widgets: FrReportParameterWidgetRead[];
+}
+
 export interface FrReportSheetRead {
     name: string;
     rowCount: number;
@@ -539,6 +620,7 @@ export interface FrReportSheetRead {
 
 export interface FrReportDocumentRead {
     title?: string | null;
+    parameterPanel?: FrReportParameterPanelRead | null;
     sheets: FrReportSheetRead[];
     unsupportedNodes: string[];
     parseCoverage: Record<string, number>;

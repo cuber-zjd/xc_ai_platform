@@ -1,25 +1,29 @@
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from hashlib import sha256
 from typing import Any
 from uuid import uuid4
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from sqlmodel import select
+from sqlmodel import func, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.llm_factory import LLMFactory
 from app.core.logger import logger
 from app.models.agent.insight import (
     InsightCandidateReviewStatus,
+    InsightAssetVector,
+    InsightChannelAdapterRun,
     InsightCompany,
     InsightCrawlerChannel,
     InsightCrawlResult,
     InsightCrawlStatus,
     InsightDataSource,
+    InsightIntelligenceAsset,
     InsightIntelligenceCandidate,
+    InsightMonitorConfig,
     InsightSubjectType,
     InsightTask,
     InsightTaskStatus,
@@ -31,6 +35,8 @@ from app.schemas.agent.insight.crawl import (
     InsightSearchHitRead,
 )
 from app.services.agent.insight.crawler.crawl_service import insight_crawl_service
+from app.services.agent.insight.crawler.channel_adapter_service import AdapterRunContext, insight_channel_adapter_service
+from app.services.agent.insight.crawler.content_cleaner import insight_content_cleaner
 from app.services.agent.insight.crawler.search_client import InsightSearchHit, baidu_search_client, bocha_search_client
 from app.services.agent.insight.permission_service import insight_permission_service
 
@@ -39,8 +45,10 @@ from app.services.agent.insight.permission_service import insight_permission_ser
 class SearchFilterTrace:
     hits: list[InsightSearchHit]
     collected_count: int
+    time_window_kept_count: int
     rule_kept_count: int
     dedupe_kept_count: int
+    history_dedupe_kept_count: int
     llm_kept_count: int
     rejected_items: list[dict[str, Any]]
     kept_items: list[dict[str, Any]]
@@ -59,10 +67,13 @@ class InsightSearchDiscoveryService:
         is_admin: bool = False,
     ) -> InsightSearchDiscoveryResponse:
         await self._ensure_data_source_editable(db, request.data_source_id, user_id=user_id, is_admin=is_admin)
+        await self._ensure_monitor_config_editable(db, request.monitor_config_id, user_id=user_id, is_admin=is_admin)
         task = InsightTask(
             task_uid=f"search_{uuid4().hex}",
             task_type="keyword_search_discovery",
             data_source_id=request.data_source_id,
+            monitor_config_id=request.monitor_config_id,
+            source_channel_id=request.source_channel_id,
             status=InsightTaskStatus.RUNNING,
             progress=10,
             started_at=datetime.now(),
@@ -75,7 +86,7 @@ class InsightSearchDiscoveryService:
         await db.refresh(task)
 
         try:
-            trace = await self._collect_hits(request)
+            trace = await self._collect_hits(db, request)
             hits = trace.hits
             discovered_results = [self._to_discovered_result(task.id or 0, request, hit, user_id) for hit in hits]
             db.add_all(discovered_results)
@@ -97,6 +108,8 @@ class InsightSearchDiscoveryService:
                             url=hit.url,
                             query_text=request.query,
                             data_source_id=request.data_source_id,
+                            monitor_config_id=request.monitor_config_id,
+                            source_channel_id=request.source_channel_id,
                         ),
                         user_id,
                         is_admin=is_admin,
@@ -149,8 +162,10 @@ class InsightSearchDiscoveryService:
                 "hit_ai_analysis_applied": bool(request.create_candidate_from_hits and request.crawl_top_n == 0 and candidates),
                 "filter_summary": {
                     "source_hit_count": trace.collected_count,
+                    "time_window_kept_count": trace.time_window_kept_count,
                     "rule_kept_count": trace.rule_kept_count,
                     "dedupe_kept_count": trace.dedupe_kept_count,
+                    "history_dedupe_kept_count": trace.history_dedupe_kept_count,
                     "llm_kept_count": trace.llm_kept_count,
                     "final_hit_count": len(hits),
                     "rule_filter_enabled": bool(request.include_keywords or request.exclude_keywords),
@@ -166,6 +181,7 @@ class InsightSearchDiscoveryService:
                 "candidate_items": [self._candidate_item(item) for item in candidates],
                 "crawl_errors": crawl_errors,
             }
+            await self._update_adapter_run_counts(db, hits, trace, candidates)
             await db.commit()
             await db.refresh(task)
 
@@ -183,6 +199,61 @@ class InsightSearchDiscoveryService:
             task.error_message = str(exc)
             await db.commit()
             raise
+
+    async def _update_adapter_run_counts(
+        self,
+        db: AsyncSession,
+        hits: list[InsightSearchHit],
+        trace: SearchFilterTrace,
+        candidates: list[InsightIntelligenceCandidate],
+    ) -> None:
+        adapter_run_ids = sorted(
+            {
+                int((hit.raw or {}).get("adapter_run_id"))
+                for hit in hits
+                if isinstance((hit.raw or {}).get("adapter_run_id"), int)
+                or str((hit.raw or {}).get("adapter_run_id") or "").isdigit()
+            }
+        )
+        if not adapter_run_ids:
+            return
+        rows = list(
+            (
+                await db.exec(
+                    select(InsightChannelAdapterRun).where(
+                        InsightChannelAdapterRun.id.in_(adapter_run_ids),
+                        InsightChannelAdapterRun.is_deleted == 0,
+                    )
+                )
+            ).all()
+        )
+        per_run_kept: dict[int, int] = {run_id: 0 for run_id in adapter_run_ids}
+        for hit in hits:
+            raw_run_id = (hit.raw or {}).get("adapter_run_id")
+            if raw_run_id is not None and str(raw_run_id).isdigit():
+                per_run_kept[int(raw_run_id)] = per_run_kept.get(int(raw_run_id), 0) + 1
+        for row in rows:
+            row.kept_count = per_run_kept.get(row.id or 0, row.kept_count)
+            row.dedupe_count = max(trace.dedupe_kept_count - trace.history_dedupe_kept_count, 0)
+            row.candidate_count = len(candidates)
+            row.formal_count = len(
+                [candidate for candidate in candidates if candidate.review_status == InsightCandidateReviewStatus.PROMOTED]
+            )
+            candidate_ids = [candidate.id for candidate in candidates if candidate.id]
+            if candidate_ids:
+                row.vectorized_count = (
+                    await db.exec(
+                        select(func.count())
+                        .select_from(InsightAssetVector)
+                        .join(InsightIntelligenceAsset, InsightIntelligenceAsset.id == InsightAssetVector.asset_id)
+                        .where(
+                            InsightIntelligenceAsset.candidate_id.in_(candidate_ids),
+                            InsightIntelligenceAsset.is_deleted == 0,
+                            InsightAssetVector.is_deleted == 0,
+                        )
+                    )
+                ).one()
+            row.update_time = datetime.now()
 
     async def _ensure_data_source_editable(
         self,
@@ -210,7 +281,28 @@ class InsightSearchDiscoveryService:
         if not row:
             raise ValueError("数据源不存在或无权采集")
 
-    async def _collect_hits(self, request: InsightSearchDiscoveryRequest) -> SearchFilterTrace:
+    async def _ensure_monitor_config_editable(
+        self,
+        db: AsyncSession,
+        monitor_config_id: int | None,
+        *,
+        user_id: int | None,
+        is_admin: bool,
+    ) -> None:
+        if not monitor_config_id or is_admin:
+            return
+        row = (
+            await db.exec(
+                select(InsightMonitorConfig).where(
+                    InsightMonitorConfig.id == monitor_config_id,
+                    InsightMonitorConfig.is_deleted == 0,
+                )
+            )
+        ).first()
+        if not row or (row.owner_user_id is not None and row.owner_user_id != user_id and row.visibility_scope != "public"):
+            raise ValueError("监测配置不存在或无权采集")
+
+    async def _collect_hits(self, db: AsyncSession, request: InsightSearchDiscoveryRequest) -> SearchFilterTrace:
         hits: list[InsightSearchHit] = []
         errors: list[str] = []
         channels = {channel.lower() for channel in request.channels}
@@ -242,23 +334,47 @@ class InsightSearchDiscoveryService:
             except Exception as exc:
                 errors.append(f"博查资讯搜索失败: {exc}")
 
-        filtered_hits, rule_rejected = self._apply_rule_filter(hits, request)
+        built_in_channels = {"baidu", "baidu_news", "bocha", "bocha_news"}
+        for channel_code in sorted(channels - built_in_channels):
+            try:
+                hits.extend(
+                    await insight_channel_adapter_service.search(
+                        db,
+                        channel_code,
+                        request.query,
+                        context=AdapterRunContext(
+                            channel_id=request.source_channel_id,
+                            monitor_config_id=request.monitor_config_id,
+                            run_type=getattr(request, "run_type", None) or "manual_test",
+                            since=self._freshness_cutoff(request.freshness) or datetime.now() - timedelta(days=15),
+                            limit=per_channel_count,
+                        ),
+                    )
+                )
+            except Exception as exc:
+                errors.append(f"{channel_code} 适配器失败: {exc}")
+
+        time_filtered_hits, time_rejected = self._apply_time_window_filter(hits, request)
+        filtered_hits, rule_rejected = self._apply_rule_filter(time_filtered_hits, request)
         deduped, dedupe_rejected = self._dedupe_hits(filtered_hits)
-        llm_hits, llm_rejected, llm_applied, llm_message = await self._apply_llm_filter(deduped, request)
+        new_hits, history_dedupe_rejected = await self._dedupe_existing_hits(db, deduped)
+        llm_hits, llm_rejected, llm_applied, llm_message = await self._apply_llm_filter(new_hits, request)
         final_hits = llm_hits[: request.max_results]
         limit_rejected = [
             self._rejection_item(hit, "limit", f"超过本次发现数量上限 {request.max_results}，未进入后续抓取")
             for hit in llm_hits[request.max_results :]
         ]
-        rejected_items = rule_rejected + dedupe_rejected + llm_rejected + limit_rejected
+        rejected_items = time_rejected + rule_rejected + dedupe_rejected + history_dedupe_rejected + llm_rejected + limit_rejected
 
         if not final_hits and errors and not hits and not rejected_items and not self._is_empty_result_error(errors):
             raise ValueError("；".join(errors))
         return SearchFilterTrace(
             hits=final_hits,
             collected_count=len(hits),
+            time_window_kept_count=len(time_filtered_hits),
             rule_kept_count=len(filtered_hits),
             dedupe_kept_count=len(deduped),
+            history_dedupe_kept_count=len(new_hits),
             llm_kept_count=len(llm_hits),
             rejected_items=rejected_items,
             kept_items=[self._kept_item(hit) for hit in final_hits],
@@ -315,6 +431,42 @@ class InsightSearchDiscoveryService:
             for hit in bocha_hits
         ]
 
+    def _apply_time_window_filter(
+        self,
+        hits: list[InsightSearchHit],
+        request: InsightSearchDiscoveryRequest,
+    ) -> tuple[list[InsightSearchHit], list[dict[str, Any]]]:
+        cutoff = self._freshness_cutoff(request.freshness)
+        if cutoff is None:
+            return hits, []
+
+        filtered: list[InsightSearchHit] = []
+        rejected: list[dict[str, Any]] = []
+        for hit in hits:
+            if hit.published_at is None or hit.published_at >= cutoff:
+                filtered.append(hit)
+                continue
+            rejected.append(
+                self._rejection_item(
+                    hit,
+                    "time_window",
+                    f"发布时间早于本次时间窗（{cutoff:%Y-%m-%d} 之后）",
+                )
+            )
+        return filtered, rejected
+
+    def _freshness_cutoff(self, freshness: str | None) -> datetime | None:
+        value = (freshness or "").strip().lower()
+        if value in {"halfmonth", "half_month", "15d", "recent15d", "recent_15d"}:
+            return datetime.now() - timedelta(days=15)
+        if value in {"oneweek", "one_week", "week", "7d"}:
+            return datetime.now() - timedelta(days=7)
+        if value in {"oneday", "one_day", "day", "24h"}:
+            return datetime.now() - timedelta(days=1)
+        if value in {"onemonth", "one_month", "month", "30d"}:
+            return datetime.now() - timedelta(days=30)
+        return None
+
     def _apply_rule_filter(
         self,
         hits: list[InsightSearchHit],
@@ -350,7 +502,7 @@ class InsightSearchDiscoveryService:
         rejected: list[dict[str, Any]] = []
         seen: set[str] = set()
         for hit in hits:
-            key = hit.url.strip()
+            key = self._normalize_url_key(hit.url)
             if not key:
                 rejected.append(self._rejection_item(hit, "dedupe", "缺少 URL，无法入库去重"))
                 continue
@@ -360,6 +512,54 @@ class InsightSearchDiscoveryService:
             seen.add(key)
             deduped.append(hit)
         return deduped, rejected
+
+    async def _dedupe_existing_hits(
+        self,
+        db: AsyncSession,
+        hits: list[InsightSearchHit],
+    ) -> tuple[list[InsightSearchHit], list[dict[str, Any]]]:
+        if not hits:
+            return hits, []
+        current_keys = {self._normalize_url_key(hit.url) for hit in hits if self._normalize_url_key(hit.url)}
+        if not current_keys:
+            return [], [self._rejection_item(hit, "history_dedupe", "缺少 URL，无法执行历史去重") for hit in hits]
+
+        existing_urls = list(
+            (
+                await db.exec(
+                    select(InsightCrawlResult.source_url).where(
+                        InsightCrawlResult.is_deleted == 0,
+                        InsightCrawlResult.source_url != "",
+                    )
+                )
+            ).all()
+        )
+        existing_keys = {
+            normalized
+            for url in existing_urls
+            if (normalized := self._normalize_url_key(url))
+        }
+
+        kept: list[InsightSearchHit] = []
+        rejected: list[dict[str, Any]] = []
+        for hit in hits:
+            key = self._normalize_url_key(hit.url)
+            if not key:
+                rejected.append(self._rejection_item(hit, "history_dedupe", "缺少 URL，无法执行历史去重"))
+                continue
+            if key in existing_keys:
+                rejected.append(self._rejection_item(hit, "history_dedupe", "历史已采集过相同链接，跳过 AI 筛选和入库"))
+                continue
+            kept.append(hit)
+        return kept, rejected
+
+    def _normalize_url_key(self, url: str | None) -> str:
+        if not url:
+            return ""
+        try:
+            return insight_content_cleaner.normalize_url(url).rstrip("/")
+        except Exception:
+            return str(url).strip().rstrip("/")
 
     async def _apply_llm_filter(
         self,
@@ -509,10 +709,13 @@ class InsightSearchDiscoveryService:
         hit: InsightSearchHit,
         user_id: int | None,
     ) -> InsightCrawlResult:
-        dedupe_text = f"{self._enum_value(hit.channel)}\n{request.query}\n{hit.url}\n{hit.title}"
+        normalized_url = self._normalize_url_key(hit.url)
+        dedupe_text = f"search_url\n{normalized_url or hit.url}"
         return InsightCrawlResult(
             task_id=task_id,
             data_source_id=request.data_source_id,
+            monitor_config_id=request.monitor_config_id,
+            source_channel_id=request.source_channel_id,
             channel=hit.channel,
             query_text=self._truncate(request.query, 500),
             source_url=self._truncate(hit.url, 1000) or hit.url[:1000],
@@ -521,6 +724,9 @@ class InsightSearchDiscoveryService:
             published_at=hit.published_at,
             dedupe_hash=sha256(dedupe_text.encode("utf-8")).hexdigest(),
             crawl_metadata={
+                "monitor_config_id": request.monitor_config_id,
+                "source_channel_id": request.source_channel_id,
+                "normalized_url": normalized_url,
                 "raw": hit.raw or {},
                 "filter": {
                     "include_keywords": request.include_keywords,
@@ -550,9 +756,28 @@ class InsightSearchDiscoveryService:
             return []
         data_source = None
         company = None
+        monitor_config = None
+        if request.monitor_config_id:
+            monitor_config = (
+                await db.exec(
+                    select(InsightMonitorConfig).where(
+                        InsightMonitorConfig.id == request.monitor_config_id,
+                        InsightMonitorConfig.is_deleted == 0,
+                    )
+                )
+            ).first()
+            if monitor_config and monitor_config.object_type == "company" and monitor_config.object_id:
+                company = (
+                    await db.exec(
+                        select(InsightCompany).where(
+                            InsightCompany.id == monitor_config.object_id,
+                            InsightCompany.is_deleted == 0,
+                        )
+                    )
+                ).first()
         if request.data_source_id:
             data_source = (await db.exec(select(InsightDataSource).where(InsightDataSource.id == request.data_source_id))).first()
-            if data_source and data_source.company_id:
+            if not company and data_source and data_source.company_id:
                 company = (await db.exec(select(InsightCompany).where(InsightCompany.id == data_source.company_id))).first()
 
         analyses = await self._analyze_search_hit_candidates(discovered_results, request)
@@ -602,8 +827,8 @@ class InsightSearchDiscoveryService:
                 candidate_title=title[:500],
                 candidate_summary=summary[:1000],
                 subject_type=InsightSubjectType.COMPANY if company else InsightSubjectType.CUSTOM,
-                subject_name=(company.short_name or company.name)[:200] if company else request.query[:200],
-                company_id=data_source.company_id if data_source else None,
+                subject_name=(company.short_name or company.name)[:200] if company else (monitor_config.object_name[:200] if monitor_config and monitor_config.object_name else request.query[:200]),
+                company_id=company.id if company else (data_source.company_id if data_source else None),
                 intelligence_type=intelligence_type[:50],
                 suggested_tags=[
                     *llm_tags,
@@ -630,6 +855,16 @@ class InsightSearchDiscoveryService:
             db.add(candidate)
             candidates.append(candidate)
         await db.commit()
+        for candidate in candidates:
+            await db.refresh(candidate)
+        from app.services.agent.insight.ai_review_service import insight_ai_review_service
+
+        await insight_ai_review_service.review_candidates(
+            db,
+            [candidate.id for candidate in candidates if candidate.id],
+            user_id=user_id,
+            is_admin=True,
+        )
         for candidate in candidates:
             await db.refresh(candidate)
         return candidates

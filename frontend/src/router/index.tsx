@@ -47,8 +47,9 @@ const InsightDashboardPage = lazy(() => import("@/app/insight").then((module) =>
 const IntelligenceCenterPage = lazy(() => import("@/app/insight").then((module) => ({ default: module.IntelligenceCenterPage })));
 const IntelligenceDetailPage = lazy(() => import("@/app/insight").then((module) => ({ default: module.IntelligenceDetailPage })));
 const CompanyArchivePage = lazy(() => import("@/app/insight").then((module) => ({ default: module.CompanyArchivePage })));
+const MonitorConfigPage = lazy(() => import("@/app/insight").then((module) => ({ default: module.MonitorConfigPage })));
+const TagCategoryPage = lazy(() => import("@/app/insight").then((module) => ({ default: module.TagCategoryPage })));
 const ReportCenterPage = lazy(() => import("@/app/insight").then((module) => ({ default: module.ReportCenterPage })));
-const DataSourceConfigPage = lazy(() => import("@/app/insight").then((module) => ({ default: module.DataSourceConfigPage })));
 const QualityOverviewPage = lazy(() => import("@/app/insight").then((module) => ({ default: module.QualityOverviewPage })));
 const SettingsPage = lazy(() => import("@/app/insight").then((module) => ({ default: module.SettingsPage })));
 
@@ -356,6 +357,22 @@ const router = createBrowserRouter([
                 ),
             },
             {
+                path: "monitoring",
+                element: (
+                    <Suspense fallback={<PageLoader />}>
+                        <MonitorConfigPage />
+                    </Suspense>
+                ),
+            },
+            {
+                path: "tags",
+                element: (
+                    <Suspense fallback={<PageLoader />}>
+                        <TagCategoryPage />
+                    </Suspense>
+                ),
+            },
+            {
                 path: "reports",
                 element: (
                     <Suspense fallback={<PageLoader />}>
@@ -365,11 +382,7 @@ const router = createBrowserRouter([
             },
                 {
                     path: "data-sources",
-                    element: (
-                        <Suspense fallback={<PageLoader />}>
-                            <DataSourceConfigPage />
-                        </Suspense>
-                    ),
+                    element: <Navigate to="/insight/settings" replace />,
                 },
             {
                 path: "quality",

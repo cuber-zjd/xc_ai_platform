@@ -324,6 +324,9 @@ class InsightRequirementImportService:
             source_name=draft.source_name,
             source_type=draft.source_type,
             base_url=draft.base_url,
+            execution_role=insight_data_source_service._execution_role_for_source_type(draft.source_type),  # noqa: SLF001
+            generation_mode="imported",
+            collection_strategy="standard",
             company_id=company.id if company else None,
             fetch_frequency="daily",
             fetch_config=fetch_config,
@@ -342,6 +345,13 @@ class InsightRequirementImportService:
         row.source_name = payload.source_name
         row.source_type = payload.source_type
         row.base_url = payload.base_url
+        row.channel_id = payload.channel_id
+        row.monitor_config_id = payload.monitor_config_id
+        row.monitor_object_type = payload.monitor_object_type
+        row.monitor_object_id = payload.monitor_object_id
+        row.execution_role = payload.execution_role
+        row.generation_mode = payload.generation_mode
+        row.collection_strategy = payload.collection_strategy
         row.company_id = payload.company_id
         row.fetch_frequency = payload.fetch_frequency
         row.fetch_config = insight_data_source_service._normalize_fetch_config(payload.fetch_config)  # noqa: SLF001

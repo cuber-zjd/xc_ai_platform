@@ -5,6 +5,7 @@ import type {
     CptPublishResponse,
     FrAiReportAgentChatPayload,
     FrAiReportAgentChatResponse,
+    FrAiReportAgentCapabilitiesResponse,
     FrAiReportFeedbackPayload,
     FrAiReportFeedbackRead,
     FrAiReportRequirementReviewPayload,
@@ -31,6 +32,7 @@ import type {
     FrReportStructureRollbackResponse,
     FrReportExternalSyncResponse,
     FrReportRecycleResponse,
+    CreateEmptyReportPayload,
     GenerateCptStepResponse,
     GenerateCptStepPayload,
     GenerateDslStepResponse,
@@ -216,6 +218,9 @@ export function useFrAiReportAgentChat() {
             if (payload.file) {
                 formData.append('file', payload.file);
             }
+            for (const file of payload.files ?? []) {
+                formData.append('files', file);
+            }
             const response = await apiClient.post<FrAiReportAgentChatResponse>(`${BASE_URL}/agent/chat`, formData, {
                 headers: {
                     'Content-Type': 'multipart/form-data',
@@ -232,6 +237,50 @@ export function useFrAiReportAgentChat() {
             if (data.cptStep?.cptObjectPath) {
                 queryClient.invalidateQueries({ queryKey: ['fr-report-versions', data.cptStep.cptObjectPath] });
                 queryClient.invalidateQueries({ queryKey: ['fr-ai-report-files'] });
+            }
+        },
+    });
+}
+
+export function useFrAiReportAgentCapabilities() {
+    return useQuery({
+        queryKey: ['fr-ai-report-agent-capabilities'],
+        queryFn: async () => {
+            const response = await apiClient.get<FrAiReportAgentCapabilitiesResponse>(`${BASE_URL}/agent/capabilities`);
+            return response as unknown as FrAiReportAgentCapabilitiesResponse;
+        },
+        staleTime: 5 * 60 * 1000,
+    });
+}
+
+export function useCreateEmptyFrReport() {
+    const queryClient = useQueryClient();
+
+    return useMutation({
+        mutationFn: async (payload: CreateEmptyReportPayload) => {
+            const formData = new FormData();
+            formData.append('report_name', payload.reportName);
+            formData.append('target_folder', payload.targetFolder);
+            if (payload.targetObjectPath?.trim()) {
+                formData.append('target_object_path', payload.targetObjectPath.trim());
+            }
+            if (payload.conflictStrategy) {
+                formData.append('conflict_strategy', payload.conflictStrategy);
+            }
+            const response = await apiClient.post<GenerateCptStepResponse>(`${BASE_URL}/empty/create`, formData, {
+                headers: {
+                    'Content-Type': 'multipart/form-data',
+                },
+                timeout: 60000,
+            });
+            return response as unknown as GenerateCptStepResponse;
+        },
+        onSuccess: (data) => {
+            queryClient.invalidateQueries({ queryKey: ['fr-ai-report-task', data.taskId] });
+            queryClient.invalidateQueries({ queryKey: ['fr-ai-report-tasks'] });
+            queryClient.invalidateQueries({ queryKey: ['fr-ai-report-files'] });
+            if (data.cptObjectPath) {
+                queryClient.invalidateQueries({ queryKey: ['fr-report-versions', data.cptObjectPath] });
             }
         },
     });

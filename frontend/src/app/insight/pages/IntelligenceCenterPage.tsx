@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { CheckCircle2, EyeOff, ExternalLink, FileText, Loader2, Plus, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Star, Tags, XCircle } from "lucide-react";
+﻿import { useMemo, useState } from "react";
+import { EyeOff, ExternalLink, Loader2, Plus, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Star, Tags } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 
@@ -8,6 +8,8 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 
 import type {
+    InsightFormalAssetBackfillResponse,
+    InsightAssetSearchHit,
     InsightCandidateListParams,
     InsightIntelligenceCandidateListItem,
     InsightIntelligenceCreate,
@@ -18,15 +20,15 @@ import { DemoCard, DemoTag, RankList, SectionHeader, type TagTone } from "../com
 import { AccessRuleDialog } from "../components";
 import { InsightSelect } from "../components/InsightSelect";
 import {
+    useInsightBackfillFormalAssets,
+    useInsightAssetSearch,
     useInsightBulkActionIntelligence,
-    useInsightCandidateReview,
     useInsightCandidates,
     useInsightCompanies,
     useInsightCreateIntelligence,
     useInsightDataSources,
     useInsightIntelligences,
     useInsightSystemCompanies,
-    useInsightUpsertPool,
 } from "../hooks";
 import { PageContainer } from "../layout/PageContainer";
 import { formatInsightDate, formatInsightType } from "../utils/display";
@@ -55,6 +57,7 @@ const sourceOptions = [
     { value: "", label: "全部来源" },
     { value: "firecrawl", label: "网页抓取" },
     { value: "baidu_news", label: "百度资讯" },
+    { value: "bocha_search", label: "博查搜索" },
     { value: "bocha_news", label: "博查资讯" },
 ];
 
@@ -74,6 +77,34 @@ const bulkSentimentOptions = [
     { value: "mixed", label: "混合" },
 ];
 
+const systemTagNames = new Set([
+    "AI自动评审",
+    "AI搜索初筛",
+    "AI分析",
+    "AI已评审",
+    "AI评审",
+    "搜索发现",
+    "搜索命中",
+    "搜索初筛",
+    "公开搜索",
+    "系统采集",
+    "百度资讯",
+    "博查搜索",
+    "博查资讯",
+    "博查网页",
+    "网页抓取",
+    "baidu",
+    "baidu_news",
+    "bocha",
+    "bocha_search",
+    "bocha_news",
+    "bocha_web",
+    "firecrawl",
+    "generic_web",
+    "manual_url",
+]);
+const systemTagSources = new Set(["ai_review", "llm_analysis", "search_channel", "quality_rule", "smoke"]);
+
 export function IntelligenceCenterPage() {
     const [searchParams, setSearchParams] = useSearchParams();
     const dataSourceIdParam = Number(searchParams.get("data_source_id") || 0) || undefined;
@@ -90,10 +121,13 @@ export function IntelligenceCenterPage() {
     const [dataSourceId, setDataSourceId] = useState(dataSourceIdParam ? String(dataSourceIdParam) : "");
     const [dateFrom, setDateFrom] = useState("");
     const [dateTo, setDateTo] = useState("");
-    const [viewMode, setViewMode] = useState<"official" | "candidate">(searchParams.get("mode") === "candidate" ? "candidate" : "official");
+    const [viewMode, setViewMode] = useState<"official" | "candidate" | "asset">(resolveViewMode(searchParams.get("mode")));
+    const [assetQuery, setAssetQuery] = useState("");
+    const [assetIncludeCandidates, setAssetIncludeCandidates] = useState(true);
     const [createOpen, setCreateOpen] = useState(false);
+    const [filterOpen, setFilterOpen] = useState(false);
+    const [signalOpen, setSignalOpen] = useState(false);
     const [selectedOfficialIds, setSelectedOfficialIds] = useState<number[]>([]);
-    const [selectedCandidateIds, setSelectedCandidateIds] = useState<number[]>([]);
     const [bulkAccessOpen, setBulkAccessOpen] = useState(false);
     const [bulkEditOpen, setBulkEditOpen] = useState(false);
 
@@ -133,9 +167,9 @@ export function IntelligenceCenterPage() {
     const companiesQuery = useInsightCompanies({ page: 1, size: 500, sys_company_id: parseOptionalNumber(sysCompanyId) ?? undefined });
     const dataSourcesQuery = useInsightDataSources({ page: 1, size: 500, status: "enabled" });
     const systemCompaniesQuery = useInsightSystemCompanies();
-    const reviewMutation = useInsightCandidateReview();
+    const assetSearchMutation = useInsightAssetSearch();
+    const backfillFormalAssetsMutation = useInsightBackfillFormalAssets();
     const createMutation = useInsightCreateIntelligence();
-    const poolMutation = useInsightUpsertPool();
     const bulkMutation = useInsightBulkActionIntelligence();
     const intelligences = useMemo(() => intelligencesQuery.data?.items ?? [], [intelligencesQuery.data?.items]);
     const candidates = useMemo(
@@ -169,13 +203,13 @@ export function IntelligenceCenterPage() {
     );
     const tagItems = useMemo(() => {
         const counts = new Map<string, number>();
-        const addTag = (name?: string) => {
-            const key = name?.trim();
+        const addTag = (tag?: { name?: string; source?: string } & Record<string, unknown>) => {
+            const key = normalizeBusinessTagName(tag);
             if (!key) return;
             counts.set(key, (counts.get(key) ?? 0) + 1);
         };
-        intelligences.forEach((item) => item.suggested_tags?.forEach((tag) => addTag(typeof tag.name === "string" ? tag.name : undefined)));
-        candidates.forEach((item) => item.suggested_tags?.forEach((tag) => addTag(typeof tag.name === "string" ? tag.name : undefined)));
+        intelligences.forEach((item) => item.suggested_tags?.forEach((tag) => addTag(tag)));
+        candidates.forEach((item) => item.suggested_tags?.forEach((tag) => addTag(tag)));
         return Array.from(counts.entries())
             .sort((left, right) => right[1] - left[1])
             .slice(0, 12)
@@ -196,6 +230,29 @@ export function IntelligenceCenterPage() {
     ].filter(Boolean).length;
 
     const search = () => setKeyword(keywordInput.trim());
+    const searchAssets = () => {
+        const query = assetQuery.trim() || keywordInput.trim() || keyword.trim();
+        if (!query) {
+            toast.error("请输入要检索的问题或关键词");
+            return;
+        }
+        assetSearchMutation.mutate(
+            {
+                query,
+                top_k: 8,
+                include_candidates: assetIncludeCandidates,
+                company_id: parseOptionalNumber(companyId) ?? undefined,
+                subject_type: subjectType || undefined,
+                intelligence_type: intelligenceType || undefined,
+                date_from: dateFrom || undefined,
+                date_to: dateTo || undefined,
+            },
+            {
+                onSuccess: (result) => toast.success(`资产检索完成：命中 ${result.hits.length} 条`),
+                onError: () => toast.error("资产检索失败，请确认向量模型和网络服务可用"),
+            },
+        );
+    };
     const reset = () => {
         setKeyword("");
         setKeywordInput("");
@@ -210,78 +267,22 @@ export function IntelligenceCenterPage() {
         setDataSourceId("");
         setDateFrom("");
         setDateTo("");
+        setAssetQuery("");
         setSearchParams({});
         setSelectedOfficialIds([]);
-        setSelectedCandidateIds([]);
     };
 
-    const handleReview = (candidateId: number, action: "promote" | "reject" | "ignore") => {
-        reviewMutation.mutate(
-            {
-                candidateId,
-                action,
-                data: action === "promote" ? { visibility_scope: "assigned", importance_level: "medium" } : {},
-            },
-            {
-                onSuccess: () => toast.success(actionSuccessText[action]),
-                onError: () => toast.error("审核操作失败，请稍后重试"),
-            },
-        );
-    };
-
-    const handleAddReportMaterial = (intelligenceId: number) => {
-        poolMutation.mutate(
-            {
-                intelligenceId,
-                data: {
-                    pool_type: "report_material",
-                    folder_name: "默认报告素材",
-                },
-            },
-            {
-                onSuccess: () => toast.success("已加入报告素材"),
-                onError: () => toast.error("加入报告素材失败，请稍后重试"),
-            },
-        );
-    };
-
-    const selectedCount = viewMode === "official" ? selectedOfficialIds.length : selectedCandidateIds.length;
+    const selectedCount = viewMode === "official" ? selectedOfficialIds.length : 0;
     const toggleOfficial = (id: number) => setSelectedOfficialIds((current) => toggleId(current, id));
-    const toggleCandidate = (id: number) => setSelectedCandidateIds((current) => toggleId(current, id));
     const selectCurrentOfficial = () => setSelectedOfficialIds(intelligences.map((item) => item.id));
-    const selectCurrentCandidates = () => setSelectedCandidateIds(candidates.map((item) => item.id));
     const clearSelection = () => {
         setSelectedOfficialIds([]);
-        setSelectedCandidateIds([]);
     };
 
-    const handleBulkCandidate = (action: "promote" | "reject" | "ignore") => {
-        if (selectedCandidateIds.length === 0) return;
-        bulkMutation.mutate(
-            {
-                target_type: "candidate",
-                candidate_ids: selectedCandidateIds,
-                action,
-                visibility_scope: "assigned",
-                importance_level: "medium",
-                review_comment: "前端批量审核",
-            },
-            {
-                onSuccess: (result) => {
-                    toast.success(`批量操作完成：成功 ${result.success_count} 条，失败 ${result.failed_count} 条`);
-                    setSelectedCandidateIds([]);
-                },
-                onError: () => toast.error("批量审核失败，请稍后重试"),
-            },
-        );
-    };
-
-    const handleBulkOfficial = (action: "add_to_pool" | "hide" | "set_high_importance") => {
+    const handleBulkOfficial = (action: "hide" | "set_high_importance") => {
         if (selectedOfficialIds.length === 0) return;
         const payload =
-            action === "add_to_pool"
-                ? { action: "add_to_pool", pool_type: "report_material", folder_name: "默认报告素材", review_comment: "前端批量加入报告素材" }
-                : action === "hide"
+            action === "hide"
                     ? { action: "set_status", status: "inactive", review_comment: "前端批量隐藏" }
                     : { action: "set_importance", importance_level: "high", review_comment: "前端批量标记重点" };
         bulkMutation.mutate(
@@ -329,183 +330,116 @@ export function IntelligenceCenterPage() {
     };
 
     return (
-        <PageContainer>
-            <div className="insight-page-heading">
-                <h1 className="text-2xl font-black leading-tight tracking-tight text-slate-950 md:text-3xl">情报中心</h1>
+        <PageContainer className="flex h-full min-h-0 flex-col gap-3 overflow-hidden">
+            <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
+                <div className="min-w-0">
+                    <div className="text-sm font-black text-slate-900">情报中心</div>
+                    <p className="mt-1 text-xs font-semibold text-slate-500">正式情报、候选线索和资产检索集中处理。</p>
+                </div>
                 <div className="insight-actions">
-                    <Button className="h-10 rounded-xl px-5" onClick={() => setCreateOpen(true)}>
+                    <Button type="button" className="h-10 rounded-xl bg-primary px-5 text-primary-foreground" onClick={() => setCreateOpen(true)}>
                         <Plus className="size-4" />
                         新增情报
+                    </Button>
+                    <Button type="button" variant="outline" className="h-10 rounded-xl border-slate-200 bg-white" onClick={() => setSignalOpen(true)}>
+                        <Tags className="size-4" />
+                        热点标签
+                    </Button>
+                    <Button type="button" variant="outline" className="h-10 rounded-xl border-slate-200 bg-white" onClick={() => void (viewMode === "official" ? intelligencesQuery.refetch() : candidatesQuery.refetch())}>
+                        <RefreshCw className="size-4" />
+                        刷新
                     </Button>
                 </div>
             </div>
 
-            <DemoCard className="p-3 md:hidden">
+            <DemoCard className="shrink-0 p-3">
                 {dataSourceIdParam ? (
-                    <div className="mb-3 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-xs font-bold leading-5 text-blue-700">
-                        当前仅查看数据源 #{dataSourceIdParam} 产生的候选情报
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-xs font-bold leading-5 text-blue-700">
+                        <span>当前仅查看数据源 #{dataSourceIdParam} 产生的候选情报</span>
+                        <button type="button" className="font-black hover:underline" onClick={() => setSearchParams({ mode: viewMode })}>
+                            清除
+                        </button>
                     </div>
                 ) : null}
-                <div className="grid gap-3">
-                    <label className="grid gap-2">
-                        <span className="text-sm font-bold text-slate-700">关键词</span>
-                        <div className="relative">
-                            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
-                            <Input
-                                className="h-11 rounded-xl border-slate-200 bg-white pl-10 shadow-none"
-                                placeholder="搜索标题、摘要、主题"
-                                value={keywordInput}
-                                onChange={(event) => setKeywordInput(event.target.value)}
-                                onKeyDown={(event) => {
-                                    if (event.key === "Enter") {
-                                        search();
-                                    }
-                                }}
-                            />
-                        </div>
-                    </label>
-                    <div className="grid grid-cols-2 gap-2 rounded-xl bg-slate-100 p-1">
-                        <MobileModeButton active={viewMode === "candidate"} onClick={() => setViewMode("candidate")}>候选审核</MobileModeButton>
-                        <MobileModeButton active={viewMode === "official"} onClick={() => setViewMode("official")}>正式情报</MobileModeButton>
+                <div className="grid gap-3 lg:grid-cols-[minmax(260px,1fr)_330px_auto] lg:items-center">
+                    <div className="relative">
+                        <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+                        <Input
+                            className="h-11 rounded-xl border-slate-200 bg-white pl-10 shadow-none"
+                            placeholder="搜索标题、摘要、主题"
+                            value={keywordInput}
+                            onChange={(event) => setKeywordInput(event.target.value)}
+                            onKeyDown={(event) => {
+                                if (event.key === "Enter") {
+                                    search();
+                                }
+                            }}
+                        />
                     </div>
-                    <div className="insight-action-cluster">
-                        <Button className="h-10 rounded-xl px-5" onClick={search}>搜索</Button>
+                    <div className="grid grid-cols-3 gap-2 rounded-xl bg-slate-100 p-1">
+                        <MobileModeButton active={viewMode === "official"} onClick={() => setViewMode("official")}>正式情报</MobileModeButton>
+                        <MobileModeButton active={viewMode === "candidate"} onClick={() => setViewMode("candidate")}>候选线索</MobileModeButton>
+                        <MobileModeButton active={viewMode === "asset"} onClick={() => setViewMode("asset")}>资产检索</MobileModeButton>
+                    </div>
+                    <div className="insight-action-cluster justify-start lg:justify-end">
+                        <Button className="h-10 rounded-xl bg-primary px-5 text-primary-foreground" onClick={search}>搜索</Button>
+                        <Button variant="outline" className="h-10 rounded-xl border-slate-200 bg-white px-4" onClick={() => setFilterOpen(true)}>
+                            <SlidersHorizontal className="size-4" />
+                            筛选{advancedFilterCount ? ` ${advancedFilterCount}` : ""}
+                        </Button>
                         <Button variant="ghost" className="h-10 rounded-xl px-4 text-slate-600" onClick={reset}>
                             <RefreshCw className="size-4" />
                             重置
                         </Button>
                     </div>
-                    <details className="rounded-xl border border-slate-100 bg-slate-50/80 px-3 py-2">
-                        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-black text-slate-700">
-                            <span className="inline-flex items-center gap-2">
-                                <SlidersHorizontal className="size-4 text-slate-500" />
-                                高级筛选
-                            </span>
-                            <span className="text-xs font-bold text-slate-400">
-                                {advancedFilterCount} 项
-                            </span>
-                        </summary>
-                        <div className="mt-3 grid gap-3">
-                            <InsightSelect label="主题类型" value={subjectType} options={subjectOptions} onChange={setSubjectType} />
-                            <InsightSelect label="情报类型" value={intelligenceType} options={intelligenceTypeOptions} onChange={setIntelligenceType} />
-                            <InsightSelect label="所属公司" value={sysCompanyId} options={systemCompanyOptions} onChange={setSysCompanyId} />
-                            <InsightSelect label="企业" value={companyId} options={companyOptions} onChange={setCompanyId} />
-                            <InsightSelect label="情感" value={sentiment} options={sentimentOptions} onChange={setSentiment} />
-                            <InsightSelect label="数据源" value={dataSourceId} options={dataSourceOptions} onChange={setDataSourceId} />
-                            <InsightSelect label="候选来源" value={sourceType} options={sourceOptions} onChange={setSourceType} />
-                            <FilterInput label="课题" value={projectName} onChange={setProjectName} placeholder="课题/项目名称" />
-                            <FilterInput label="标签" value={tag} onChange={setTag} placeholder="例如：功能糖" />
-                            <FilterInput label="开始日期" value={dateFrom} onChange={setDateFrom} type="date" />
-                            <FilterInput label="结束日期" value={dateTo} onChange={setDateTo} type="date" />
-                            {dataSourceIdParam ? (
-                                <Button variant="outline" className="h-10 rounded-xl bg-white" onClick={() => setSearchParams({ mode: viewMode })}>
-                                    清除数据源筛选
-                                </Button>
-                            ) : null}
-                        </div>
-                    </details>
                 </div>
             </DemoCard>
 
-            <DemoCard className="hidden p-5 md:block">
-                {dataSourceIdParam ? (
-                    <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm font-bold text-blue-700">
-                        <span>当前仅查看数据源 #{dataSourceIdParam} 产生的候选情报</span>
-                        <Button variant="ghost" className="h-8 rounded-lg px-3 text-blue-700 hover:bg-white" onClick={() => setSearchParams({ mode: viewMode })}>
-                            清除数据源筛选
-                        </Button>
+            <Dialog open={filterOpen} onOpenChange={setFilterOpen}>
+                <DialogContent className="max-h-[86dvh] overflow-y-auto sm:max-w-4xl">
+                    <DialogHeader>
+                        <DialogTitle>筛选情报</DialogTitle>
+                        <DialogDescription>把低频筛选条件放在这里，主页面保留情报列表和资产检索结果。</DialogDescription>
+                    </DialogHeader>
+                    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                        <InsightSelect label="主题类型" value={subjectType} options={subjectOptions} onChange={setSubjectType} />
+                        <InsightSelect label="情报类型" value={intelligenceType} options={intelligenceTypeOptions} onChange={setIntelligenceType} />
+                        <InsightSelect label="所属公司" value={sysCompanyId} options={systemCompanyOptions} onChange={setSysCompanyId} />
+                        <InsightSelect label="企业" value={companyId} options={companyOptions} onChange={setCompanyId} />
+                        <InsightSelect label="情感" value={sentiment} options={sentimentOptions} onChange={setSentiment} />
+                        <InsightSelect label="数据源" value={dataSourceId} options={dataSourceOptions} onChange={setDataSourceId} />
+                        <InsightSelect label="候选来源" value={sourceType} options={sourceOptions} onChange={setSourceType} />
+                        <FilterInput label="课题" value={projectName} onChange={setProjectName} placeholder="课题/项目名称" />
+                        <FilterInput label="标签" value={tag} onChange={setTag} placeholder="例如：功能糖" />
+                        <FilterInput label="开始日期" value={dateFrom} onChange={setDateFrom} type="date" />
+                        <FilterInput label="结束日期" value={dateTo} onChange={setDateTo} type="date" />
                     </div>
-                ) : null}
-                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-[minmax(220px,1.2fr)_180px_180px_180px_auto] xl:items-end">
-                    <label className="grid gap-2">
-                        <span className="text-sm font-bold text-slate-700">关键词</span>
-                        <div className="relative">
-                            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
-                            <Input
-                                className="h-11 rounded-xl border-slate-200 bg-white pl-10 shadow-none"
-                                placeholder="搜索标题、摘要、主题"
-                                value={keywordInput}
-                                onChange={(event) => setKeywordInput(event.target.value)}
-                                onKeyDown={(event) => {
-                                    if (event.key === "Enter") {
-                                        search();
-                                    }
-                                }}
-                            />
-                        </div>
-                    </label>
-                    <InsightSelect label="主题类型" value={subjectType} options={subjectOptions} onChange={setSubjectType} />
-                    <InsightSelect label="情报类型" value={intelligenceType} options={intelligenceTypeOptions} onChange={setIntelligenceType} />
-                    <InsightSelect label="所属公司" value={sysCompanyId} options={systemCompanyOptions} onChange={setSysCompanyId} />
-                    <div className="flex items-end md:col-span-2 xl:col-span-1">
-                        <div className="insight-action-cluster w-full justify-start xl:justify-end">
-                            <Button className="h-11 rounded-xl px-7" onClick={search}>搜索</Button>
-                            <Button variant="ghost" className="h-11 rounded-xl px-4 text-slate-600" onClick={reset}>
-                                <RefreshCw className="size-4" />
-                                重置
+                    <DialogFooter>
+                        {dataSourceIdParam ? (
+                            <Button variant="outline" className="rounded-xl bg-white" onClick={() => setSearchParams({ mode: viewMode })}>
+                                清除数据源筛选
                             </Button>
-                        </div>
-                    </div>
-                </div>
-                <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-6 xl:items-end">
-                    <InsightSelect label="企业" value={companyId} options={companyOptions} onChange={setCompanyId} />
-                    <InsightSelect label="情感" value={sentiment} options={sentimentOptions} onChange={setSentiment} />
-                    <InsightSelect label="数据源" value={dataSourceId} options={dataSourceOptions} onChange={setDataSourceId} />
-                    <InsightSelect label="候选来源" value={sourceType} options={sourceOptions} onChange={setSourceType} />
-                    <FilterInput label="课题" value={projectName} onChange={setProjectName} placeholder="项目/课题" />
-                    <FilterInput label="标签" value={tag} onChange={setTag} placeholder="标签关键词" />
-                </div>
-                <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-[180px_180px_minmax(0,1fr)] xl:items-end">
-                    <FilterInput label="开始日期" value={dateFrom} onChange={setDateFrom} type="date" />
-                    <FilterInput label="结束日期" value={dateTo} onChange={setDateTo} type="date" />
-                    <div className="rounded-xl border border-slate-100 bg-slate-50 px-3 py-2 text-xs font-semibold leading-5 text-slate-500">
-                        正式情报筛选会传到后端权限过滤后再分页；候选审核当前支持关键词、主题、类型、数据源和候选来源筛选。
-                    </div>
-                </div>
-            </DemoCard>
+                        ) : null}
+                        <Button variant="outline" className="rounded-xl bg-white" onClick={reset}>
+                            重置
+                        </Button>
+                        <Button className="rounded-xl bg-primary text-primary-foreground" onClick={() => {
+                            search();
+                            setFilterOpen(false);
+                        }}>
+                            应用筛选
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
 
-            <DemoCard className="overflow-hidden">
-                <div className="hidden border-b border-slate-200 px-5 pt-4 md:block">
-                    <div className="flex flex-wrap gap-x-10 gap-y-2 text-base font-bold text-slate-600">
-                        <TabButton active={viewMode === "official"} onClick={() => setViewMode("official")}>正式情报</TabButton>
-                        <TabButton active={viewMode === "candidate"} onClick={() => setViewMode("candidate")}>候选审核</TabButton>
-                    </div>
-                </div>
-                <div className="space-y-4 p-3 sm:p-4">
-                    <BulkActionBar
-                        mode={viewMode}
-                        selectedCount={selectedCount}
-                        pending={bulkMutation.isPending}
-                        onSelectPage={viewMode === "official" ? selectCurrentOfficial : selectCurrentCandidates}
-                        onClear={clearSelection}
-                        onCandidateAction={handleBulkCandidate}
-                        onOfficialAction={handleBulkOfficial}
-                        onOpenBulkAccess={() => setBulkAccessOpen(true)}
-                        onOpenBulkEdit={() => setBulkEditOpen(true)}
-                    />
-                    <div className="min-h-0 min-w-0 overflow-y-auto rounded-xl border border-slate-200 bg-white xl:max-h-[calc(100dvh-23rem)]">
-                        {viewMode === "official" ? (
-                            <OfficialFeed
-                                rows={intelligences}
-                                loading={intelligencesQuery.isLoading}
-                                pending={poolMutation.isPending}
-                                selectedIds={selectedOfficialIds}
-                                onToggleSelected={toggleOfficial}
-                                onAddReportMaterial={handleAddReportMaterial}
-                            />
-                        ) : (
-                            <CandidateFeed
-                                rows={candidates}
-                                loading={candidatesQuery.isLoading}
-                                pending={reviewMutation.isPending}
-                                selectedIds={selectedCandidateIds}
-                                onToggleSelected={toggleCandidate}
-                                onReview={handleReview}
-                            />
-                        )}
-                    </div>
-
-                    <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+            <Dialog open={signalOpen} onOpenChange={setSignalOpen}>
+                <DialogContent className="max-h-[86dvh] overflow-y-auto sm:max-w-3xl">
+                    <DialogHeader>
+                        <DialogTitle>热点与标签</DialogTitle>
+                        <DialogDescription>辅助判断放在弹窗中查看，不占用情报列表区域。</DialogDescription>
+                    </DialogHeader>
+                    <div className="grid gap-4 md:grid-cols-2">
                         <DemoCard className="p-4">
                             <SectionHeader title="今日热点" />
                             <RankList showViews items={hotItems.length > 0 ? hotItems : ["暂无候选情报"]} />
@@ -522,6 +456,62 @@ export function IntelligenceCenterPage() {
                             </div>
                         </DemoCard>
                     </div>
+                </DialogContent>
+            </Dialog>
+
+            <DemoCard className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                <div className={viewMode === "official" ? "shrink-0 space-y-3 p-3 sm:p-4" : "hidden"}>
+                    {viewMode === "official" ? (
+                        <BulkActionBar
+                            selectedCount={selectedCount}
+                            pending={bulkMutation.isPending}
+                            onSelectPage={selectCurrentOfficial}
+                            onClear={clearSelection}
+                            onOfficialAction={handleBulkOfficial}
+                            onOpenBulkAccess={() => setBulkAccessOpen(true)}
+                            onOpenBulkEdit={() => setBulkEditOpen(true)}
+                        />
+                    ) : null}
+                </div>
+                <div className="min-h-0 min-w-0 flex-1 overflow-y-auto border-t border-slate-100 bg-white">
+                    {viewMode === "official" ? (
+                        <OfficialFeed
+                            rows={intelligences}
+                            loading={intelligencesQuery.isLoading}
+                            selectedIds={selectedOfficialIds}
+                            onToggleSelected={toggleOfficial}
+                        />
+                    ) : viewMode === "candidate" ? (
+                        <CandidateFeed
+                            rows={candidates}
+                            loading={candidatesQuery.isLoading}
+                        />
+                    ) : (
+                        <AssetSearchPanel
+                            query={assetQuery}
+                            keywordFallback={keywordInput || keyword}
+                            includeCandidates={assetIncludeCandidates}
+                            pending={assetSearchMutation.isPending}
+                            backfillPending={backfillFormalAssetsMutation.isPending}
+                            backfillResult={backfillFormalAssetsMutation.data}
+                            result={assetSearchMutation.data?.hits ?? []}
+                            generationMode={assetSearchMutation.data?.generation_mode}
+                            onQueryChange={setAssetQuery}
+                            onIncludeCandidatesChange={setAssetIncludeCandidates}
+                            onSearch={searchAssets}
+                            onBackfillFormal={() => {
+                                backfillFormalAssetsMutation.mutate(
+                                    { limit: 50 },
+                                    {
+                                        onSuccess: (result) => {
+                                            toast.success(`回填完成：新增 ${result.created_count} 条，向量成功 ${result.indexed_count} 条，剩余 ${result.remaining_count} 条`);
+                                        },
+                                        onError: () => toast.error("正式情报资产回填失败，请稍后重试"),
+                                    },
+                                );
+                            }}
+                        />
+                    )}
                 </div>
             </DemoCard>
 
@@ -560,23 +550,19 @@ export function IntelligenceCenterPage() {
 }
 
 function BulkActionBar({
-    mode,
     selectedCount,
     pending,
     onSelectPage,
     onClear,
-    onCandidateAction,
     onOfficialAction,
     onOpenBulkAccess,
     onOpenBulkEdit,
 }: {
-    mode: "official" | "candidate";
     selectedCount: number;
     pending: boolean;
     onSelectPage: () => void;
     onClear: () => void;
-    onCandidateAction: (action: "promote" | "reject" | "ignore") => void;
-    onOfficialAction: (action: "add_to_pool" | "hide" | "set_high_importance") => void;
+    onOfficialAction: (action: "hide" | "set_high_importance") => void;
     onOpenBulkAccess: () => void;
     onOpenBulkEdit: () => void;
 }) {
@@ -591,45 +577,24 @@ function BulkActionBar({
                 </Button>
                 <span>已选择 {selectedCount} 条</span>
             </div>
-            {mode === "candidate" ? (
-                <div className="insight-action-cluster">
-                    <Button type="button" className="h-9 rounded-lg" disabled={pending || selectedCount === 0} onClick={() => onCandidateAction("promote")}>
-                        {pending ? <Loader2 className="size-4 animate-spin" /> : <CheckCircle2 className="size-4" />}
-                        批量通过
-                    </Button>
-                    <Button type="button" variant="outline" className="h-9 rounded-lg bg-white" disabled={pending || selectedCount === 0} onClick={() => onCandidateAction("ignore")}>
-                        <EyeOff className="size-4" />
-                        批量忽略
-                    </Button>
-                    <Button type="button" variant="outline" className="h-9 rounded-lg bg-white text-red-600 hover:text-red-700" disabled={pending || selectedCount === 0} onClick={() => onCandidateAction("reject")}>
-                        <XCircle className="size-4" />
-                        批量拒绝
-                    </Button>
-                </div>
-            ) : (
-                <div className="insight-action-cluster">
-                    <Button type="button" className="h-9 rounded-lg" disabled={pending || selectedCount === 0} onClick={() => onOfficialAction("add_to_pool")}>
-                        {pending ? <Loader2 className="size-4 animate-spin" /> : <FileText className="size-4" />}
-                        加入素材池
-                    </Button>
-                    <Button type="button" variant="outline" className="h-9 rounded-lg bg-white" disabled={pending || selectedCount === 0} onClick={() => onOfficialAction("set_high_importance")}>
-                        <Star className="size-4" />
-                        标记重点
-                    </Button>
-                    <Button type="button" variant="outline" className="h-9 rounded-lg bg-white" disabled={pending || selectedCount === 0} onClick={onOpenBulkEdit}>
-                        <Tags className="size-4" />
-                        批量修正
-                    </Button>
-                    <Button type="button" variant="outline" className="h-9 rounded-lg bg-white" disabled={pending || selectedCount === 0} onClick={onOpenBulkAccess}>
-                        <ShieldCheck className="size-4" />
-                        批量授权
-                    </Button>
-                    <Button type="button" variant="outline" className="h-9 rounded-lg bg-white" disabled={pending || selectedCount === 0} onClick={() => onOfficialAction("hide")}>
-                        <EyeOff className="size-4" />
-                        批量隐藏
-                    </Button>
-                </div>
-            )}
+            <div className="insight-action-cluster">
+                <Button type="button" variant="outline" className="h-9 rounded-lg bg-white" disabled={pending || selectedCount === 0} onClick={() => onOfficialAction("set_high_importance")}>
+                    <Star className="size-4" />
+                    标记重点
+                </Button>
+                <Button type="button" variant="outline" className="h-9 rounded-lg bg-white" disabled={pending || selectedCount === 0} onClick={onOpenBulkEdit}>
+                    <Tags className="size-4" />
+                    批量修正
+                </Button>
+                <Button type="button" variant="outline" className="h-9 rounded-lg bg-white" disabled={pending || selectedCount === 0} onClick={onOpenBulkAccess}>
+                    <ShieldCheck className="size-4" />
+                    批量授权
+                </Button>
+                <Button type="button" variant="outline" className="h-9 rounded-lg bg-white" disabled={pending || selectedCount === 0} onClick={() => onOfficialAction("hide")}>
+                    <EyeOff className="size-4" />
+                    批量隐藏
+                </Button>
+            </div>
         </div>
     );
 }
@@ -686,7 +651,7 @@ function BulkMetadataDialog({
                 </div>
                 <DialogFooter>
                     <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>取消</Button>
-                    <Button type="button" disabled={pending || count === 0 || !hasChange} onClick={submit}>
+                    <Button type="button" className="bg-primary text-primary-foreground" disabled={pending || count === 0 || !hasChange} onClick={submit}>
                         {pending ? <Loader2 className="size-4 animate-spin" /> : <Tags className="size-4" />}
                         应用修正
                     </Button>
@@ -699,17 +664,13 @@ function BulkMetadataDialog({
 function OfficialFeed({
     rows,
     loading,
-    pending,
     selectedIds,
     onToggleSelected,
-    onAddReportMaterial,
 }: {
     rows: InsightIntelligenceListItem[];
     loading: boolean;
-    pending: boolean;
     selectedIds: number[];
     onToggleSelected: (id: number) => void;
-    onAddReportMaterial: (intelligenceId: number) => void;
 }) {
     return (
         <div className="divide-y divide-slate-100">
@@ -738,15 +699,6 @@ function OfficialFeed({
                         </div>
                         <div className="flex shrink-0 flex-wrap items-center justify-start gap-2">
                             {row.primary_source_url ? <SourceLink url={row.primary_source_url} /> : null}
-                            <button
-                                type="button"
-                                disabled={pending}
-                                className="inline-flex h-8 items-center gap-1 rounded-lg px-2 text-xs font-bold text-slate-600 hover:bg-white hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-60"
-                                onClick={() => onAddReportMaterial(row.id)}
-                            >
-                                <FileText className="size-4" />
-                                报告素材
-                            </button>
                             <Link to={`/insight/intelligence/${row.id}`} className="inline-flex h-8 items-center rounded-lg px-2 text-xs font-bold text-slate-600 hover:bg-white hover:text-blue-600">
                                 详情
                             </Link>
@@ -767,26 +719,20 @@ function OfficialFeed({
 function CandidateFeed({
     rows,
     loading,
-    pending,
-    selectedIds,
-    onToggleSelected,
-    onReview,
 }: {
     rows: InsightIntelligenceCandidateListItem[];
     loading: boolean;
-    pending: boolean;
-    selectedIds: number[];
-    onToggleSelected: (id: number) => void;
-    onReview: (candidateId: number, action: "promote" | "reject" | "ignore") => void;
 }) {
     return (
         <div className="divide-y divide-slate-100">
-            {rows.map((row) => (
+            <div className="border-b border-slate-100 bg-slate-50 px-5 py-3 text-xs font-semibold leading-5 text-slate-500">
+                候选线索由 AI 自动评审后保留，用于备查和后续调优；符合口径的内容会自动进入正式情报和资产库。
+            </div>
+            {rows.map((row) => {
+                const aiReview = candidateAiReview(row.suggested_tags);
+                return (
                 <article key={row.id} className="group px-5 py-4 transition hover:bg-blue-50/40">
                     <div className="flex flex-wrap items-start justify-between gap-3">
-                        <label className="mt-1 inline-flex size-6 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white">
-                            <input className="size-4 accent-blue-600" type="checkbox" checked={selectedIds.includes(row.id)} onChange={() => onToggleSelected(row.id)} />
-                        </label>
                         <div className="min-w-0 flex-1">
                             {row.source_url ? (
                                 <a href={row.source_url} target="_blank" rel="noreferrer" className="line-clamp-2 text-lg font-black leading-7 text-slate-900 group-hover:text-blue-600">
@@ -804,18 +750,151 @@ function CandidateFeed({
                         </div>
                         <div className="flex shrink-0 flex-wrap items-center justify-start gap-2">
                             {row.source_url ? <SourceLink url={row.source_url} /> : null}
-                            <CandidateActionButtons rowStatus={row.review_status} pending={pending} onReview={(action) => onReview(row.id, action)} />
+                            <span className="inline-flex h-8 items-center rounded-lg bg-slate-100 px-3 text-xs font-bold text-slate-500">
+                                AI 已评审
+                            </span>
                         </div>
                     </div>
                     <p className="mt-3 line-clamp-3 text-sm font-semibold leading-6 text-slate-600">{compactText(row.candidate_summary || row.source_title || "暂无摘要")}</p>
+                    {aiReview.reason ? (
+                        <p className="mt-2 line-clamp-2 text-xs font-semibold leading-5 text-slate-500">
+                            候选原因：{aiReview.reason}
+                        </p>
+                    ) : null}
                     <QualitySummary row={row} />
                     <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
                         <TagList tags={row.suggested_tags} fallback={row.subject_name || row.query_text || sourceChannelText[row.source_channel ?? ""]} />
-                        <div className="text-xs font-semibold text-slate-400">置信度 {Math.round((row.confidence ?? 0) * 100)}%</div>
+                        <div className="text-xs font-semibold text-slate-400">
+                            {aiReview.score !== null ? `评审分 ${Math.round(aiReview.score * 100)}% · ` : ""}置信度 {Math.round((row.confidence ?? 0) * 100)}%
+                        </div>
                     </div>
                 </article>
-            ))}
-            {!loading && rows.length === 0 ? <EmptyState text="暂无候选情报，可先在数据源配置页执行采集测试。" /> : null}
+                );
+            })}
+            {!loading && rows.length === 0 ? <EmptyState text="暂无候选线索，可先在监测配置或系统设置的数据源中执行采集测试。" /> : null}
+        </div>
+    );
+}
+
+function AssetSearchPanel({
+    query,
+    keywordFallback,
+    includeCandidates,
+    pending,
+    backfillPending,
+    backfillResult,
+    result,
+    generationMode,
+    onQueryChange,
+    onIncludeCandidatesChange,
+    onSearch,
+    onBackfillFormal,
+}: {
+    query: string;
+    keywordFallback: string;
+    includeCandidates: boolean;
+    pending: boolean;
+    backfillPending: boolean;
+    backfillResult?: InsightFormalAssetBackfillResponse;
+    result: InsightAssetSearchHit[];
+    generationMode?: string;
+    onQueryChange: (value: string) => void;
+    onIncludeCandidatesChange: (value: boolean) => void;
+    onSearch: () => void;
+    onBackfillFormal: () => void;
+}) {
+    return (
+        <div className="grid min-h-[24rem] grid-rows-[auto_minmax(0,1fr)]">
+            <div className="border-b border-slate-100 bg-slate-50/80 px-4 py-4">
+                <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto_auto_auto] lg:items-center">
+                    <div className="relative">
+                        <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+                        <Input
+                            className="h-11 rounded-xl border-slate-200 bg-white pl-10 shadow-none"
+                            value={query}
+                            placeholder={keywordFallback || "输入问题或关键词，例如：功能糖新品、竞对渠道、政策监管"}
+                            onChange={(event) => onQueryChange(event.target.value)}
+                            onKeyDown={(event) => {
+                                if (event.key === "Enter") onSearch();
+                            }}
+                        />
+                    </div>
+                    <label className="inline-flex h-11 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-600">
+                        <input
+                            type="checkbox"
+                            className="size-4 accent-blue-600"
+                            checked={includeCandidates}
+                            onChange={(event) => onIncludeCandidatesChange(event.target.checked)}
+                        />
+                        包含候选线索
+                    </label>
+                    <Button className="h-11 rounded-xl bg-primary px-6 text-primary-foreground" disabled={pending} onClick={onSearch}>
+                        {pending ? <Loader2 className="size-4 animate-spin" /> : <Search className="size-4" />}
+                        检索资产
+                    </Button>
+                    <Button variant="outline" className="h-11 rounded-xl bg-white px-4" disabled={backfillPending} onClick={onBackfillFormal}>
+                        {backfillPending ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+                        回填正式情报
+                    </Button>
+                </div>
+                <div className="mt-3 flex flex-wrap items-center gap-2 text-xs font-semibold text-slate-500">
+                    <DemoTag tone="blue">{generationMode || "asset_vector_rag"}</DemoTag>
+                    <span>命中 {result.length} 条</span>
+                    {backfillResult ? (
+                        <span>
+                            最近回填：新增 {backfillResult.created_count} 条，向量成功 {backfillResult.indexed_count} 条，失败 {backfillResult.failed_count} 条，剩余 {backfillResult.remaining_count} 条
+                        </span>
+                    ) : null}
+                    <span>这里检索的是采集后沉淀的情报资产，可用于报告、AI 助手和后续图谱分析。</span>
+                </div>
+            </div>
+            <div className="min-h-0 overflow-y-auto">
+                {result.map((hit) => (
+                    <article key={hit.asset.id} className="border-b border-slate-100 px-5 py-4 transition hover:bg-blue-50/40">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div className="min-w-0 flex-1">
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <DemoTag tone={hit.asset.asset_type === "formal" ? "green" : hit.asset.asset_type === "noise" ? "slate" : "orange"}>
+                                        {assetTypeText[hit.asset.asset_type] ?? hit.asset.asset_type}
+                                    </DemoTag>
+                                    <DemoTag tone={hit.asset.embedding_status === "indexed" ? "blue" : "orange"}>
+                                        向量 {embeddingStatusText[hit.asset.embedding_status] ?? hit.asset.embedding_status}
+                                    </DemoTag>
+                                    <DemoTag tone={hit.asset.graph_status === "indexed" ? "purple" : "slate"}>
+                                        图谱 {embeddingStatusText[hit.asset.graph_status] ?? hit.asset.graph_status}
+                                    </DemoTag>
+                                </div>
+                                <h3 className="mt-2 line-clamp-2 text-lg font-black leading-7 text-slate-900">{hit.asset.title}</h3>
+                                <p className="mt-2 line-clamp-3 text-sm font-semibold leading-6 text-slate-600">
+                                    {compactText(hit.asset.summary || hit.asset.source_title || "暂无摘要")}
+                                </p>
+                            </div>
+                            <div className="flex shrink-0 flex-col items-end gap-2 text-xs font-bold text-slate-500">
+                                <span>总分 {Math.round(hit.score * 100)}%</span>
+                                {hit.vector_score !== null && hit.vector_score !== undefined ? <span>向量 {Math.round(hit.vector_score * 100)}%</span> : null}
+                                <span>关键词 {Math.round((hit.keyword_score ?? 0) * 100)}%</span>
+                            </div>
+                        </div>
+                        <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                            <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-slate-500">
+                                <span>{hit.asset.source_title || sourceChannelText[hit.asset.source_channel ?? ""] || "来源未识别"}</span>
+                                <span>{formatInsightDate(hit.asset.publish_time, hit.asset.create_time)}</span>
+                                {hit.match_reason ? <DemoTag tone="cyan">{hit.match_reason}</DemoTag> : null}
+                                {hit.asset.intelligence_type ? <DemoTag tone="blue">{formatInsightType(hit.asset.intelligence_type)}</DemoTag> : null}
+                            </div>
+                            <div className="flex items-center gap-3">
+                                {hit.asset.source_url ? <SourceLink url={hit.asset.source_url} /> : null}
+                                {hit.asset.intelligence_id ? (
+                                    <Link to={`/insight/intelligence/${hit.asset.intelligence_id}`} className="text-xs font-bold text-blue-600 hover:text-blue-700">
+                                        情报详情
+                                    </Link>
+                                ) : null}
+                            </div>
+                        </div>
+                    </article>
+                ))}
+                {!pending && result.length === 0 ? <EmptyState text="暂无资产命中。可先在监测配置执行采集，再回到这里检索刚采集的主题。" /> : null}
+            </div>
         </div>
     );
 }
@@ -838,12 +917,13 @@ function QualitySummary({ row }: { row: InsightIntelligenceCandidateListItem }) 
     );
 }
 
-function TabButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: string }) {
-    return (
-        <button type="button" className={active ? "border-b-[3px] border-blue-600 pb-4 text-blue-600" : "pb-4 hover:text-blue-600"} onClick={onClick}>
-            {children}
-        </button>
-    );
+function candidateAiReview(tags?: Array<{ name?: string; source?: string } & Record<string, unknown>> | null): { score: number | null; reason: string | null } {
+    const review = (tags ?? []).find((tag) => tag.source === "ai_review");
+    if (!review) return { score: null, reason: null };
+    const rawScore = review.score;
+    const score = typeof rawScore === "number" ? rawScore : typeof rawScore === "string" && rawScore.trim() ? Number(rawScore) : null;
+    const reason = typeof review.reason === "string" && review.reason.trim() ? review.reason.trim() : null;
+    return { score: score !== null && Number.isFinite(score) ? score : null, reason };
 }
 
 function MobileModeButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: string }) {
@@ -859,13 +939,26 @@ function MobileModeButton({ active, onClick, children }: { active: boolean; onCl
 }
 
 function TagList({ tags, fallback }: { tags?: Array<{ name?: string } & Record<string, unknown>> | null; fallback?: string | null }) {
-    const visibleTags = (tags ?? []).map((tag) => tag.name).filter(Boolean).slice(0, 3) as string[];
+    const visibleTags = (tags ?? [])
+        .map((tag) => normalizeBusinessTagName(tag))
+        .filter(Boolean)
+        .slice(0, 3) as string[];
     return (
         <div className="flex flex-wrap items-start gap-2">
             {visibleTags.map((tag, index) => <DemoTag key={`${tag}-${index}`} tone="cyan" className="whitespace-nowrap">{tag}</DemoTag>)}
             {fallback ? <DemoTag tone="slate" className="whitespace-nowrap">{fallback}</DemoTag> : null}
         </div>
     );
+}
+
+function normalizeBusinessTagName(tag?: { name?: string; source?: string } & Record<string, unknown>): string | null {
+    const name = typeof tag?.name === "string" ? tag.name.trim() : "";
+    const source = typeof tag?.source === "string" ? tag.source.trim() : "";
+    if (!name) return null;
+    if (systemTagNames.has(name) || systemTagNames.has(name.toLowerCase())) return null;
+    if (source && systemTagSources.has(source)) return null;
+    if (/^(baidu|bocha|firecrawl|generic_web|manual_url)([_-].*)?$/i.test(name)) return null;
+    return name;
 }
 
 function SourceLink({ url }: { url: string }) {
@@ -952,7 +1045,7 @@ function CreateIntelligenceDialog({
                 </div>
                 <DialogFooter>
                     <Button variant="ghost" onClick={() => onOpenChange(false)}>取消</Button>
-                    <Button disabled={pending || !form.title.trim()} onClick={() => onSubmit(buildCreatePayload(form))}>保存</Button>
+                    <Button className="bg-primary text-primary-foreground" disabled={pending || !form.title.trim()} onClick={() => onSubmit(buildCreatePayload(form))}>保存</Button>
                 </DialogFooter>
             </DialogContent>
         </Dialog>
@@ -1025,11 +1118,11 @@ const subjectTypeText: Record<string, string> = {
 };
 
 const candidateStatusText: Record<string, string> = {
-    pending: "待审核",
+    pending: "候选线索",
     promoted: "已转正式",
-    rejected: "已驳回",
+    rejected: "AI已归档",
     merged: "已合并",
-    ignored: "已忽略",
+    ignored: "噪声归档",
 };
 
 const candidateStatusTone: Record<string, TagTone> = {
@@ -1065,6 +1158,7 @@ const sentimentTone: Record<string, TagTone> = {
 const sourceChannelText: Record<string, string> = {
     firecrawl: "网页抓取",
     baidu_news: "百度资讯",
+    bocha_search: "博查搜索",
     bocha_news: "博查资讯",
     baidu: "百度",
     bocha: "博查",
@@ -1075,64 +1169,17 @@ const sourceChannelText: Record<string, string> = {
     BOCHA: "博查",
 };
 
-const actionSuccessText: Record<"promote" | "reject" | "ignore", string> = {
-    promote: "已转为正式情报",
-    reject: "已驳回候选情报",
-    ignore: "已忽略候选情报",
+const assetTypeText: Record<string, string> = {
+    formal: "正式资产",
+    candidate: "候选资产",
+    noise: "噪声资产",
 };
 
-function CandidateActionButtons({ rowStatus, pending, onReview }: { rowStatus: string; pending: boolean; onReview: (action: "promote" | "reject" | "ignore") => void }) {
-    const [confirmAction, setConfirmAction] = useState<"reject" | "ignore" | null>(null);
-    if (rowStatus !== "pending") {
-        return <span className="text-xs font-semibold text-slate-400">已处理</span>;
-    }
-    const confirmTitle = confirmAction === "reject" ? "确认驳回候选情报" : "确认忽略候选情报";
-    const confirmDescription = confirmAction === "reject"
-        ? "驳回后这条候选不会进入正式情报池，请确认它确实不适合作为市场洞察素材。"
-        : "忽略后这条候选会从待审核列表中移出，适合用于重复、低价值或暂不处理的内容。";
-    return (
-        <>
-            <div className="flex flex-wrap items-center gap-2">
-                <Button variant="outline" className="h-9 rounded-lg border-emerald-100 bg-emerald-50 px-3 text-xs font-black text-emerald-700 hover:bg-emerald-100 hover:text-emerald-800" disabled={pending} title="通过并转正式情报" onClick={() => onReview("promote")}>
-                    <CheckCircle2 className="size-4" />
-                    通过
-                </Button>
-                <Button variant="outline" className="h-9 rounded-lg border-red-100 bg-red-50 px-3 text-xs font-black text-red-600 hover:bg-red-100 hover:text-red-700" disabled={pending} title="驳回候选情报" onClick={() => setConfirmAction("reject")}>
-                    <XCircle className="size-4" />
-                    驳回
-                </Button>
-                <Button variant="outline" className="h-9 rounded-lg border-slate-200 bg-white px-3 text-xs font-black text-slate-600 hover:bg-slate-100" disabled={pending} title="忽略候选情报" onClick={() => setConfirmAction("ignore")}>
-                    <EyeOff className="size-4" />
-                    忽略
-                </Button>
-            </div>
-            <Dialog open={Boolean(confirmAction)} onOpenChange={(open) => {
-                if (!open) setConfirmAction(null);
-            }}>
-                <DialogContent className="sm:max-w-md">
-                    <DialogHeader>
-                        <DialogTitle>{confirmTitle}</DialogTitle>
-                        <DialogDescription>{confirmDescription}</DialogDescription>
-                    </DialogHeader>
-                    <DialogFooter>
-                        <Button variant="ghost" onClick={() => setConfirmAction(null)}>取消</Button>
-                        <Button
-                            variant={confirmAction === "reject" ? "destructive" : "outline"}
-                            disabled={pending}
-                            onClick={() => {
-                                if (!confirmAction) return;
-                                onReview(confirmAction);
-                                setConfirmAction(null);
-                            }}
-                        >
-                            确认{confirmAction === "reject" ? "驳回" : "忽略"}
-                        </Button>
-                    </DialogFooter>
-                </DialogContent>
-            </Dialog>
-        </>
-    );
-}
+const embeddingStatusText: Record<string, string> = {
+    pending: "待处理",
+    indexed: "已索引",
+    failed: "失败",
+};
 
 function compactText(value: string) {
     return value.replace(/!\[[^\]]*\]\([^)]+\)/g, " ").replace(/\[([^\]]{1,80})\]\([^)]+\)/g, "$1").replace(/https?:\/\/\S+/g, " ").replace(/\s+/g, " ").trim();
@@ -1146,3 +1193,9 @@ function parseOptionalNumber(value: string) {
     const parsed = Number(value);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
+
+function resolveViewMode(value: string | null): "official" | "candidate" | "asset" {
+    if (value === "candidate" || value === "asset") return value;
+    return "official";
+}
+

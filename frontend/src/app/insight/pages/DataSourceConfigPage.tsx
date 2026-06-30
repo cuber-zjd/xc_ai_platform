@@ -48,12 +48,9 @@ import {
 
 const sourceTypeOptions = [
     { value: "baidu_news", label: "百度资讯" },
-    { value: "baidu_search", label: "百度搜索" },
-    { value: "bocha_news", label: "博查资讯" },
-    { value: "bocha_web", label: "博查网页" },
+    { value: "bocha_search", label: "博查搜索" },
     { value: "official_site", label: "官网" },
     { value: "web_page", label: "通用网页" },
-    { value: "multi_news", label: "多源资讯" },
     { value: "wechat_public_account", label: "公众号公开文章" },
     { value: "ecommerce_search", label: "电商公开搜索" },
     { value: "government_policy", label: "政府政策" },
@@ -423,10 +420,6 @@ export function DataSourceConfigPage() {
     return (
         <PageContainer className="insight-page-locked flex min-h-0 flex-col gap-4">
             <div className="insight-page-heading">
-                <div>
-                    <h1 className="text-2xl font-black leading-tight tracking-tight text-slate-950 md:text-3xl">数据源配置</h1>
-                    <p className="mt-2 text-sm font-semibold text-slate-500">维护官网、百度资讯、博查资讯和通用网页采集源，配置关键词、周期和筛选规则。</p>
-                </div>
                 <div className="insight-actions">
                     <Button variant="outline" className="h-10 rounded-xl bg-white" onClick={() => setImportOpen(true)}>
                         <FileInput className="size-4" />
@@ -758,7 +751,7 @@ export function DataSourceConfigPage() {
                             {!dataSourcesQuery.isLoading && dataSources.length === 0 ? (
                                 <tr>
                                     <td colSpan={9} className="px-4 py-10 text-center text-sm font-semibold text-slate-500">
-                                        暂无数据源。建议先在企业档案中新增观察企业，再为企业配置百度资讯、博查资讯或官网数据源。
+                                        暂无数据源。建议先在企业档案中新增观察企业，再为企业配置百度资讯、博查搜索或官网数据源。
                                     </td>
                                 </tr>
                             ) : null}
@@ -2037,7 +2030,7 @@ interface BatchCreateState {
 
 const defaultBatchState: BatchCreateState = {
     companyIds: [],
-    sourceTypes: ["multi_news", "industry_media", "finance_news", "government_policy", "patent_search"],
+    sourceTypes: ["baidu_news", "bocha_search"],
     companyKeyword: "",
     keywordTemplate: "",
     includeKeywords: "",
@@ -3227,7 +3220,13 @@ function uniqueIds(ids: number[]) {
 }
 
 function sourceTypeLabel(value: string) {
-    return sourceTypeOptions.find((item) => item.value === value)?.label ?? value;
+    const legacyLabels: Record<string, string> = {
+        baidu_search: "百度搜索",
+        bocha_news: "博查资讯",
+        bocha_web: "博查网页",
+        multi_news: "多源资讯",
+    };
+    return sourceTypeOptions.find((item) => item.value === value)?.label ?? legacyLabels[value] ?? value;
 }
 
 function formatVisibilityScopes(values: string[]) {

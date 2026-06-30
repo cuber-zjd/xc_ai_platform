@@ -54,6 +54,33 @@ from app.services.agent.insight.permission_service import insight_permission_ser
 
 class InsightIntelligenceService:
     allowed_pool_types = {"favorite", "later", "hidden", "report_material"}
+    system_tag_names = {
+        "AI自动评审",
+        "AI搜索初筛",
+        "AI分析",
+        "AI已评审",
+        "AI评审",
+        "搜索发现",
+        "搜索命中",
+        "搜索初筛",
+        "公开搜索",
+        "系统采集",
+        "百度资讯",
+        "博查搜索",
+        "博查资讯",
+        "博查网页",
+        "网页抓取",
+        "baidu",
+        "baidu_news",
+        "bocha",
+        "bocha_search",
+        "bocha_news",
+        "bocha_web",
+        "firecrawl",
+        "generic_web",
+        "manual_url",
+    }
+    system_tag_sources = {"ai_review", "llm_analysis", "search_channel", "quality_rule", "smoke"}
 
     async def get_dashboard(
         self,
@@ -190,6 +217,10 @@ class InsightIntelligenceService:
         await db.commit()
         await db.refresh(intelligence)
         sources = [source] if source else []
+        from app.services.agent.insight.asset_service import insight_asset_service
+
+        await insight_asset_service.upsert_intelligence_asset(db, intelligence, sources)
+        await db.commit()
         return self._to_intelligence_detail(intelligence, sources)
 
     async def update_intelligence(
@@ -238,6 +269,10 @@ class InsightIntelligenceService:
         await db.commit()
         await db.refresh(intelligence)
         sources = await self._list_sources(db, intelligence_id)
+        from app.services.agent.insight.asset_service import insight_asset_service
+
+        await insight_asset_service.upsert_intelligence_asset(db, intelligence, sources)
+        await db.commit()
         return self._to_intelligence_detail(intelligence, sources)
 
     async def add_source(
@@ -799,6 +834,11 @@ class InsightIntelligenceService:
         await db.commit()
         await db.refresh(candidate)
         await db.refresh(intelligence)
+        sources = await self._list_sources(db, intelligence.id or 0)
+        from app.services.agent.insight.asset_service import insight_asset_service
+
+        await insight_asset_service.upsert_intelligence_asset(db, intelligence, sources)
+        await db.commit()
         return InsightCandidateReviewResponse(
             candidate=self._to_candidate_read(candidate),
             intelligence=self._to_intelligence_read(intelligence),
@@ -874,6 +914,17 @@ class InsightIntelligenceService:
         )
         await db.commit()
         await db.refresh(candidate)
+        _, crawl_result = await self._get_candidate_with_crawl_result(
+            db,
+            candidate_id,
+            user_id=user_id,
+            is_admin=is_admin,
+            permission="view",
+        )
+        from app.services.agent.insight.asset_service import insight_asset_service
+
+        await insight_asset_service.upsert_candidate_asset(db, candidate, crawl_result)
+        await db.commit()
         return InsightCandidateReviewResponse(candidate=self._to_candidate_read(candidate), intelligence=None)
 
     async def _get_candidate_with_crawl_result(
@@ -1256,6 +1307,8 @@ class InsightIntelligenceService:
         labels = {
             "baidu": "百度搜索",
             "bocha": "博查搜索",
+            "bocha_search": "博查搜索",
+            "baidu_news": "百度资讯",
             "firecrawl": "网页抓取",
             "manual": "人工录入",
             "official": "官网",
@@ -1353,13 +1406,26 @@ class InsightIntelligenceService:
         names: list[str] = []
         seen: set[str] = set()
         for item in suggested_tags:
-            if not isinstance(item, dict) or item.get("source") == "llm_analysis":
+            if not isinstance(item, dict):
+                continue
+            source = str(item.get("source") or "").strip()
+            if source in self.system_tag_sources:
                 continue
             name = str(item.get("name") or item.get("tag") or "").strip()
+            if self._is_system_tag_name(name):
+                continue
             if name and name not in seen:
                 seen.add(name)
                 names.append(name)
         return names
+
+    def _is_system_tag_name(self, name: str) -> bool:
+        value = str(name or "").strip()
+        if not value:
+            return True
+        if value in self.system_tag_names or value.lower() in self.system_tag_names:
+            return True
+        return bool(re.match(r"^(baidu|bocha|firecrawl|generic_web|manual_url)([_-].*)?$", value, flags=re.IGNORECASE))
 
     def _extract_candidate_ai_analysis(self, suggested_tags: list[dict[str, object]] | None) -> dict[str, object]:
         result: dict[str, object] = {

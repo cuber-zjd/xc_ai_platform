@@ -1,0 +1,8 @@
+{
+  "channel_code": "wipo",
+  "source_name": "WIPO/CNIPA 专利数据库",
+  "keyword": "植物蛋白",
+  "error_type": "Error",
+  "error_message": "BrowserType.launch: Executable doesn't exist at C:\\Users\\Administrator\\AppData\\Local\\ms-playwright\\chromium_headless_shell-1228\\chrome-headless-shell-win64\\chrome-headless-shell.exe\n╔════════════════════════════════════════════════════════════╗\n║ Looks like Playwright was just installed or updated.       ║\n║ Please run the following command to download new browsers: ║\n║                                                            ║\n║     playwright install                                     ║\n║                                                            ║\n║ <3 Playwright Team                                         ║\n╚════════════════════════════════════════════════════════════╝",
+  "failed_at": "2026-06-30T00:56:41.073643"
+}

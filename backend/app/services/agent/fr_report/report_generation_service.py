@@ -1,13 +1,16 @@
+import json
 import re
 from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
 from fastapi import UploadFile
+from langchain_core.messages import HumanMessage, SystemMessage
 from sqlalchemy import text
 from sqlmodel import desc, func, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
+from app.core.llm_factory import LLMFactory
 from app.core.logger import logger
 from app.models.agent.fr_report.report_task import (
     FrAiReportConversation,
@@ -17,9 +20,13 @@ from app.models.agent.fr_report.report_task import (
 )
 from app.schemas.agent.fr_report.ai_report import (
     ExcelAnalysisResult,
+    FrAiReportAgentCapabilitiesResponse,
     FrAiReportAgentChatResponse,
     FrAiReportAgentContext,
     FrAiReportAgentEvent,
+    FrAiReportAgentRuntimePolicy,
+    FrAiReportAgentSkillRead,
+    FrAiReportAgentToolRead,
     FrAiReportFeedbackCreate,
     FrAiReportFeedbackRead,
     FrAiReportRequirementReviewResponse,
@@ -32,8 +39,9 @@ from app.schemas.agent.fr_report.ai_report import (
     ReportTaskRead,
     SqlValidationResult,
 )
+from app.schemas.agent.fr_report.report_ai_operation import FrReportAiOperationDraftResponse, FrReportAiOperationRequest
 from app.schemas.page import Page
-from app.schemas.agent.fr_report.report_dsl import ReportDSL, ReportType
+from app.schemas.agent.fr_report.report_dsl import DataModelDSL, DatasetDSL, LayoutDSL, ReportDSL, ReportMetaDSL, ReportType
 from app.services.agent.fr_report.agents import (
     data_model_agent,
     report_designer_agent,
@@ -46,10 +54,133 @@ from app.services.agent.fr_report.preview_validator import preview_validator
 from app.services.agent.fr_report.requirement_planner import fr_report_requirement_planner
 from app.services.agent.fr_report.sql_react_agent import sql_react_agent
 from app.services.agent.fr_report.sqlserver_query_service import sqlserver_query_service
+from app.services.agent.fr_report.ai_operation_service import fr_report_ai_operation_service
 from app.services.agent.fr_report.version_control_service import fr_report_version_control_service
 
 
 class FrAiReportService:
+    def get_agent_capabilities(self) -> FrAiReportAgentCapabilitiesResponse:
+        return FrAiReportAgentCapabilitiesResponse(
+            strategy=FrAiReportAgentRuntimePolicy(
+                strategy="react",
+                maxToolSteps=6,
+                contextTokenBudget=12000,
+                autoRunReadOnlyTools=True,
+                autoCreateDraft=True,
+                requireApprovalForWrite=True,
+            ),
+            tools=[
+                FrAiReportAgentToolRead(
+                    name="read_report_structure",
+                    label="读取报表结构",
+                    category="只读",
+                    riskLevel="low",
+                    description="读取当前 CPT/FRM 的工作表、单元格、合并区域、数据集、参数和结构摘要。",
+                    inputSchema={"objectPath": "当前报表对象路径"},
+                ),
+                FrAiReportAgentToolRead(
+                    name="read_dataset_preview",
+                    label="读取数据集预览字段",
+                    category="只读",
+                    riskLevel="low",
+                    description="使用用户点击的数据集预览结果作为字段事实，不凭空编字段。",
+                    inputSchema={"datasetName": "当前数据集名称", "previewColumns": "预览字段列表"},
+                ),
+                FrAiReportAgentToolRead(
+                    name="read_database_schema",
+                    label="读取数据库表结构",
+                    category="只读",
+                    riskLevel="medium",
+                    description="只读取符合英文/下划线标识符规则的真实表结构，中文业务名称不会直接当作表名查询。",
+                    inputSchema={"tableNames": "一个或多个真实数据库表名"},
+                ),
+                FrAiReportAgentToolRead(
+                    name="preview_sql",
+                    label="SQL 只读预览",
+                    category="只读",
+                    riskLevel="medium",
+                    description="只允许 SELECT/WITH 查询，限制样例行数，禁止 DDL、DML、存储过程和多语句。",
+                    inputSchema={"sql": "待预览 SQL"},
+                ),
+                FrAiReportAgentToolRead(
+                    name="parse_uploads",
+                    label="解析附件资料",
+                    category="只读",
+                    riskLevel="low",
+                    description="Excel 进入结构化解析，图片、Word 和文本先作为需求上下文保留，后续可接 OCR 和文档摘要。",
+                ),
+                FrAiReportAgentToolRead(
+                    name="create_operation_draft",
+                    label="生成待应用修改项",
+                    category="待应用",
+                    riskLevel="medium",
+                    description="把用户意图转成可确认的 CPT 文件修改项，并生成前端预览效果。",
+                    requiresApproval=True,
+                ),
+                FrAiReportAgentToolRead(
+                    name="generate_sql_and_dsl",
+                    label="生成 SQL 与 ReportDSL",
+                    category="中间产物",
+                    riskLevel="medium",
+                    description="生成可预览 SQL 和 ReportDSL，AI 仍不直接生成 CPT/XML。",
+                    requiresApproval=True,
+                ),
+                FrAiReportAgentToolRead(
+                    name="generate_cpt_with_version",
+                    label="生成 CPT 并归档版本",
+                    category="写入",
+                    riskLevel="high",
+                    autoExecutable=False,
+                    requiresApproval=True,
+                    description="基于已确认 DSL/快照确定性生成 CPT，写入前进行版本归档和外部修改冲突检测。",
+                ),
+                FrAiReportAgentToolRead(
+                    name="version_rollback",
+                    label="版本回档",
+                    category="写入",
+                    riskLevel="high",
+                    autoExecutable=False,
+                    requiresApproval=True,
+                    description="把平台结构版本或 CPT 文件版本回档到指定版本，必须由用户确认。",
+                ),
+            ],
+            skills=[
+                FrAiReportAgentSkillRead(
+                    skillId="fr-style-weekly-template",
+                    name="周报样式规范",
+                    scope="system",
+                    description="使用数据分析目录下周报类模板的紧凑表格视觉。",
+                    instruction="标题使用微软雅黑 13 加粗；表头宋体 10 加粗，背景 #e2eaff；数据宋体 10；细边框 #bdcbe6；标题行 13mm，表头和数据行 10mm；文本左对齐或居中，数字右对齐并按业务保留小数。",
+                    appliesTo=["样式", "表格", "周报"],
+                    tokenBudget=500,
+                ),
+                FrAiReportAgentSkillRead(
+                    skillId="fr-writeback-safe",
+                    name="填报安全规范",
+                    scope="system",
+                    description="填报报表优先轻量控件、明确主键和写回边界。",
+                    instruction="填报配置必须区分可编辑、只读和计算字段；新增/删除行按钮必须走受控写回；大数据集下拉需要避免绑定到每个单元格造成预览卡顿；写回前保留版本和冲突检测。",
+                    appliesTo=["填报", "控件", "写回"],
+                    tokenBudget=500,
+                ),
+                FrAiReportAgentSkillRead(
+                    skillId="fr-token-budget",
+                    name="上下文与记忆控制",
+                    scope="system",
+                    description="控制上下文进入模型的粒度，避免长报表和长会话撑爆 token。",
+                    instruction="只把当前任务目标、最近 6 条对话摘要、启用技能、结构摘要、当前选区、数据集字段和工具观察摘要放入模型；完整 XML、完整 SQL 历史和大样例数据不得直接进入模型。",
+                    appliesTo=["上下文", "记忆", "token"],
+                    tokenBudget=400,
+                ),
+            ],
+            boundaries=[
+                "已有 CPT 修改只接收 xml_patch；模型可基于按需片段生成 CPT XML 补丁，写入仍由版本控制服务执行。",
+                "只读工具可自动执行；确认待应用修改项、生成 CPT、覆盖、回档和回收必须经过用户确认。",
+                "所有文件写入必须走版本库、hash/lastModified 外部修改检测和目标路径白名单。",
+                "用户技能只能影响工作习惯和上下文注入，不能扩大后端工具权限或绕过安全策略。",
+            ],
+        )
+
     async def agent_chat(
         self,
         session: AsyncSession,
@@ -59,20 +190,141 @@ class FrAiReportService:
         action: str,
         context: FrAiReportAgentContext,
         file: UploadFile | None = None,
+        files: list[UploadFile] | None = None,
     ) -> FrAiReportAgentChatResponse:
         next_context = self._merge_agent_context(context, message)
+        capabilities = self.get_agent_capabilities()
+        upload_files = [item for item in (files or []) if item is not None]
+        if file is not None:
+            upload_files.insert(0, file)
+        primary_excel_file = self._select_primary_excel_upload(upload_files)
         events: list[FrAiReportAgentEvent] = [
-            FrAiReportAgentEvent(type="message", content="小驰已收到，我先判断信息是否足够，再决定是否调用工具。")
+            FrAiReportAgentEvent(type="message", content="小驰已收到，我会按 ReAct 方式先判断目标，再选择工具；只读工具可自动执行，写文件前会停下来确认。"),
+            FrAiReportAgentEvent(
+                type="memory_context",
+                toolName="context_budget",
+                content="本轮只注入当前报表摘要、选区、数据集预览字段、最近意图和启用技能，不把完整 CPT/XML 放进模型。",
+                payload={
+                    "contextTokenBudget": capabilities.strategy.contextTokenBudget,
+                    "activeSkillIds": next_context.activeSkillIds,
+                    "hasCurrentReport": bool(next_context.currentObjectPath),
+                },
+            ),
         ]
+        route = await self._route_agent_turn(action, message, next_context)
+        inferred_action = route["action"]
+        assistant_message = route.get("assistantMessage")
+        if route.get("resetTask"):
+            next_context.taskId = None
+            next_context.conversationId = None
+            next_context.requirement = message.strip() or next_context.requirement
+        events.append(
+            FrAiReportAgentEvent(
+                type="intent_routing",
+                toolName=str(route.get("toolName") or "llm_intent_router"),
+                content=str(route.get("reason") or "已完成本轮意图判断。"),
+                payload={
+                    "action": inferred_action,
+                    "confidence": route.get("confidence"),
+                    "source": route.get("source"),
+                    "resetTask": bool(route.get("resetTask")),
+                },
+            )
+        )
+        if upload_files:
+            events.append(
+                FrAiReportAgentEvent(
+                    type="tool_call_result",
+                    toolName="read_uploads",
+                    content=f"已接收 {len(upload_files)} 个附件；Excel 会进入结构解析，其他类型先作为需求上下文保留。",
+                    payload={"files": [item.filename for item in upload_files if item.filename]},
+                )
+            )
         warnings: list[str] = []
         errors: list[str] = []
-        action = action if action in {"chat", "start_generate", "save_cpt"} else "chat"
+        action = inferred_action
+
+        if action == "modify_current_report":
+            if not next_context.currentObjectPath:
+                return FrAiReportAgentChatResponse(
+                    status="need_input",
+                    context=next_context,
+                    capabilities=capabilities,
+                    events=events
+                    + [
+                        FrAiReportAgentEvent(
+                            type="need_user_input",
+                            content="我还不知道当前要修改哪张报表。请先在左侧选择一个 CPT/FRM，或新建空白报表后再继续。",
+                        )
+                    ],
+                    questions=["请先选择当前要修改的报表文件。"],
+                )
+            next_context.requirement = message.strip() or None
+            events.append(
+                FrAiReportAgentEvent(
+                    type="tool_call_start",
+                    toolName="create_operation_draft",
+                    content="判断为当前报表修改任务，开始读取结构并生成可预览的待应用修改项。",
+                    payload={
+                        "objectPath": next_context.currentObjectPath,
+                        "selectedCell": next_context.selectedCell,
+                        "selectedDataset": next_context.selectedDataset,
+                        "previewColumnCount": len(next_context.previewColumns),
+                    },
+                )
+            )
+            try:
+                operation_draft = await fr_report_ai_operation_service.generate_operation_draft(
+                    db=session,
+                    user_id=user_id,
+                    payload=FrReportAiOperationRequest(
+                        objectPath=next_context.currentObjectPath,
+                        prompt=self._build_current_report_operation_requirement(next_context, message),
+                        selectedCell=next_context.selectedCell,
+                        selectedDataset=next_context.selectedDataset,
+                        previewColumns=next_context.previewColumns[:80],
+                        previewRows=next_context.previewRows[:8],
+                        mode="modify",
+                    ),
+                )
+                operation_draft = self._sanitize_operation_draft_for_agent_response(operation_draft)
+            except (PermissionError, ValueError, RuntimeError) as exc:
+                errors.append(str(exc))
+                events.append(FrAiReportAgentEvent(type="error", toolName="create_operation_draft", content=str(exc)))
+                return FrAiReportAgentChatResponse(
+                    status="failed",
+                    context=next_context,
+                    events=events,
+                    capabilities=capabilities,
+                    errors=errors,
+                )
+            events.append(
+                FrAiReportAgentEvent(
+                    type="draft_ready",
+                    toolName="create_operation_draft",
+                    content=operation_draft.assistantMessage,
+                    payload={
+                        "draftId": operation_draft.draftId,
+                        "operationCount": len(operation_draft.operations),
+                        "requiresApproval": operation_draft.safety.get("requiresApproval", True),
+                    },
+                )
+            )
+            return FrAiReportAgentChatResponse(
+                status="operation_draft_ready",
+                context=next_context,
+                events=events,
+                operationDraft=operation_draft,
+                capabilities=capabilities,
+                warnings=operation_draft.warnings,
+            )
 
         if action == "save_cpt":
             if not next_context.taskId:
                 return FrAiReportAgentChatResponse(
                     status="need_input",
                     context=next_context,
+                    capabilities=capabilities,
                     events=events
                     + [
                         FrAiReportAgentEvent(
@@ -141,6 +393,7 @@ class FrAiReportService:
                     taskId=cpt_step.taskId,
                     context=next_context,
                     events=events,
+                    capabilities=capabilities,
                     dslStep=dsl_step,
                     cptStep=cpt_step,
                     warnings=cpt_step.warnings,
@@ -149,23 +402,36 @@ class FrAiReportService:
             except ValueError as exc:
                 errors.append(str(exc))
                 events.append(FrAiReportAgentEvent(type="error", content=str(exc)))
-                return FrAiReportAgentChatResponse(status="failed", context=next_context, events=events, errors=errors)
+                return FrAiReportAgentChatResponse(status="failed", context=next_context, events=events, capabilities=capabilities, errors=errors)
 
         merged_requirement = self._build_agent_requirement(next_context, message)
-        missing_items = self._agent_missing_items(next_context, bool(file))
-        if missing_items:
+        missing_items = self._agent_missing_items(next_context, bool(upload_files))
+        if missing_items and action == "start_generate":
             events.append(
                 FrAiReportAgentEvent(
-                    type="need_user_input",
-                    content="我还缺少一些关键信息，补齐后就能继续。",
+                    type="assumption",
+                    content="用户已要求开始生成，小驰不会继续卡在追问上；缺失信息会作为假设和风险进入本轮生成。",
+                    payload={"missingItems": missing_items},
+                )
+            )
+            warnings.extend([f"未确认，按当前上下文继续生成：{item}" for item in missing_items])
+        if missing_items and action != "start_generate":
+            events.append(
+                FrAiReportAgentEvent(
+                    type="plan_draft",
+                    toolName="report_plan_draft",
+                    content="我可以先做方案草图，但真正生成前还需要补齐硬条件：\n" + "\n".join(f"- {item}" for item in missing_items),
                     payload={"missingItems": missing_items},
                 )
             )
             return FrAiReportAgentChatResponse(
-                status="need_input",
+                status="ready",
                 context=next_context,
                 events=events,
-                questions=missing_items,
+                capabilities=capabilities,
+                questions=[],
+                assistantMessage=assistant_message
+                or "我先按当前上下文停在方案判断这一步；还缺几项硬信息，补齐后再动手会更稳。",
             )
 
         events.append(
@@ -177,7 +443,7 @@ class FrAiReportService:
         )
         review = await self.review_requirement(
             requirement=merged_requirement,
-            file=file,
+            file=primary_excel_file,
             table_schema=None,
             source_table_name=next_context.sourceTableName,
         )
@@ -196,8 +462,9 @@ class FrAiReportService:
                 if str(question).strip()
             ][:6]
             ai_source_tables = ai_review.get("sourceTables") or []
-            if isinstance(ai_source_tables, list) and ai_source_tables:
-                next_context.sourceTableName = ", ".join(str(item) for item in ai_source_tables if str(item).strip()) or next_context.sourceTableName
+            ai_source_table_names = self._extract_database_table_names(ai_source_tables)
+            if ai_source_table_names:
+                next_context.sourceTableName = ", ".join(ai_source_table_names)
             events.append(
                 FrAiReportAgentEvent(
                     type="tool_call_result",
@@ -230,17 +497,21 @@ class FrAiReportService:
         )
         if action == "chat" and display_questions:
             return FrAiReportAgentChatResponse(
-                status="need_input",
+                status="ready",
                 context=next_context,
                 events=events
                 + [
                     FrAiReportAgentEvent(
-                        type="message",
-                        content="现在还不急着生成，我先把关键问题问清楚，避免生成出来又偏。",
+                        type="plan_draft",
+                        toolName="report_plan_draft",
+                        content=self._build_plan_draft_message(display_summary, ai_review, review, display_questions),
+                payload={"questions": display_questions},
                     )
                 ],
-                questions=display_questions,
+                questions=[],
                 review=review,
+                capabilities=capabilities,
+                assistantMessage=assistant_message,
                 warnings=review.warnings,
             )
         if action == "chat":
@@ -255,6 +526,8 @@ class FrAiReportService:
                     )
                 ],
                 review=review,
+                capabilities=capabilities,
+                assistantMessage=assistant_message,
                 warnings=review.warnings,
             )
         if display_questions:
@@ -277,7 +550,7 @@ class FrAiReportService:
         sql_step = await self.generate_sql_step(
             session=session,
             requirement=merged_requirement,
-            file=file,
+            file=primary_excel_file,
             table_schema=None,
             report_name=next_context.reportName,
             source_table_name=next_context.sourceTableName,
@@ -312,6 +585,7 @@ class FrAiReportService:
                 events=events,
                 review=review,
                 sqlStep=sql_step,
+                capabilities=capabilities,
                 warnings=warnings,
                 errors=errors,
             )
@@ -343,6 +617,7 @@ class FrAiReportService:
             review=review,
             sqlStep=sql_step,
             dslStep=dsl_step,
+            capabilities=capabilities,
             warnings=warnings,
             errors=errors,
         )
@@ -354,16 +629,16 @@ class FrAiReportService:
         table_schema: dict[str, Any] | None,
         source_table_name: str | None = None,
     ) -> FrAiReportRequirementReviewResponse:
-        file_content = await file.read() if file else None
-        if file:
-            await file.seek(0)
-        analysis = excel_analyzer.analyze(file_content, file.filename) if file_content else None
-        return fr_report_requirement_planner.review(
+        warnings: list[str] = []
+        analysis = await self._analyze_excel_upload(file, warnings=warnings)
+        review = fr_report_requirement_planner.review(
             requirement=requirement,
             analysis=analysis,
             source_table_name=source_table_name,
             table_schema=table_schema,
         )
+        review.warnings.extend(warnings)
+        return review
 
     async def generate_sql_step(
         self,
@@ -405,8 +680,9 @@ class FrAiReportService:
         await session.refresh(task)
 
         try:
-            file_content = await file.read() if file else None
-            analysis = excel_analyzer.analyze(file_content, file.filename) if file_content else None
+            upload_warnings: list[str] = []
+            analysis = await self._analyze_excel_upload(file, warnings=upload_warnings)
+            logs.extend(self._log(message) for message in upload_warnings)
             logs.append(self._log("Excel 分析完成" if analysis else "未提供 Excel，跳过 Excel 分析"))
 
             requirement_summary = await requirement_agent.summarize(requirement, analysis)
@@ -484,7 +760,7 @@ class FrAiReportService:
             task.sql_validation = sql_react_result.validation.model_dump(mode="json")
             task.create_table_sql = data_model.createTableSql
             task.generation_log = logs
-            task.warnings = business_review.warnings + sql_react_result.validation.warnings + supervisor_warnings
+            task.warnings = upload_warnings + business_review.warnings + sql_react_result.validation.warnings + supervisor_warnings
             task.errors = sql_react_result.validation.errors + supervisor_errors
             task.update_time = datetime.now()
             session.add(task)
@@ -633,8 +909,9 @@ class FrAiReportService:
         await session.refresh(task)
 
         try:
-            file_content = await file.read() if file else None
-            analysis = excel_analyzer.analyze(file_content, file.filename) if file_content else None
+            upload_warnings: list[str] = []
+            analysis = await self._analyze_excel_upload(file, warnings=upload_warnings)
+            logs.extend(self._log(message) for message in upload_warnings)
             logs.append(self._log("Excel 分析完成" if analysis else "未提供 Excel，跳过 Excel 分析"))
 
             requirement_summary = await requirement_agent.summarize(requirement, analysis)
@@ -720,7 +997,7 @@ class FrAiReportService:
                 task.status = FrAiReportTaskStatus.VALIDATION_FAILED
                 task.cpt_object_path = normalized_target
                 task.generation_log = logs + [self._log(f"检测到目标 CPT 外部修改，已阻止覆盖：{conflict.get('message', '')}")]
-                task.warnings = business_review.warnings + validation_warnings + [conflict.get("message", "检测到目标 CPT 外部修改，已阻止覆盖")]
+                task.warnings = upload_warnings + business_review.warnings + validation_warnings + [conflict.get("message", "检测到目标 CPT 外部修改，已阻止覆盖")]
                 task.errors = []
                 task.update_time = datetime.now()
                 session.add(task)
@@ -759,7 +1036,7 @@ class FrAiReportService:
             task.create_sql_object_path = None
             task.log_object_path = file_version.manifest_object_path
             task.preview_url = preview_result.previewUrl
-            task.warnings = business_review.warnings + validation_warnings + sql_validation.warnings + supervisor_warnings + preview_result.warnings
+            task.warnings = upload_warnings + business_review.warnings + validation_warnings + sql_validation.warnings + supervisor_warnings + preview_result.warnings
             task.errors = sql_validation.errors + supervisor_errors + preview_result.errors
             task.update_time = datetime.now()
             session.add(task)
@@ -950,6 +1227,144 @@ class FrAiReportService:
             await session.refresh(task)
             return self.to_cpt_step_schema(task)
 
+    async def create_empty_report(
+        self,
+        session: AsyncSession,
+        *,
+        user_id: int,
+        report_name: str,
+        target_folder: str,
+        target_object_path: str | None = None,
+        conflict_strategy: str = "abort",
+    ) -> GenerateCptStepResponse:
+        await self._ensure_task_columns(session)
+        final_report_name = self._normalize_new_report_name(report_name)
+        logs = [self._log("创建空白 FineReport 报表")]
+        conversation, revision_no, parent_task_id = await self._prepare_conversation(
+            session,
+            None,
+            final_report_name,
+            None,
+            str(user_id),
+        )
+        task = FrAiReportTask(
+            task_id=str(uuid4()),
+            conversation_id=conversation.conversation_id,
+            parent_task_id=parent_task_id,
+            revision_no=revision_no,
+            report_name=final_report_name,
+            report_type=ReportType.DETAIL_TABLE.value,
+            status=FrAiReportTaskStatus.GENERATING,
+            data_source_status="empty",
+            requirement_text="用户通过新建入口创建空白报表，后续由侧边栏小驰继续设计。",
+            generation_log=logs,
+        )
+        session.add(task)
+        await session.commit()
+        await session.refresh(task)
+
+        try:
+            normalized_target = fr_report_version_control_service.normalize_target_object_path(
+                report_name=final_report_name,
+                target_folder=target_folder,
+                target_object_path=target_object_path,
+            )
+            empty_dsl = self._empty_report_dsl(final_report_name)
+            dsl_payload = empty_dsl.model_dump(mode="json")
+            cpt_bytes = cpt_generator.generate(empty_dsl)
+            logs.append(self._log("空白 CPT 已由确定性程序生成"))
+
+            task.report_dsl = dsl_payload
+            task.query_sql = empty_dsl.datasets[0].sql
+            task.sql_validation = {
+                "enabled": False,
+                "configured": False,
+                "success": True,
+                "executed": False,
+                "columns": [],
+                "sampleRows": [],
+                "errors": [],
+                "warnings": ["空白报表不执行 SQL 预览。"],
+            }
+            task.cpt_object_path = normalized_target
+            task.generation_log = logs
+            session.add(task)
+            await session.commit()
+            await session.refresh(task)
+
+            project, structure_version, file_version, conflict = await fr_report_version_control_service.save_task_file_version(
+                db=session,
+                user_id=user_id,
+                task=task,
+                cpt_bytes=cpt_bytes,
+                dsl_payload=dsl_payload,
+                generation_log=logs,
+                target_object_path=normalized_target,
+                conflict_strategy=conflict_strategy,
+                validation_warnings=["已创建空白报表，后续修改请在右侧小驰中完成。"],
+            )
+            if conflict:
+                logs.append(self._log(f"检测到目标 CPT 外部修改，已阻止覆盖：{conflict.get('message', '')}"))
+                task.status = FrAiReportTaskStatus.VALIDATION_FAILED
+                task.warnings = [conflict.get("message", "检测到目标 CPT 外部修改，已阻止覆盖")]
+                task.errors = []
+                task.generation_log = logs
+                task.update_time = datetime.now()
+                session.add(task)
+                await session.commit()
+                await session.refresh(task)
+                response = self.to_cpt_step_schema(task)
+                response.status = "conflict"
+                response.reportId = project.report_id
+                response.conflict = conflict
+                return response
+
+            if not file_version:
+                raise ValueError("文件版本保存失败")
+
+            logs.append(self._log("空白报表已写入目标路径并归档版本"))
+            reportlet_path = fr_report_version_control_service.reportlet_path(normalized_target)
+            preview_result = await preview_validator.validate(reportlet_path, write_mode=False)
+            if preview_result.errors:
+                logs.append(self._log("FineReport 预览校验未通过"))
+            else:
+                logs.append(self._log("FineReport 预览地址生成完成"))
+
+            file_version.preview_url = preview_result.previewUrl
+            file_version.warnings = ["已创建空白报表，后续修改请在右侧小驰中完成。"] + preview_result.warnings
+            file_version.errors = preview_result.errors
+            file_version.write_status = "generated" if not preview_result.errors else "preview_failed"
+            session.add(file_version)
+
+            task.cpt_object_path = normalized_target
+            task.dsl_object_path = file_version.dsl_object_path
+            task.log_object_path = file_version.manifest_object_path
+            task.preview_url = preview_result.previewUrl
+            task.warnings = file_version.warnings
+            task.errors = preview_result.errors
+            task.status = FrAiReportTaskStatus.VALIDATED if not task.errors else FrAiReportTaskStatus.VALIDATION_FAILED
+            task.generation_log = logs
+            task.update_time = datetime.now()
+            session.add(task)
+            await self._touch_conversation(session, conversation, task)
+            await session.commit()
+            await session.refresh(task)
+            response = self.to_cpt_step_schema(task)
+            response.reportId = project.report_id
+            response.fileVersionId = file_version.file_version_id
+            response.structureVersionId = structure_version.structure_version_id if structure_version else None
+            return response
+        except Exception as exc:
+            logger.exception(f"创建空白 FineReport 报表失败：{exc}")
+            task.status = FrAiReportTaskStatus.FAILED
+            task.errors = [str(exc)]
+            task.generation_log = logs + [self._log("创建空白报表失败")]
+            task.update_time = datetime.now()
+            session.add(task)
+            await session.commit()
+            await session.refresh(task)
+            return self.to_cpt_step_schema(task)
+
     async def get_task(self, session: AsyncSession, task_id: str) -> FrAiReportTask | None:
         result = await session.exec(select(FrAiReportTask).where(FrAiReportTask.task_id == task_id))
         return result.first()
@@ -1132,20 +1547,56 @@ class FrAiReportService:
             updateTime=task.update_time,
         )
 
+    async def _analyze_excel_upload(
+        self,
+        file: UploadFile | None,
+        *,
+        warnings: list[str] | None = None,
+    ) -> ExcelAnalysisResult | None:
+        if file is None:
+            return None
+        file_name = file.filename or "未命名附件"
+        try:
+            file_content = await file.read()
+            await file.seek(0)
+        except Exception as exc:
+            if warnings is not None:
+                warnings.append(f"附件 {file_name} 读取失败：{exc}")
+            return None
+        if not file_content:
+            return None
+        if not self._is_excel_upload(file_name):
+            if warnings is not None:
+                warnings.append(f"附件 {file_name} 暂未进入 Excel 结构解析，已作为需求资料保留。")
+            return None
+        try:
+            return excel_analyzer.analyze(file_content, file_name)
+        except Exception as exc:
+            if warnings is not None:
+                warnings.append(f"Excel 附件 {file_name} 解析失败：{exc}")
+            logger.warning(f"FineReport Excel 附件解析失败：{file_name}，{exc}")
+            return None
+
+    def _is_excel_upload(self, file_name: str | None) -> bool:
+        suffix = (file_name or "").rsplit(".", 1)[-1].lower()
+        return suffix in {"xlsx", "xlsm", "xltx", "xltm"}
+
+    def _select_primary_excel_upload(self, files: list[UploadFile]) -> UploadFile | None:
+        for file in files:
+            if self._is_excel_upload(file.filename):
+                return file
+        return files[0] if files else None
+
     def _merge_agent_context(self, context: FrAiReportAgentContext, message: str) -> FrAiReportAgentContext:
         next_context = context.model_copy(deep=True)
         text_value = message.strip()
         if text_value:
-            if self._is_fresh_report_request(text_value):
-                next_context.requirement = text_value
-                next_context.taskId = None
-                next_context.conversationId = None
-                next_context.sourceTableName = None
-            elif next_context.requirement:
-                if text_value not in next_context.requirement:
+            if next_context.requirement:
+                if not self._text_contains(next_context.requirement, text_value):
                     next_context.requirement = f"{next_context.requirement}\n{text_value}".strip()
             else:
                 next_context.requirement = text_value
+            next_context.requirement = self._dedupe_requirement_text(next_context.requirement)
         extracted_report_name = self._match_agent_text(
             message,
             [
@@ -1181,7 +1632,7 @@ class FrAiReportService:
         parts = []
         if context.requirement:
             parts.append(context.requirement.strip())
-        if message.strip() and message.strip() not in parts:
+        if message.strip() and not any(self._text_contains(part, message.strip()) for part in parts):
             parts.append(message.strip())
         if context.templateObjectPath:
             parts.append(f"参考模板：{context.templateObjectPath}")
@@ -1189,7 +1640,178 @@ class FrAiReportService:
             parts.append(f"生成目录：{context.targetFolder}")
         if context.sourceTableName:
             parts.append(f"用户指定已有数据表：{context.sourceTableName}")
+        if context.currentObjectPath:
+            parts.append(f"当前正在编辑的报表：{context.currentObjectPath}")
+        if context.selectedCell:
+            parts.append(f"当前选中单元格：{context.selectedCell}")
+        if context.selectedDataset:
+            parts.append(f"当前选中数据集：{context.selectedDataset}")
+        if context.previewColumns:
+            parts.append(f"当前数据集预览字段：{', '.join(context.previewColumns[:60])}")
+        if context.skillInstruction:
+            parts.append(f"用户启用的个人技能/开发习惯：{context.skillInstruction[:1600]}")
+        return self._dedupe_requirement_text("\n".join(part for part in parts if part).strip())
+
+    def _build_current_report_operation_requirement(self, context: FrAiReportAgentContext, message: str) -> str:
+        parts = [message.strip()]
+        if context.currentObjectPath:
+            parts.append(f"当前正在编辑的报表：{context.currentObjectPath}")
+        if context.selectedCell:
+            parts.append(f"当前选中单元格：{context.selectedCell}")
+        if context.selectedDataset:
+            parts.append(f"当前选中数据集：{context.selectedDataset}")
+        if context.previewColumns:
+            parts.append(f"当前数据集预览字段：{', '.join(context.previewColumns[:60])}")
+        if context.skillInstruction:
+            parts.append(f"用户启用的个人技能/开发习惯：{context.skillInstruction[:1600]}")
         return "\n".join(part for part in parts if part).strip()
+
+    def _sanitize_operation_draft_for_agent_response(
+        self,
+        draft: FrReportAiOperationDraftResponse,
+    ) -> FrReportAiOperationDraftResponse:
+        xml_patch_operations = [item for item in draft.operations if item.operationType == "xml_patch"]
+        if len(xml_patch_operations) == len(draft.operations):
+            return draft
+        ignored_count = len(draft.operations) - len(xml_patch_operations)
+        draft.operations = xml_patch_operations
+        draft.warnings = [
+            *draft.warnings,
+            f"已拦截 {ignored_count} 个旧式中间操作，未进入待应用修改项。",
+        ]
+        if not xml_patch_operations:
+            draft.status = "blocked"
+            draft.assistantMessage = "本轮没有形成可确认的文件修改项。请重新生成，或补充希望修改的具体区域。"
+            draft.safety = {**draft.safety, "requiresApproval": True, "riskLevel": "medium"}
+        return draft
+
+    async def _route_agent_turn(
+        self,
+        explicit_action: str,
+        message: str,
+        context: FrAiReportAgentContext,
+    ) -> dict[str, Any]:
+        if explicit_action in {"start_generate", "save_cpt", "modify_current_report"}:
+            return {
+                "action": explicit_action,
+                "confidence": 1,
+                "reason": "用户点击了明确动作按钮，按按钮语义执行。",
+                "source": "explicit_action",
+                "toolName": "explicit_action",
+            }
+        try:
+            route = await self._route_agent_turn_with_llm(message, context)
+            if route:
+                return route
+        except Exception as exc:
+            logger.warning(f"小驰意图路由模型调用失败，使用确定性兜底：{LLMFactory.describe_invocation_error(exc)}")
+        fallback_action = self._infer_agent_action_by_rules(message, context)
+        return {
+            "action": fallback_action,
+            "confidence": 0.35,
+            "reason": "模型路由暂不可用，已使用保守兜底判断；后续工具仍会按权限和版本规则执行。",
+            "source": "fallback_rule",
+            "toolName": "fallback_rule_router",
+        }
+
+    async def _route_agent_turn_with_llm(
+        self,
+        message: str,
+        context: FrAiReportAgentContext,
+    ) -> dict[str, Any] | None:
+        payload = {
+            "userMessage": message,
+            "currentReport": {
+                "reportName": context.reportName,
+                "currentObjectPath": context.currentObjectPath,
+                "targetObjectPath": context.targetObjectPath,
+                "targetFolder": context.targetFolder,
+                "selectedCell": context.selectedCell,
+                "selectedDataset": context.selectedDataset,
+                "previewColumns": (context.previewColumns or [])[:30],
+            },
+            "taskContext": {
+                "hasTaskId": bool(context.taskId),
+                "hasConversationId": bool(context.conversationId),
+                "hasRequirement": bool(context.requirement),
+                "sourceTableName": context.sourceTableName,
+                "activeSkillIds": context.activeSkillIds,
+            },
+        }
+        response = await LLMFactory.safe_invoke(
+            [
+                SystemMessage(
+                    content=(
+                        "你是 FineReport 小驰侧边栏的意图路由器。你要用语义理解判断用户这一轮想让助手做什么，"
+                        "不要用固定关键词表，不要输出流程模板。只输出严格 JSON。"
+                        "action 只能是 chat、modify_current_report、start_generate、save_cpt。"
+                        "判断规则：如果用户在已有 currentObjectPath 的上下文里要求改布局、筛选、参数、字段、数据集、SQL、控件、样式或填报设置，选 modify_current_report；"
+                        "如果用户要从需求/附件开始生成 SQL、ReportDSL 或完整报表，选 start_generate；"
+                        "如果用户明确要写入、保存、发布、生成 CPT 文件，选 save_cpt；"
+                        "如果用户是在抱怨、询问原因、讨论方案、闲聊或还没要求动手，选 chat。"
+                        "assistantMessage 是给用户看的自然短回复：像一个能干的工程副驾驶，少模板，别说已经执行了还没执行的工具。"
+                        "如果用户是在同一上下文中继续改当前报表或继续当前任务，resetTask=false；只有用户明确另起一个新报表/从头做/换一个报表任务时，resetTask=true。"
+                        "输出字段：action、confidence、reason、assistantMessage、resetTask。confidence 为 0 到 1。"
+                    )
+                ),
+                HumanMessage(content=json.dumps(payload, ensure_ascii=False)),
+            ],
+            capability="general",
+            temperature=0,
+            json_mode=True,
+            max_retries=2,
+        )
+        content = getattr(response, "content", response)
+        if isinstance(content, list):
+            content = "".join(str(item) for item in content)
+        if not isinstance(content, str):
+            return None
+        try:
+            data = json.loads(self._strip_json_fence(content))
+        except json.JSONDecodeError as exc:
+            logger.warning(f"小驰意图路由模型返回 JSON 解析失败：{exc}")
+            return None
+        action = str(data.get("action") or "").strip()
+        if action not in {"chat", "modify_current_report", "start_generate", "save_cpt"}:
+            return None
+        confidence = data.get("confidence")
+        try:
+            confidence_value = max(0.0, min(1.0, float(confidence)))
+        except (TypeError, ValueError):
+            confidence_value = 0.6
+        return {
+            "action": action,
+            "confidence": confidence_value,
+            "reason": str(data.get("reason") or "模型已完成意图判断。")[:500],
+            "assistantMessage": str(data.get("assistantMessage") or "").strip()[:1200] or None,
+            "resetTask": bool(data.get("resetTask")),
+            "source": "llm",
+            "toolName": "llm_intent_router",
+        }
+
+    def _infer_agent_action_by_rules(self, message: str, context: FrAiReportAgentContext) -> str:
+        normalized = re.sub(r"\s+", "", message or "")
+        if re.search(r"(保存|生成|导出).{0,8}(CPT|cpt)|写入版本|落盘|发布", normalized):
+            return "save_cpt"
+        if re.search(r"(开始|直接|马上|现在).{0,8}(生成|执行|做报表|跑起来|开始做)|生成报表|生成SQL|生成DSL", normalized):
+            return "start_generate"
+        if context.currentObjectPath and re.search(
+            r"(修改|调整|改成|改为|改回|变成|设置|保留|去掉|删掉|删除|移除|取消|不要|"
+            r"加上|新增|插入|合并|替换|下拉|下拉框|筛选|筛选条件|过滤|参数|字段|"
+            r"字体|字号|加粗|边框|背景|颜色|SQL|数据集|控件|填报|行高|列宽|样式)",
+            message or "",
+            flags=re.IGNORECASE,
+        ):
+            return "modify_current_report"
+        return "chat"
+
+    @staticmethod
+    def _strip_json_fence(text_value: str) -> str:
+        value = text_value.strip()
+        if value.startswith("```"):
+            value = re.sub(r"^```(?:json)?", "", value, flags=re.IGNORECASE).strip()
+            value = re.sub(r"```$", "", value).strip()
+        return value
 
     def _agent_missing_items(self, context: FrAiReportAgentContext, has_file: bool) -> list[str]:
         missing_items: list[str] = []
@@ -1208,12 +1830,74 @@ class FrAiReportService:
                 return match.group(1).strip()
         return None
 
-    def _is_fresh_report_request(self, text_value: str) -> bool:
-        normalized = re.sub(r"\s+", "", text_value)
-        return bool(
-            re.search(r"^(帮我|我要|请|直接)?(做|新建|生成|创建|设计)(一个|一张)?", normalized)
-            or re.search(r"报表名[：:]", text_value)
-        )
+    def _text_contains(self, container: str, item: str) -> bool:
+        left = re.sub(r"\s+", "", container or "")
+        right = re.sub(r"\s+", "", item or "")
+        return bool(right and right in left)
+
+    def _dedupe_requirement_text(self, value: str | None) -> str | None:
+        if not value:
+            return value
+        lines: list[str] = []
+        seen: set[str] = set()
+        for line in re.split(r"[\r\n]+", value):
+            clean = line.strip()
+            if not clean:
+                continue
+            key = re.sub(r"\s+", "", clean)
+            if key in seen:
+                continue
+            seen.add(key)
+            lines.append(clean)
+        return "\n".join(lines)
+
+    def _build_plan_draft_message(
+        self,
+        summary: str,
+        ai_review: dict[str, Any] | None,
+        review: FrAiReportRequirementReviewResponse,
+        questions: list[str],
+    ) -> str:
+        extracted = [
+            str(item).strip()
+            for item in ((ai_review or {}).get("extractedRequirements") or review.extractedRequirements)
+            if str(item).strip()
+        ][:8]
+        assumptions = [
+            str(item).strip()
+            for item in ((ai_review or {}).get("assumptions") or review.assumptions)
+            if str(item).strip()
+        ][:4]
+        lines = ["我先按当前信息整理一个方案草图：", f"目标：{summary}"]
+        if extracted:
+            lines.append("会做成：")
+            lines.extend(f"- {item}" for item in extracted[:6])
+        if assumptions:
+            lines.append("暂按这些假设继续：")
+            lines.extend(f"- {item}" for item in assumptions)
+        if questions:
+            lines.append("这些点不再阻断生成，会作为风险点保留，后续可在侧边栏继续改：")
+            lines.extend(f"- {item}" for item in questions[:3])
+        lines.append("你可以直接说“开始生成报表”，我会先生成可预览的 SQL 和 ReportDSL；不合适的地方再继续让小驰调整。")
+        return "\n".join(lines)
+
+    def _extract_database_table_names(self, values: Any) -> list[str]:
+        candidates: list[str] = []
+        if isinstance(values, list):
+            for item in values:
+                if isinstance(item, dict):
+                    raw_name = item.get("tableName") or item.get("name")
+                    if raw_name:
+                        candidates.append(str(raw_name))
+                elif item is not None:
+                    candidates.extend(self._parse_source_table_names(str(item)))
+        elif values is not None:
+            candidates.extend(self._parse_source_table_names(str(values)))
+        return [item for item in dict.fromkeys(candidates) if self._looks_like_database_table_name(item)][:8]
+
+    def _looks_like_database_table_name(self, value: str) -> bool:
+        identifier = r"(?:[A-Za-z_][A-Za-z0-9_]*|\[[A-Za-z_][A-Za-z0-9_]*\])"
+        return bool(re.fullmatch(rf"{identifier}(?:\.{identifier}){{0,2}}", value.strip()))
 
     def _latest_message_summary(self, text_value: str) -> str:
         text = re.sub(r"\s+", " ", text_value).strip()
@@ -1298,6 +1982,43 @@ class FrAiReportService:
             errors=task.errors or [],
             createTime=task.create_time,
             updateTime=task.update_time,
+        )
+
+    def _normalize_new_report_name(self, report_name: str) -> str:
+        normalized = (report_name or "").strip()
+        if not normalized:
+            raise ValueError("请输入报表名称")
+        normalized = re.sub(r"[\\/:*?\"<>|]+", "_", normalized)
+        normalized = normalized.removesuffix(".cpt").strip()
+        if not normalized:
+            raise ValueError("报表名称无效")
+        return normalized
+
+    def _empty_report_dsl(self, report_name: str) -> ReportDSL:
+        dataset = DatasetDSL(
+            name="ds_empty",
+            sql="SELECT 1 AS placeholder WHERE 1 = 0",
+            fields=[],
+        )
+        return ReportDSL(
+            reportName=report_name,
+            reportType=ReportType.DETAIL_TABLE,
+            reportMeta=ReportMetaDSL(title=report_name),
+            dataModel=DataModelDSL(
+                tableName="empty_report",
+                dataSourceStatus="designed_not_verified",
+                fields=[],
+                createTableSql=None,
+            ),
+            datasets=[dataset],
+            layout=LayoutDSL(
+                dataset=dataset.name,
+                columns=[],
+                designHints={
+                    "emptyReport": True,
+                    "purpose": "用户新建的空白报表，后续由侧边栏小驰逐步生成结构、SQL、样式和填报配置。",
+                },
+            ),
         )
 
     def to_list_item(self, task: FrAiReportTask) -> ReportTaskListItem:
@@ -1403,9 +2124,21 @@ class FrAiReportService:
         logs: list[str],
         allow_designed_fallback: bool = False,
     ) -> dict[str, Any] | None:
-        table_names = self._parse_source_table_names(source_table_name)
+        raw_table_names = self._parse_source_table_names(source_table_name)
+        table_names = [item for item in raw_table_names if self._looks_like_database_table_name(item)]
+        skipped_names = [item for item in raw_table_names if item not in table_names]
+        if skipped_names:
+            logs.append(
+                self._log(
+                    f"以下来源更像业务资料名称而非数据库真实表名，暂不用于查询表结构：{', '.join(skipped_names[:5])}"
+                )
+            )
         if not table_names and (table_schema or {}).get("tableName"):
-            table_names = self._parse_source_table_names(str((table_schema or {})["tableName"]))
+            table_names = [
+                item
+                for item in self._parse_source_table_names(str((table_schema or {})["tableName"]))
+                if self._looks_like_database_table_name(item)
+            ]
         if not table_names:
             return table_schema
         if table_schema and table_schema.get("fields"):

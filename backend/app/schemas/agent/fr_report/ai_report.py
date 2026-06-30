@@ -3,6 +3,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.schemas.agent.fr_report.report_ai_operation import FrReportAiOperationDraftResponse
 from app.schemas.agent.fr_report.report_dsl import FieldRole, FieldType, ReportDSL
 
 
@@ -108,6 +109,11 @@ class FrAiReportAgentContext(BaseModel):
     reportName: str | None = None
     targetFolder: str | None = None
     targetObjectPath: str | None = None
+    currentObjectPath: str | None = None
+    selectedCell: str | None = None
+    selectedDataset: str | None = None
+    previewColumns: list[str] = Field(default_factory=list)
+    previewRows: list[dict[str, Any]] = Field(default_factory=list)
     sourceTableName: str | None = None
     templateObjectPath: str | None = None
     taskId: str | None = None
@@ -115,6 +121,51 @@ class FrAiReportAgentContext(BaseModel):
     requirement: str | None = None
     ddlDialect: str = "sqlserver"
     idAutoIncrement: bool = True
+    activeSkillIds: list[str] = Field(default_factory=list)
+    skillInstruction: str | None = None
+    allowedToolNames: list[str] = Field(default_factory=list)
+
+
+class FrAiReportAgentToolRead(BaseModel):
+    name: str
+    label: str
+    category: str
+    riskLevel: str = "low"
+    autoExecutable: bool = True
+    requiresApproval: bool = False
+    description: str
+    inputSchema: dict[str, Any] = Field(default_factory=dict)
+    outputSchema: dict[str, Any] = Field(default_factory=dict)
+    enabled: bool = True
+
+
+class FrAiReportAgentSkillRead(BaseModel):
+    skillId: str
+    name: str
+    scope: str = "system"
+    enabled: bool = True
+    priority: int = 100
+    description: str | None = None
+    instruction: str
+    appliesTo: list[str] = Field(default_factory=list)
+    tokenBudget: int = 800
+
+
+class FrAiReportAgentRuntimePolicy(BaseModel):
+    strategy: str = "react"
+    maxToolSteps: int = 6
+    contextTokenBudget: int = 12000
+    autoRunReadOnlyTools: bool = True
+    autoCreateDraft: bool = True
+    requireApprovalForWrite: bool = True
+    memoryPolicy: str = "短期上下文只保留最近对话和工具观察；长期记忆沉淀到任务、反馈和技能配置，进入模型前做摘要压缩。"
+
+
+class FrAiReportAgentCapabilitiesResponse(BaseModel):
+    strategy: FrAiReportAgentRuntimePolicy = Field(default_factory=FrAiReportAgentRuntimePolicy)
+    tools: list[FrAiReportAgentToolRead] = Field(default_factory=list)
+    skills: list[FrAiReportAgentSkillRead] = Field(default_factory=list)
+    boundaries: list[str] = Field(default_factory=list)
 
 
 class FrAiReportAgentEvent(BaseModel):
@@ -128,6 +179,7 @@ class FrAiReportAgentChatResponse(BaseModel):
     status: str
     conversationId: str | None = None
     taskId: str | None = None
+    assistantMessage: str | None = None
     context: FrAiReportAgentContext
     events: list[FrAiReportAgentEvent] = Field(default_factory=list)
     questions: list[str] = Field(default_factory=list)
@@ -135,6 +187,8 @@ class FrAiReportAgentChatResponse(BaseModel):
     sqlStep: GenerateSqlStepResponse | None = None
     dslStep: GenerateDslStepResponse | None = None
     cptStep: GenerateCptStepResponse | None = None
+    operationDraft: FrReportAiOperationDraftResponse | None = None
+    capabilities: FrAiReportAgentCapabilitiesResponse | None = None
     warnings: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
 

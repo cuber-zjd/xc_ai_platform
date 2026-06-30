@@ -1,18 +1,32 @@
+import asyncio
+import json
 from io import BytesIO
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
+from sqlmodel import func, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api.deps import get_current_user, get_db
+from app.models.agent.insight import InsightChannelAdapterRun
 from app.models.system.sys_user import SysUser
+from app.schemas.agent.insight.adapter import InsightChannelAdapterDefinitionRead, InsightChannelAdapterRunRead
 from app.schemas.agent.insight.crawl import (
     InsightManualUrlCrawlRequest,
     InsightManualUrlCrawlResponse,
     InsightSearchDiscoveryRequest,
     InsightSearchDiscoveryResponse,
 )
+from app.schemas.agent.insight.asset import (
+    InsightAiReviewResponse,
+    InsightAssetSearchRequest,
+    InsightAssetSearchResponse,
+    InsightFormalAssetBackfillRequest,
+    InsightFormalAssetBackfillResponse,
+    InsightGraphResponse,
+)
+from app.schemas.agent.insight.channel import InsightChannelCreate, InsightChannelRead, InsightChannelUpdate
 from app.schemas.agent.insight.company import (
     InsightCompanyCreate,
     InsightCompanyDetail,
@@ -44,6 +58,9 @@ from app.schemas.agent.insight.health import InsightHealthRead
 from app.schemas.agent.insight.dictionary import (
     InsightDictionaryOverview,
     InsightIntelligenceTypeRead,
+    InsightTagCategoryCreate,
+    InsightTagCategoryRead,
+    InsightTagCategoryUpdate,
     InsightTagCreate,
     InsightTagRead,
     InsightTagUpdate,
@@ -97,10 +114,19 @@ from app.schemas.agent.insight.notification import InsightNotificationCreate, In
 from app.schemas.agent.insight.quality import InsightQualityOverview
 from app.schemas.agent.insight.settings import InsightSettingsStatusRead
 from app.schemas.agent.insight.task import InsightTaskRead
+from app.schemas.agent.insight.monitor_config import (
+    InsightLegacySourceSyncResponse,
+    InsightMonitorConfigCreate,
+    InsightMonitorConfigRead,
+    InsightMonitorConfigUpdate,
+)
 from app.schemas.page import Page
 from app.schemas.result import Result
 from app.services.agent.insight.crawler import insight_crawl_service, insight_search_discovery_service
+from app.services.agent.insight.ai_review_service import insight_ai_review_service
 from app.services.agent.insight.assistant_service import insight_assistant_service
+from app.services.agent.insight.asset_service import insight_asset_service
+from app.services.agent.insight.channel_service import insight_channel_service
 from app.services.agent.insight.company_service import insight_company_service
 from app.services.agent.insight.data_source_service import insight_data_source_service
 from app.services.agent.insight.health_service import insight_health_service
@@ -114,6 +140,9 @@ from app.services.agent.insight.notification_service import insight_notification
 from app.services.agent.insight.quality_service import insight_quality_service
 from app.services.agent.insight.requirement_import_service import insight_requirement_import_service
 from app.services.agent.insight.settings_service import insight_settings_service
+from app.services.agent.insight.monitor_config_service import insight_monitor_config_service
+from app.services.agent.insight.monitor_execution_service import insight_monitor_execution_service
+from app.services.agent.insight.crawler.channel_adapter_service import insight_channel_adapter_service
 
 router = APIRouter()
 
@@ -148,6 +177,222 @@ async def get_insight_settings_status(
     if not _is_admin(current_user):
         raise HTTPException(status_code=403, detail="仅管理员可查看系统设置")
     return Result.success(data=insight_settings_service.get_status())
+
+
+@router.get("/settings/channels", response_model=Result[Page[InsightChannelRead]])
+async def list_channels(
+    *,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+    page: int = 1,
+    size: int = 20,
+    keyword: str | None = None,
+    channel_type: str | None = None,
+    access_status: str | None = None,
+    status: str | None = None,
+    scenario: str | None = None,
+) -> Result[Page[InsightChannelRead]]:
+    result = await insight_channel_service.list_channels(
+        db,
+        page=page,
+        size=size,
+        keyword=keyword,
+        channel_type=channel_type,
+        access_status=access_status,
+        status=status,
+        scenario=scenario,
+    )
+    return Result.success(data=result)
+
+
+@router.post("/settings/channels", response_model=Result[InsightChannelRead])
+async def create_channel(
+    *,
+    payload: InsightChannelCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[InsightChannelRead]:
+    _ensure_admin(current_user, "仅管理员可维护渠道库")
+    try:
+        result = await insight_channel_service.create_channel(db, payload, current_user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Result.success(data=result, msg="渠道已创建")
+
+
+@router.put("/settings/channels/{channel_id}", response_model=Result[InsightChannelRead])
+async def update_channel(
+    *,
+    channel_id: int,
+    payload: InsightChannelUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[InsightChannelRead]:
+    _ensure_admin(current_user, "仅管理员可维护渠道库")
+    try:
+        result = await insight_channel_service.update_channel(db, channel_id, payload, current_user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Result.success(data=result, msg="渠道已更新")
+
+
+@router.delete("/settings/channels/{channel_id}", response_model=Result[None])
+async def delete_channel(
+    *,
+    channel_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[None]:
+    _ensure_admin(current_user, "仅管理员可维护渠道库")
+    try:
+        await insight_channel_service.delete_channel(db, channel_id, current_user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return Result.success(msg="渠道已删除")
+
+
+@router.post("/settings/channels/seed-defaults", response_model=Result[dict[str, int]])
+async def seed_default_channels(
+    *,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[dict[str, int]]:
+    _ensure_admin(current_user, "仅管理员可维护渠道库")
+    result = await insight_channel_service.seed_default_channels(db, current_user.id)
+    return Result.success(data=result, msg="默认渠道已补齐")
+
+
+@router.get("/settings/channels/adapters", response_model=Result[list[InsightChannelAdapterDefinitionRead]])
+async def list_channel_adapters(
+    *,
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[list[InsightChannelAdapterDefinitionRead]]:
+    """查询已迁移的渠道适配器注册状态。"""
+    _ensure_admin(current_user, "仅管理员可查看渠道适配器")
+    rows = [InsightChannelAdapterDefinitionRead(**item) for item in insight_channel_adapter_service.definitions()]
+    return Result.success(data=rows)
+
+
+@router.get("/quality/adapter-runs", response_model=Result[Page[InsightChannelAdapterRunRead]])
+async def list_adapter_runs(
+    *,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+    page: int = 1,
+    size: int = 20,
+    channel_code: str | None = None,
+    status: str | None = None,
+    run_type: str | None = None,
+) -> Result[Page[InsightChannelAdapterRunRead]]:
+    """查询渠道适配器运行、失败和重试审计记录。"""
+    _ensure_admin(current_user, "仅管理员可查看渠道运行审计")
+    page = max(page, 1)
+    size = min(max(size, 1), 100)
+    filters = [InsightChannelAdapterRun.is_deleted == 0]
+    if channel_code:
+        filters.append(InsightChannelAdapterRun.channel_code == channel_code)
+    if status:
+        filters.append(InsightChannelAdapterRun.status == status)
+    if run_type:
+        filters.append(InsightChannelAdapterRun.run_type == run_type)
+    total = (await db.exec(select(func.count()).select_from(InsightChannelAdapterRun).where(*filters))).one()
+    rows = list(
+        (
+            await db.exec(
+                select(InsightChannelAdapterRun)
+                .where(*filters)
+                .order_by(InsightChannelAdapterRun.started_at.desc())
+                .offset((page - 1) * size)
+                .limit(size)
+            )
+        ).all()
+    )
+    return Result.success(
+        data=Page.create(
+            items=[InsightChannelAdapterRunRead.model_validate(row) for row in rows],
+            total=total,
+            page=page,
+            size=size,
+        )
+    )
+
+
+@router.get("/settings/monitor-configs", response_model=Result[Page[InsightMonitorConfigRead]])
+async def list_monitor_configs(
+    *,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+    page: int = 1,
+    size: int = 20,
+    keyword: str | None = None,
+    monitor_type: str | None = None,
+    status: str | None = None,
+) -> Result[Page[InsightMonitorConfigRead]]:
+    result = await insight_monitor_config_service.list_configs(
+        db,
+        page=page,
+        size=size,
+        keyword=keyword,
+        monitor_type=monitor_type,
+        status=status,
+        user_id=current_user.id,
+        is_admin=_is_admin(current_user),
+    )
+    return Result.success(data=result)
+
+
+@router.post("/settings/monitor-configs", response_model=Result[InsightMonitorConfigRead])
+async def create_monitor_config(
+    *,
+    payload: InsightMonitorConfigCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[InsightMonitorConfigRead]:
+    try:
+        result = await insight_monitor_config_service.create_config(db, payload, current_user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Result.success(data=result, msg="监测配置已创建")
+
+
+@router.put("/settings/monitor-configs/{config_id}", response_model=Result[InsightMonitorConfigRead])
+async def update_monitor_config(
+    *,
+    config_id: int,
+    payload: InsightMonitorConfigUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[InsightMonitorConfigRead]:
+    try:
+        result = await insight_monitor_config_service.update_config(db, config_id, payload, current_user.id, is_admin=_is_admin(current_user))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Result.success(data=result, msg="监测配置已更新")
+
+
+@router.delete("/settings/monitor-configs/{config_id}", response_model=Result[None])
+async def delete_monitor_config(
+    *,
+    config_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[None]:
+    try:
+        await insight_monitor_config_service.delete_config(db, config_id, current_user.id, is_admin=_is_admin(current_user))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Result.success(msg="监测配置已删除")
+
+
+@router.post("/settings/legacy-sources/sync", response_model=Result[InsightLegacySourceSyncResponse])
+async def sync_legacy_data_sources(
+    *,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[InsightLegacySourceSyncResponse]:
+    _ensure_admin(current_user, "仅管理员可同步旧执行源")
+    result = await insight_data_source_service.sync_legacy_sources(db, user_id=current_user.id)
+    return Result.success(data=result, msg="旧执行源归属已同步")
 
 
 @router.get("/quality/overview", response_model=Result[InsightQualityOverview])
@@ -186,6 +431,61 @@ async def list_dictionary_tags(
     return Result.success(data=result)
 
 
+@router.get("/dictionaries/tag-categories", response_model=Result[list[InsightTagCategoryRead]])
+async def list_dictionary_tag_categories(
+    *,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+    include_disabled: bool = False,
+) -> Result[list[InsightTagCategoryRead]]:
+    _ = current_user
+    result = await insight_dictionary_service.list_categories(db, include_disabled=include_disabled)
+    return Result.success(data=result)
+
+
+@router.post("/dictionaries/tag-categories", response_model=Result[InsightTagCategoryRead])
+async def create_dictionary_tag_category(
+    *,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+    payload: InsightTagCategoryCreate,
+) -> Result[InsightTagCategoryRead]:
+    try:
+        result = await insight_dictionary_service.create_category(db, payload, current_user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Result.success(data=result, msg="分类已创建")
+
+
+@router.put("/dictionaries/tag-categories/{category_id}", response_model=Result[InsightTagCategoryRead])
+async def update_dictionary_tag_category(
+    *,
+    category_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+    payload: InsightTagCategoryUpdate,
+) -> Result[InsightTagCategoryRead]:
+    try:
+        result = await insight_dictionary_service.update_category(db, category_id, payload, current_user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Result.success(data=result, msg="分类已更新")
+
+
+@router.post("/dictionaries/tag-categories/{category_id}/disable", response_model=Result[InsightTagCategoryRead])
+async def disable_dictionary_tag_category(
+    *,
+    category_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[InsightTagCategoryRead]:
+    try:
+        result = await insight_dictionary_service.disable_category(db, category_id, current_user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Result.success(data=result, msg="分类已禁用")
+
+
 @router.post("/dictionaries/tags", response_model=Result[InsightTagRead])
 async def create_dictionary_tag(
     *,
@@ -193,8 +493,6 @@ async def create_dictionary_tag(
     current_user: SysUser = Depends(get_current_user),
     payload: InsightTagCreate,
 ) -> Result[InsightTagRead]:
-    if not _is_admin(current_user):
-        raise HTTPException(status_code=403, detail="仅管理员可维护标签字典")
     try:
         result = await insight_dictionary_service.create_tag(db, payload, current_user.id)
     except ValueError as exc:
@@ -210,8 +508,6 @@ async def update_dictionary_tag(
     current_user: SysUser = Depends(get_current_user),
     payload: InsightTagUpdate,
 ) -> Result[InsightTagRead]:
-    if not _is_admin(current_user):
-        raise HTTPException(status_code=403, detail="仅管理员可维护标签字典")
     try:
         result = await insight_dictionary_service.update_tag(db, tag_id, payload, current_user.id)
     except ValueError as exc:
@@ -226,8 +522,6 @@ async def disable_dictionary_tag(
     db: AsyncSession = Depends(get_db),
     current_user: SysUser = Depends(get_current_user),
 ) -> Result[InsightTagRead]:
-    if not _is_admin(current_user):
-        raise HTTPException(status_code=403, detail="仅管理员可维护标签字典")
     try:
         result = await insight_dictionary_service.disable_tag(db, tag_id, current_user.id)
     except ValueError as exc:
@@ -571,6 +865,72 @@ async def generate_report(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return Result.success(data=result, msg="报告草稿已生成")
+
+
+@router.post("/reports/generate/stream")
+async def generate_report_stream(
+    *,
+    payload: InsightReportGenerateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> StreamingResponse:
+    queue: asyncio.Queue[dict | None] = asyncio.Queue()
+
+    def encode_event(data: dict) -> str:
+        return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+    async def progress_callback(event: dict) -> None:
+        await queue.put(event)
+
+    async def run_generation() -> None:
+        try:
+            result = await insight_report_service.generate_report(
+                db,
+                payload,
+                user_id=current_user.id,
+                is_admin=_is_admin(current_user),
+                progress_callback=progress_callback,
+            )
+            await queue.put(
+                {
+                    "event": "done",
+                    "step": "done",
+                    "title": "报告已完成",
+                    "detail": "报告草稿已经生成完成。",
+                    "progress": 100,
+                    "data": result.model_dump(mode="json"),
+                }
+            )
+        except ValueError as exc:
+            await queue.put({"event": "error", "title": "生成失败", "detail": str(exc), "progress": 100})
+        except Exception:
+            await queue.put({"event": "error", "title": "生成失败", "detail": "报告生成过程中出现异常，请稍后重试。", "progress": 100})
+        finally:
+            await queue.put(None)
+
+    async def event_stream():
+        yield encode_event(
+            {
+                "event": "connected",
+                "step": "connected",
+                "title": "准备生成报告",
+                "detail": "正在启动研究任务。",
+                "progress": 1,
+            }
+        )
+        task = asyncio.create_task(run_generation())
+        while True:
+            event = await queue.get()
+            if event is None:
+                break
+            yield encode_event(event)
+        await task
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.get("/reports/subscriptions", response_model=Result[Page[InsightReportSubscriptionRead]])
@@ -1016,7 +1376,11 @@ async def list_data_sources(
     keyword: str | None = None,
     source_type: str | None = None,
     status: str | None = None,
+    monitor_config_id: int | None = None,
+    execution_role: str | None = None,
+    channel_id: int | None = None,
 ) -> Result[Page[InsightDataSourceRead]]:
+    _ensure_admin(current_user, "仅管理员可维护执行源")
     result = await insight_data_source_service.list_data_sources(
         db,
         page=page,
@@ -1024,6 +1388,9 @@ async def list_data_sources(
         keyword=keyword,
         source_type=source_type,
         status=status,
+        monitor_config_id=monitor_config_id,
+        execution_role=execution_role,
+        channel_id=channel_id,
         user_id=current_user.id,
         is_admin=_is_admin(current_user),
     )
@@ -1038,12 +1405,19 @@ async def list_data_source_groups(
     keyword: str | None = None,
     source_type: str | None = None,
     status: str | None = None,
+    monitor_config_id: int | None = None,
+    execution_role: str | None = None,
+    channel_id: int | None = None,
 ) -> Result[list[InsightDataSourceGroupRead]]:
+    _ensure_admin(current_user, "仅管理员可维护执行源")
     result = await insight_data_source_service.list_data_source_groups(
         db,
         keyword=keyword,
         source_type=source_type,
         status=status,
+        monitor_config_id=monitor_config_id,
+        execution_role=execution_role,
+        channel_id=channel_id,
         user_id=current_user.id,
         is_admin=_is_admin(current_user),
     )
@@ -1057,6 +1431,7 @@ async def create_data_source(
     db: AsyncSession = Depends(get_db),
     current_user: SysUser = Depends(get_current_user),
 ) -> Result[InsightDataSourceRead]:
+    _ensure_admin(current_user, "仅管理员可维护执行源")
     try:
         result = await insight_data_source_service.create_data_source(db, payload, current_user.id, is_admin=_is_admin(current_user))
     except ValueError as exc:
@@ -1071,6 +1446,7 @@ async def batch_create_data_sources(
     db: AsyncSession = Depends(get_db),
     current_user: SysUser = Depends(get_current_user),
 ) -> Result[InsightDataSourceBatchCreateResponse]:
+    _ensure_admin(current_user, "仅管理员可维护执行源")
     try:
         result = await insight_data_source_service.batch_create_data_sources(
             db,
@@ -1087,7 +1463,7 @@ async def batch_create_data_sources(
 async def download_data_source_import_template(
     current_user: SysUser = Depends(get_current_user),
 ) -> StreamingResponse:
-    _ = current_user
+    _ensure_admin(current_user, "仅管理员可维护执行源")
     try:
         from openpyxl import Workbook
         from openpyxl.styles import Alignment, Font, PatternFill
@@ -1161,6 +1537,7 @@ async def import_data_sources(
     db: AsyncSession = Depends(get_db),
     current_user: SysUser = Depends(get_current_user),
 ) -> Result[InsightDataSourceImportResponse]:
+    _ensure_admin(current_user, "仅管理员可维护执行源")
     try:
         payload_files = [(file.filename or "未命名文件", await file.read()) for file in files]
         result = await insight_requirement_import_service.import_files(
@@ -1181,6 +1558,7 @@ async def preview_import_data_sources(
     db: AsyncSession = Depends(get_db),
     current_user: SysUser = Depends(get_current_user),
 ) -> Result[InsightDataSourceImportResponse]:
+    _ensure_admin(current_user, "仅管理员可维护执行源")
     try:
         payload_files = [(file.filename or "未命名文件", await file.read()) for file in files]
         result = await insight_requirement_import_service.preview_files(
@@ -1201,6 +1579,7 @@ async def bulk_action_data_sources(
     db: AsyncSession = Depends(get_db),
     current_user: SysUser = Depends(get_current_user),
 ) -> Result[InsightDataSourceBulkActionResponse]:
+    _ensure_admin(current_user, "仅管理员可维护执行源")
     try:
         result = await insight_data_source_service.bulk_action(
             db,
@@ -1268,7 +1647,7 @@ async def list_data_source_execution_logs(
     status: str | None = None,
     task_type: str | None = None,
 ) -> Result[Page[InsightTaskRead]]:
-    _ = current_user
+    _ensure_admin(current_user, "仅管理员可查看执行源日志")
     result = await insight_data_source_service.list_execution_logs(
         db,
         page=page,
@@ -1287,6 +1666,7 @@ async def cleanup_stale_data_source_tasks(
     current_user: SysUser = Depends(get_current_user),
     timeout_minutes: int = 30,
 ) -> Result[InsightStaleTaskCleanupResponse]:
+    _ensure_admin(current_user, "仅管理员可清理执行源任务")
     result = await insight_data_source_service.cleanup_stale_tasks(
         db,
         timeout_minutes=timeout_minutes,
@@ -1302,6 +1682,7 @@ async def retry_data_source_schedule(
     db: AsyncSession = Depends(get_db),
     current_user: SysUser = Depends(get_current_user),
 ) -> Result[InsightDataSourceRead]:
+    _ensure_admin(current_user, "仅管理员可维护执行源")
     try:
         result = await insight_data_source_service.retry_data_source(
             db,
@@ -1318,7 +1699,7 @@ async def retry_data_source_schedule(
 async def get_scheduler_status(
     current_user: SysUser = Depends(get_current_user),
 ) -> Result[InsightSchedulerStatusRead]:
-    _ = current_user
+    _ensure_admin(current_user, "仅管理员可查看调度器状态")
     return Result.success(data=InsightSchedulerStatusRead(**insight_scheduler_service.status()))
 
 
@@ -1326,6 +1707,7 @@ async def get_scheduler_status(
 async def run_scheduler_once(
     current_user: SysUser = Depends(get_current_user),
 ) -> Result[InsightDataSourceScheduleRunResponse]:
+    _ensure_admin(current_user, "仅管理员可触发调度器")
     result = await insight_scheduler_service.run_once(triggered_by=f"user:{current_user.id}")
     return Result.success(data=result, msg="调度器已完成一次扫描")
 
@@ -1334,7 +1716,7 @@ async def run_scheduler_once(
 async def start_scheduler(
     current_user: SysUser = Depends(get_current_user),
 ) -> Result[InsightSchedulerStatusRead]:
-    _ = current_user
+    _ensure_admin(current_user, "仅管理员可启动调度器")
     await insight_scheduler_service.start()
     return Result.success(data=InsightSchedulerStatusRead(**insight_scheduler_service.status()), msg="调度器已启动")
 
@@ -1343,7 +1725,7 @@ async def start_scheduler(
 async def stop_scheduler(
     current_user: SysUser = Depends(get_current_user),
 ) -> Result[InsightSchedulerStatusRead]:
-    _ = current_user
+    _ensure_admin(current_user, "仅管理员可停止调度器")
     await insight_scheduler_service.stop()
     return Result.success(data=InsightSchedulerStatusRead(**insight_scheduler_service.status()), msg="调度器已停止")
 
@@ -1355,12 +1737,13 @@ async def run_due_data_sources(
     current_user: SysUser = Depends(get_current_user),
     limit: int = 5,
 ) -> Result[InsightDataSourceScheduleRunResponse]:
-    result = await insight_data_source_service.run_due_data_sources(
+    _ensure_admin(current_user, "仅管理员可执行到期监测配置")
+    result = await insight_monitor_execution_service.run_due_monitor_configs(
         db,
         limit=limit,
         user_id=current_user.id,
     )
-    return Result.success(data=result, msg="到期周期采集执行完成")
+    return Result.success(data=result, msg="到期监测配置采集完成")
 
 
 @router.get("/data-sources/{data_source_id}", response_model=Result[InsightDataSourceRead])
@@ -1370,6 +1753,7 @@ async def get_data_source(
     db: AsyncSession = Depends(get_db),
     current_user: SysUser = Depends(get_current_user),
 ) -> Result[InsightDataSourceRead]:
+    _ensure_admin(current_user, "仅管理员可查看执行源")
     try:
         result = await insight_data_source_service.get_data_source(
             db,
@@ -1390,6 +1774,7 @@ async def update_data_source(
     db: AsyncSession = Depends(get_db),
     current_user: SysUser = Depends(get_current_user),
 ) -> Result[InsightDataSourceRead]:
+    _ensure_admin(current_user, "仅管理员可维护执行源")
     try:
         result = await insight_data_source_service.update_data_source(
             db,
@@ -1410,6 +1795,7 @@ async def delete_data_source(
     db: AsyncSession = Depends(get_db),
     current_user: SysUser = Depends(get_current_user),
 ) -> Result[None]:
+    _ensure_admin(current_user, "仅管理员可维护执行源")
     try:
         await insight_data_source_service.delete_data_source(
             db,
@@ -1430,6 +1816,7 @@ async def execute_data_source(
     db: AsyncSession = Depends(get_db),
     current_user: SysUser = Depends(get_current_user),
 ) -> Result[InsightDataSourceExecuteResponse]:
+    _ensure_admin(current_user, "仅管理员可测试执行源")
     try:
         result = await insight_data_source_service.execute_data_source(
             db,
@@ -1546,6 +1933,60 @@ async def insight_assistant_chat(
         payload,
         user_id=current_user.id,
         is_admin=_is_admin(current_user),
+    )
+    return Result.success(data=result)
+
+
+@router.post("/assets/search", response_model=Result[InsightAssetSearchResponse])
+async def search_insight_assets(
+    *,
+    payload: InsightAssetSearchRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[InsightAssetSearchResponse]:
+    result = await insight_asset_service.search_assets(
+        db,
+        payload,
+        user_id=current_user.id,
+        is_admin=_is_admin(current_user),
+    )
+    return Result.success(data=result)
+
+
+@router.post("/assets/backfill-formal", response_model=Result[InsightFormalAssetBackfillResponse])
+async def backfill_formal_insight_assets(
+    *,
+    payload: InsightFormalAssetBackfillRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[InsightFormalAssetBackfillResponse]:
+    if not _is_admin(current_user):
+        raise HTTPException(status_code=403, detail="仅管理员可执行正式情报资产回填")
+    result = await insight_asset_service.backfill_formal_assets(
+        db,
+        payload,
+        user_id=current_user.id,
+    )
+    return Result.success(data=result, msg="正式情报资产回填完成")
+
+
+@router.get("/assets/graph", response_model=Result[InsightGraphResponse])
+async def get_insight_asset_graph(
+    *,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+    company_id: int | None = None,
+    asset_id: int | None = None,
+    limit: int = 80,
+) -> Result[InsightGraphResponse]:
+    _ = current_user
+    result = await insight_asset_service.graph(
+        db,
+        user_id=current_user.id,
+        is_admin=_is_admin(current_user),
+        company_id=company_id,
+        asset_id=asset_id,
+        limit=min(max(limit, 1), 200),
     )
     return Result.success(data=result)
 
@@ -1754,6 +2195,28 @@ async def promote_intelligence_candidate(
 
 
 @router.post(
+    "/intelligence/candidates/{candidate_id}/ai-review",
+    response_model=Result[InsightAiReviewResponse],
+)
+async def ai_review_intelligence_candidate(
+    *,
+    candidate_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[InsightAiReviewResponse]:
+    try:
+        result = await insight_ai_review_service.review_candidate(
+            db,
+            candidate_id,
+            user_id=current_user.id,
+            is_admin=_is_admin(current_user),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Result.success(data=result, msg="AI 自动评审已完成")
+
+
+@router.post(
     "/intelligence/candidates/{candidate_id}/reject",
     response_model=Result[InsightCandidateReviewResponse],
 )
@@ -1803,6 +2266,11 @@ async def ignore_intelligence_candidate(
 
 def _is_admin(user: SysUser) -> bool:
     return bool(getattr(user, "is_superuser", False) or getattr(user, "role", None) == "admin")
+
+
+def _ensure_admin(user: SysUser, message: str = "仅管理员可操作") -> None:
+    if not _is_admin(user):
+        raise HTTPException(status_code=403, detail=message)
 
 
 def _parse_datetime_param(value: str | None) -> datetime | None:

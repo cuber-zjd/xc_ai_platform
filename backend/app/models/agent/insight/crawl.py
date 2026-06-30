@@ -15,6 +15,8 @@ class InsightCrawlResult(BaseDBModel, table=True):
 
     task_id: int = Field(foreign_key="insight_task.id", index=True)
     data_source_id: int | None = Field(default=None, foreign_key="insight_data_source.id", index=True)
+    monitor_config_id: int | None = Field(default=None, foreign_key="insight_monitor_config.id", index=True)
+    source_channel_id: int | None = Field(default=None, foreign_key="insight_channel.id", index=True)
     channel: InsightCrawlerChannel = Field(index=True)
     query_text: str | None = Field(default=None, index=True, max_length=500)
     source_url: str = Field(index=True, max_length=1000)

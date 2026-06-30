@@ -30,7 +30,7 @@ class InsightReport(BaseDBModel, table=True):
 
 
 class InsightReportMaterial(BaseDBModel, table=True):
-    """报告引用的情报素材。"""
+    """报告引用的情报证据。"""
 
     __tablename__ = "insight_report_material"
 
@@ -116,7 +116,7 @@ class InsightReportPreference(BaseDBModel, table=True):
     user_id: int = Field(index=True, unique=True)
     default_template_code: str | None = Field(default=None, max_length=80)
     default_report_type: str = Field(default="专题报告", max_length=50)
-    default_folder_name: str | None = Field(default="P1企业档案测试素材", max_length=100)
+    default_folder_name: str | None = Field(default=None, max_length=100)
     default_max_materials: int = Field(default=100)
     writing_stance: str = Field(default="客户经营视角", max_length=80)
     report_depth: str = Field(default="深度研究", max_length=50)

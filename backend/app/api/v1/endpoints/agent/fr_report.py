@@ -8,6 +8,7 @@ from app.api.deps import get_current_user, get_db
 from app.models.system.sys_user import SysUser
 from app.schemas.agent.fr_report.ai_report import (
     CptPublishResponse,
+    FrAiReportAgentCapabilitiesResponse,
     FrAiReportAgentChatResponse,
     FrAiReportAgentContext,
     GenerateCptStepResponse,
@@ -384,6 +385,7 @@ async def chat_with_report_agent(
     action: str = Form(default="chat"),
     context_json: str | None = Form(default=None),
     file: UploadFile | None = File(default=None),
+    files: list[UploadFile] | None = File(default=None),
 ) -> Result[FrAiReportAgentChatResponse]:
     context_payload = _parse_json_object(context_json, "context_json") if context_json else {}
     try:
@@ -395,7 +397,47 @@ async def chat_with_report_agent(
             action=action,
             context=context,
             file=file,
+            files=files or [],
         )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Result.success(result)
+
+
+@router.get("/agent/capabilities", response_model=Result[FrAiReportAgentCapabilitiesResponse])
+async def get_report_agent_capabilities(
+    *,
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[FrAiReportAgentCapabilitiesResponse]:
+    _ = current_user
+    return Result.success(fr_ai_report_service.get_agent_capabilities())
+
+
+@router.post("/empty/create", response_model=Result[GenerateCptStepResponse])
+async def create_empty_report(
+    *,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+    report_name: str = Form(...),
+    target_folder: str = Form(...),
+    target_object_path: str | None = Form(default=None),
+    conflict_strategy: str = Form(default="abort"),
+) -> Result[GenerateCptStepResponse]:
+    if not report_name.strip():
+        raise HTTPException(status_code=400, detail="请输入报表名称")
+    if not target_folder.strip() and not (target_object_path or "").strip():
+        raise HTTPException(status_code=400, detail="请选择保存目录")
+    try:
+        result = await fr_ai_report_service.create_empty_report(
+            db,
+            user_id=current_user.id,
+            report_name=report_name,
+            target_folder=target_folder,
+            target_object_path=target_object_path,
+            conflict_strategy=conflict_strategy,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return Result.success(result)
