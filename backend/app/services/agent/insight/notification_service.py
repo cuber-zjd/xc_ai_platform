@@ -267,11 +267,16 @@ class InsightNotificationService:
     async def _resolve_single_userid(self, db: AsyncSession, item: dict) -> str | None:
         if item.get("wecom_userid"):
             return str(item["wecom_userid"]).strip()
+        lookup_values: list[str] = []
         user = None
         if item.get("recipient_id") is not None:
             user = await db.get(SysUser, int(item["recipient_id"]))
-        if not user and item.get("recipient_name"):
-            value = str(item["recipient_name"]).strip()
+            lookup_values.append(str(item["recipient_id"]).strip())
+        if item.get("recipient_name"):
+            lookup_values.append(str(item["recipient_name"]).strip())
+        for value in [value for value in lookup_values if value]:
+            if user:
+                break
             user = (
                 await db.exec(
                     select(SysUser).where(
@@ -280,9 +285,9 @@ class InsightNotificationService:
                     )
                 )
             ).first()
-        if not user or user.is_deleted != 0 or user.status != 1:
-            return None
-        return user.employee_id or user.username
+        if user and user.is_deleted == 0 and user.status == 1:
+            return user.employee_id or user.username
+        return next((value for value in lookup_values if value), None)
 
     def _collect_employee_ids(self, users: list[SysUser], userids: set[str], missing: list[str], label: str) -> None:
         if not users:

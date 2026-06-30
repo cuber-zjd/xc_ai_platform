@@ -59,8 +59,9 @@ export function WecomPushDialog({
                       .filter(Boolean)
                       .map((item) => ({
                           recipient_type: recipientType,
-                          recipient_id: /^\d+$/.test(item) ? Number(item) : null,
-                          recipient_name: /^\d+$/.test(item) ? undefined : item,
+                          recipient_id: recipientType === "user" ? null : /^\d+$/.test(item) ? Number(item) : null,
+                          recipient_name: item,
+                          wecom_userid: recipientType === "user" ? item : undefined,
                       })),
         [recipientIds, recipientType],
     );
@@ -146,7 +147,7 @@ export function WecomPushDialog({
                                 onChange={(event) => setRecipientIds(event.target.value)}
                                 disabled={recipientType === "all"}
                                 rows={3}
-                                placeholder={recipientType === "all" ? "全员无需填写" : "可用换行、逗号或空格分隔；用户优先按工号匹配"}
+                                placeholder={recipientType === "all" ? "全员无需填写" : "可用换行、逗号或空格分隔；用户可填写企业微信 UserID、工号或姓名"}
                                 className="w-full resize-y rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm leading-6 text-slate-800 outline-none transition focus:border-primary disabled:bg-slate-100"
                             />
                         </label>
@@ -156,7 +157,7 @@ export function WecomPushDialog({
                         <input type="checkbox" checked={sendNow} onChange={(event) => setSendNow(event.target.checked)} className="size-4 accent-primary" />
                     </label>
                     <div className="rounded-xl border border-blue-100 bg-blue-50/70 px-4 py-3 text-xs font-semibold leading-5 text-blue-700">
-                        启用 INSIGHT_WECOM_SEND_ENABLED 后会真实调用企业微信应用发送；未启用时保留模拟发送记录，便于上线前完整验证权限、记录和重试流程。
+                        接收对象可填写企业微信 UserID、工号或姓名；系统会先按平台用户匹配，匹配不到时按企业微信 UserID 发送。
                     </div>
                     <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
                         <div className="mb-3 flex items-center justify-between gap-3">
