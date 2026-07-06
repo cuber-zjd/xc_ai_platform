@@ -7,6 +7,7 @@ export { InsightSelect } from "./InsightSelect";
 export { InsightTag } from "./InsightTag";
 export { KPIStatCard } from "./KPIStatCard";
 export { PageTitle } from "./PageTitle";
+export { RecipientPickerDialog } from "./RecipientPickerDialog";
 export { SectionCard } from "./SectionCard";
 export { SidePanelCard } from "./SidePanelCard";
 export { WecomPushDialog } from "./WecomPushDialog";

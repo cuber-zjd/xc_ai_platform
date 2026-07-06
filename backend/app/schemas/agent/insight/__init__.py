@@ -104,6 +104,7 @@ from app.schemas.agent.insight.report import (
     InsightReportUpdateRequest,
     InsightReportVersionRead,
 )
+from app.schemas.agent.insight.role import InsightRoleCreate, InsightRoleMemberRead, InsightRoleMemberUpsert, InsightRoleRead, InsightRoleUpdate
 from app.schemas.agent.insight.permission import InsightAccessRuleRead, InsightAccessRuleUpsert
 from app.schemas.agent.insight.quality import (
     InsightQualityMetric,
@@ -210,6 +211,11 @@ __all__ = [
     "InsightReportTemplateUploadResponse",
     "InsightReportUpdateRequest",
     "InsightReportVersionRead",
+    "InsightRoleCreate",
+    "InsightRoleMemberRead",
+    "InsightRoleMemberUpsert",
+    "InsightRoleRead",
+    "InsightRoleUpdate",
     "InsightUserIntelligencePoolRead",
     "InsightVisibilityRuleCreate",
     "InsightVisibilityRuleRead",

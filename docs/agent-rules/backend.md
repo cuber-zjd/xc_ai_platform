@@ -108,11 +108,13 @@ uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - 报表文件用户可见范围入口：`GET/PUT /ai-api/v1/fr/ai-reports/files/visibility-preference`，按当前登录用户保存显示的文件夹或报表路径；`GET /files` 默认按偏好过滤，配置弹窗需要传 `include_all=true` 拉取全量目录。
 - 帆软报表文件存储必须走专用 `FR_AI_MINIO_*` 配置和 `FrMinIOService`，不得复用平台通用 `MINIO_*`，避免影响合同、知识库、图标等平台文件。
 - 当前需要同时维护“第一步 SQL 生成”“第二步 DSL 生成”“第三步 CPT 生成”与“全流程生成”四类接口，其中第一步接口为 `POST /ai-api/v1/fr/ai-reports/steps/sql/generate`，用于只生成 SQL、执行只读校验并返回样例数据；第二步接口为 `POST /ai-api/v1/fr/ai-reports/steps/dsl/generate`，基于同一任务的 SQL、需求摘要、Excel 分析和表结构生成 ReportDSL，不生成 CPT/XML，不调用 FineReport 预览；第三步接口为 `POST /ai-api/v1/fr/ai-reports/steps/cpt/generate` 或 AI 草稿 CPT 入口，基于已确认 ReportDSL/快照确定性生成 CPT，按用户指定 `webroot/APP/reportlets/` 子路径写入并同步版本归档。
-- 空白报表创建入口为 `POST /ai-api/v1/fr/ai-reports/empty/create`，只接收报表名称、目标目录/路径和冲突策略，确定性生成空白 CPT，写入用户指定 `webroot/APP/reportlets/` 子路径并同步结构版本和文件版本。`POST /ai-api/v1/fr/ai-reports/agent/chat` 保留给右侧小驰侧边栏，用于在已选中报表上下文内接收用户消息、附件和上下文 JSON，受控执行需求预检、读取真实表结构/预览数据、生成 SQL、生成 ReportDSL 或保存 CPT。
-- 小驰侧边栏后端采用受控 ReAct 外壳：`agent/chat` 先通过 `LLMFactory.safe_invoke(..., json_mode=True)` 做语义意图路由，判断 `chat`、`modify_current_report`、`start_generate` 或 `save_cpt`，模型不可用或 JSON 无效时才使用保守规则兜底；不得把关键词匹配作为主判断逻辑。`modify_current_report` 只生成待应用修改项，`start_generate` 生成 SQL 和 ReportDSL，`save_cpt` 才进入版本控制写 CPT。
+- 空白报表创建入口为 `POST /ai-api/v1/fr/ai-reports/empty/create`，只接收报表名称、目标目录/路径和冲突策略，确定性生成空白 CPT，写入用户指定 `webroot/APP/reportlets/` 子路径并同步结构版本和文件版本。右侧小驰侧边栏主入口为 `POST /ai-api/v1/fr/ai-reports/agent/run/stream`，普通输入默认传 `autonomyMode=high`，用于在已选中报表上下文内接收用户消息、附件和上下文 JSON，流式执行读取 CPT、解析结构、查询数据库、检索案例库、生成修改、写入版本和预览验证；`agent/chat` 仅保留兼容旧流程。
+- 小驰侧边栏后端采用“直接文件编辑 + 高权限 ReAct 外壳”：默认把 CPT 当作源代码文件读取和改写，优先返回 `file_edit` 精确 `oldText/newText` 文件编辑，必要时才接受完整 WorkBook XML 兜底；ReAct 工具循环用于补上下文、查数据库、检索案例、验证和修复。旧 `xml_patch`、selector 操作和旧写入器不再作为主写入方式，也不得把关键词匹配作为主判断逻辑。
 - 小驰面向用户的主回答优先使用模型路由或后续 Agent 生成的自然短回复；前端和后端只可在错误、缺少硬条件、工具产物摘要等场景提供简短兜底，不得把所有聊天回答套成固定流程模板。
-- 小驰能力清单入口为 `GET /ai-api/v1/fr/ai-reports/agent/capabilities`，返回工具名称、风险等级、是否自动执行、是否需要确认、系统技能和运行策略；已有 CPT 修改工具只接受 `xml_patch`，前端技能只作为上下文偏好，不得改变后端工具权限。
-- 小驰上下文工程必须控制 token 使用：报表结构需要压缩为摘要、样例数据限行、字段列表限量、技能只注入启用项；长会话后续应沉淀为会话摘要、任务版本、反馈和经验检索，不直接拼接全量历史。已确认应用的修改项不得继续作为下一轮修改参考上下文；当前报表修改应以本轮用户指令、选区、数据集字段和当前报表事实为主。历史经验只能按需检索为普通 payload，不直接注入系统提示词；XML 索引只辅助定位和省 token，不能限制后续读取或修改范围。
+- 小驰能力清单入口为 `GET /ai-api/v1/fr/ai-reports/agent/capabilities`，返回工具名称、风险等级、是否自动执行、系统技能和运行策略；能力边界不按参数栏、数据集、样式、填报、脚本等类型裁剪，前端技能只作为上下文偏好，不得绕过路径白名单、版本归档、预览校验和回档。
+- 小驰上下文工程必须控制 token 使用：默认先读取结构索引和相关片段，信息不足时允许读取完整 CPT XML；样例数据限行、字段列表限量、技能只注入启用项。长会话后续应沉淀为会话摘要、任务版本、反馈和经验检索，不直接拼接全量历史。已写入版本的旧修改项不得继续作为下一轮修改参考上下文；当前报表修改应以本轮用户指令、选区、当前 CPT 文件和真实数据库事实为主。
+- FineReport 案例库接口位于同一 `fr_report.py` 路由下：`POST /cases/sample-build` 启动样本报表自发现任务，`GET /cases/sample-jobs/{job_id}` 查询进度，`GET /cases/search` 检索案例，`GET /cases/{case_id}` 查看详情。初始化对象是 50-100 个典型报表样本，不是固定数量或固定类型的案例；案例由逐报表分析过程自然产生。高权限 Agent 每次准备写入 CPT 前必须先调用 `search_reference_cpt` 做轻量检索，需要更细证据时再读取案例详情或参考报表全文；案例不预加载进系统提示词，不覆盖当前 CPT、用户需求、数据库事实和预览结果。
+- FineReport 属性设置知识库由 `fr_setting_knowledge_service.py` 提供，只维护属性面板能力到 CPT 节点、适用场景、避用场景和验证点的只读索引。高权限 Agent 可通过 `search_fr_setting_knowledge` 按需检索格式、扩展、样式、形态、其他、悬浮元素、控件、条件属性、超链接和填报等设置线索；该知识库不得演变为自动改写规则、全局 Prompt 注入或覆盖当前 CPT/案例/预览结果的依据。
 - 任务模型：`backend/app/models/agent/fr_report/report_task.py`，保存 Excel 分析、需求摘要、ReportDSL、SQL、建表 SQL、生成日志、MinIO 专用预览目录路径和预览校验结果。
 - Schema：`backend/app/schemas/agent/fr_report/report_dsl.py` 定义第一版 ReportDSL 和 JSON Schema，当前阶段只落地 `detail_table`、`group_table`、`pivot_table` 三类表格报表。
 - ReportDSL 需要通过 `reportMeta` 承载模板级语义，包括标题、单位、更新时间、均价、备注和筛选条件；这些信息不能只停留在 Excel `templateAnalysis` 或 `layout.designHints`。
@@ -120,12 +122,12 @@ uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - 分步骤改造时，优先把阶段产物持久化到同一个任务表中，至少保留 `requirement_text`、`source_table_name`、Excel 分析、需求摘要、SQL、SQL 校验结果与日志，方便人工回看和后续步骤接力。
 - 第二步生成的 ReportDSL 继续写回同一条 `fr_ai_report_task.report_dsl`，前端预览直接基于 DSL 布局和 SQL 样例数据渲染，用于人工确认版式，不代表 FineReport 运行时预览结果。
 - 第二步接口可接收 `dsl_feedback` 做 DSL 版式重生成，只更新需求摘要中的 DSL 修订提示、ReportDSL 和日志，不重复生成 SQL；非标准表格结构优先落入 `layout.designHints.specialRows`，例如最新一天涨跌单行使用 `latest_change_row`。
-- 第三步当前只允许从已确认的 `report_dsl` 或 AI 快照确定性生成 CPT；写入目标 CPT 前必须走 `FrReportVersionControlService`，保存结构版本、文件版本，并检测 FineReport 设计器外部修改，不能直接覆盖。
-- 对已有真实 CPT 的小驰修改，保存 CPT 时必须优先基于当前 MinIO 原始 CPT/XML 做增量补丁；禁止仅凭结构快照重建整份 CPT 覆盖原文件，避免未解析到的单元格、参数、控件或设计器私有节点丢失。
-- 对已有真实 CPT 的小驰修改，新生成的待应用修改项必须使用 `xml_patch` 直接修改 CPT XML。下拉筛选、参数栏控件、SQL 查询、样式、填报、脚本、单元格和尺寸修改都应直接替换或插入 `ReportParameterAttr`、`ParameterUI`、`TableData/Query`、`StyleList`、`ReportWriteAttr`、`<C>`、`ColumnWidth`、`RowHeight` 等真实 XML 片段。字段名必须优先取数据集真实字段，单元格坐标只可用于定位，禁止写成参数名。SQL Server 查询允许受控 `DECLARE @param ...; SELECT/WITH ...` 形式，但仍禁止 DDL/DML/存储过程和多语句写操作。
-- 已有 CPT 修改主路径为直接 XML 修改：后端按需向模型提供当前单元格、参数栏、数据集、样式、填报、脚本等 CPT 片段以及轻量 XML 索引，模型通过 `xml_patch` 输出 replace/insert_before/insert_after/delete/full_replace。允许修改 `StyleList`、`ReportWriteAttr`、脚本事件和完整 `<WorkBook>`；索引只是导航图，不得成为读取或修改边界。后端负责 XML 合法性校验、patch 兜底定位、版本归档、外部修改冲突检测和 FineReport 预览验证；写入 CPT 时只在原始 XML 上应用 `xml_patch`。
-- CPT 修改提示词应维护极短 mini-shot，示范“按需读取片段 -> 返回 `xml_patch` -> 说明风险和预览补丁”的输出形态；mini-shot 只用于塑造行为，不得演变成固定问答模板或限制用户可修改的 CPT 范围。
-- CPT 待应用修改项需要自动推断风险等级：单元格文本等局部修改通常为低风险，参数栏、数据集、查询和控件通常为中风险，`StyleList`、`ReportWriteAttr`、`ReportWebAttr`、脚本事件和 `full_replace` 通常为高风险。中高风险必须在用户确认前显式提示；前端详情只展示自然语言修改范围和风险说明，不展示原始 JSON 或 XML。
+- 第三步确定性 CPT 生成继续走 `FrReportVersionControlService`；已有 CPT 的高权限 Agent 写入同样必须走该服务，保存结构版本、文件版本、diff、manifest 和日志，并检测/归档 FineReport 设计器外部修改，不能无版本直接覆盖。
+- 对已有真实 CPT 的小驰修改，保存 CPT 时必须基于当前 MinIO 原始 CPT/XML 应用模型返回的精确文件编辑；当改动无法稳定用精确编辑表达时允许整份 WorkBook XML 重写，但必须先归档当前文件，避免不可回滚。
+- 对已有真实 CPT 的小驰修改，模型可直接修改 `ReportParameterAttr`、`ParameterUI`、`TableData/Query`、`StyleList`、`ReportWriteAttr`、`ReportWebAttr`、脚本事件、`<C>`、`ReportPageAttr`、`HR/HC`、`ColumnWidth`、`RowHeight` 和完整 `<WorkBook>`。隐藏行列优先沿用当前 CPT 的原生隐藏配置，`ColumnWidth/RowHeight` 是尺寸信息和兼容兜底，不应被当作唯一隐藏方式。字段名必须优先取真实数据库结构和数据集字段，单元格坐标只可用于定位，禁止把中文口语或表头猜成数据库字段。
+- 已有 CPT 修改必须有通用布局影响检查：字段格式变长、表头文案变长、隐藏/显示行列、合并区域变化、控件变化、填报公式变化、数据集字段类型变化，都要联动检查 `ColumnWidth`、`RowHeight`、`StyleList`、`ReportWriteAttr` 和相关单元格，不能只改“目标节点”就断言完成。日期显示只是其中一类：如果 FineReport 预览不吃单元格 `DateAttr`，应同步修改数据集显示字段，例如把 `CAST(zdata AS DATE) AS month_day` 改成 `FORMAT(CAST(zdata AS DATE), 'yyyy年MM月dd日') AS month_day`；隐藏前置列后还要同步检查可见日期列的 `ColumnWidth`；若填报写回曾通过 `CONCATENATE(A5,B5)` 拼日期，日期列改成完整日期后必须同步改写回公式。
+- CPT 修改提示词应维护极短 mini-shot，示范“按需读取片段/完整 CPT -> 用数据库和单元格语义定位 -> 返回精确文件编辑或完整 WorkBook 兜底 -> 写入版本 -> 预览验证”的行为；mini-shot 只用于塑造行为，不得演变成固定问答模板或限制用户可修改的 CPT 范围。
+- 高权限 Agent 的用户可见结果只展示自然语言修改范围、写入路径、版本号、预览结果、风险和回档入口，不展示原始 JSON 或 XML；旧待应用草稿只作兼容/显式 review 模式，不得阻断默认的流式高权限直接写入主链路。
 - 版本控制服务需要覆盖生成、外部同步、文件回档、结构回档和回收站；同一 `current_object_path` 的写操作必须串行化，避免并发请求同时通过 hash 检测后互相覆盖。
 - 第三步对接细节见 `docs/fr-ai-report-third-step.md`。CPT XML 按 FineReport 11.5.0 样例生成，数据库连接名来自 `FR_AI_FINEREPORT_DB_NAME`，当前默认 `XcTest`。
 - Agent 实现：`RequirementAgent`、`DataModelAgent`、`SqlAgent`、`ReportDesignerAgent` 必须优先通过 `app.core.llm_factory.LLMFactory` 调用已配置大模型生成结构化 JSON；模型不可用或 JSON 校验失败时才使用规则兜底。
@@ -135,7 +137,7 @@ uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - Excel 模板分析必须先基于非空值、公式和有效合并区域裁剪真实有效区域，避免把 `XFD` 等样式尾列喂给模型；`templateAnalysis` 需要输出 `effectiveRange`、`formulaRules` 和 `formulaConflicts`，公式与文字说明冲突时由小驰追问或提示风险，不能自行择一。
 - Excel 标题识别不能简单默认第一行，应结合表格区域上方文本、合并单元格、标题关键词和全报表语义打分判断；筛选条件、单位、更新时间、备注等辅助文本不能误判为标题。
 - 多层表头解析必须结合合并单元格生成完整语义字段；例如期权填报模板中的 `开仓` + `权利金单价` 应解析为 `开仓权利金单价`，空白尾列不得进入字段列表。
-- 小驰聊天入口允许多附件上传；第一版优先解析 Excel，非 Excel 附件作为需求上下文保留并返回 warning，后续可接图片 OCR、Word 摘要和多 Excel 合并，不应把 Agent 限制成只能处理单一 Excel。
+- 小驰聊天入口允许多附件上传；Excel 进入结构解析，Word 进入文本摘要，图片必须优先按当前模型档位选择 `sys_model.is_multimodal=true` 的 chat/vision 模型解析为文字上下文，再交给主 Agent。不得把图片 base64 直接塞进主 Agent 提示词；没有可用多模态模型时返回清晰 warning，不中断其他附件和文本需求。
 - 小驰需求理解阶段优先返回方案草图，而不是把所有追问作为阻断；只有报表名、目录、需求/资料完全缺失等硬条件才 `need_input`，其他未确认点进入风险和假设，用户明确开始生成时继续执行。
 - AI 提取的 `sourceTables` 如果是中文业务来源名称，只能进入需求摘要和方案说明；只有 `fr_xxx`、`dbo.xxx` 等符合数据库标识符规则的真实表名才进入 `SqlServerQueryService` 表结构读取。
 - 已沉淀的期货和期权操作台账场景应走独立 `businessPlan.scenario`、候选数据模型、SQL 兜底和 DSL 规范化；期权场景不得复用期货的吨数/手、每日收盘价和浮动盈亏口径。
@@ -171,7 +173,8 @@ uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - Insight 情报资产层由 `insight_intelligence_asset`、`insight_asset_vector`、`insight_graph_node`、`insight_graph_edge` 承载，报告、AI 助手和深度研究后续优先通过资产检索接口取证据。
 - Insight 向量模型使用 `sys_model.model_type=embedding` 配置，当前默认火山方舟 `doubao-embedding-vision-251215` 多模态向量接口；API Key 继承已配置火山模型，不得硬编码。
 - 质量运营基础接口为 `GET /ai-api/v1/insight/quality/overview`，服务层位于 `backend/app/services/agent/insight/quality_service.py`，只能聚合真实任务、采集、候选审核和质量规则数据，不得返回样例指标。
-- Firecrawl、Bocha/博查等外部服务地址和密钥不得硬编码在业务代码中，应进入配置或环境变量。
+- 经营智能基础接口为 `GET /ai-api/v1/insight/operation/overview` 和 `GET /ai-api/v1/insight/operation/customer-lifecycle`，服务层位于 `backend/app/services/agent/insight/operation_intelligence_service.py`，当前以 FineReport SQL Server 只读连接聚合健源公司销量利润、客户流失、采购库存、经营净头寸、套保风险，以及新客户质量、90 天挽回窗口、沉默客户分层、应收叠加和高价值行动清单；接口仅管理员可访问，不新增持久化表，不得返回伪造样例指标。
+- Firecrawl、Bocha/博查、豆包联网搜索等外部服务地址、模型配置和密钥不得硬编码在业务代码中，应进入配置、环境变量或 `sys_model`。
 ## SAP 助手 Agent 状态约束补充
 
 - SAP 助手聊天入口固定走 `backend/app/services/agent/sap_assistant/deep_agent_service.py`，并复用 `SapToolService -> SapRfcClient` 调用 SAP 侧 `ZFM_AI_*` RFC；该入口按 deepagents 源码思路组装 SAP 专用 Agent，保留摘要压缩、工具调用修复和提示缓存中间件，但禁用 deepagents 默认 todo、文件、shell 和 subagent 工具；历史 LangGraph 和自定义 ReAct 实现已移除。

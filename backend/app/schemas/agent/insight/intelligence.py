@@ -50,6 +50,12 @@ class InsightIntelligenceRead(InsightBaseRead):
     review_status: str
     visibility_scope: str
     status: str
+    category_code: str | None = None
+    category_name: str | None = None
+    tag_codes: list[str] = Field(default_factory=list)
+    tag_names: list[str] = Field(default_factory=list)
+    selection_reason: str | None = None
+    business_insight: str | None = None
 
 
 class InsightIntelligenceSourceRead(InsightBaseRead):
@@ -122,6 +128,10 @@ class InsightIntelligenceCreate(BaseModel):
     publish_time: datetime | None = None
     visibility_scope: str = Field(default="assigned", max_length=30)
     suggested_tags: list[dict[str, Any]] | None = None
+    category_code: str | None = Field(default=None, max_length=64)
+    tag_codes: list[str] = Field(default_factory=list)
+    selection_reason: str | None = Field(default=None, max_length=1000)
+    business_insight: str | None = Field(default=None, max_length=1000)
     source: InsightIntelligenceSourceCreate | None = None
 
 
@@ -141,7 +151,53 @@ class InsightIntelligenceUpdate(BaseModel):
     publish_time: datetime | None = None
     visibility_scope: str | None = Field(default=None, max_length=30)
     suggested_tags: list[dict[str, Any]] | None = None
+    category_code: str | None = Field(default=None, max_length=64)
+    tag_codes: list[str] | None = None
+    selection_reason: str | None = Field(default=None, max_length=1000)
+    business_insight: str | None = Field(default=None, max_length=1000)
     status: str | None = Field(default=None, max_length=20)
+
+
+class InsightIntelligenceImportItem(BaseModel):
+    title: str = Field(..., min_length=1, max_length=500)
+    summary: str | None = None
+    content: str | None = None
+    company_id: int | None = None
+    subject_type: str = Field(default="custom", max_length=30)
+    subject_name: str | None = Field(default=None, max_length=200)
+    intelligence_type: str = Field(default="行业资讯", max_length=50)
+    category_code: str | None = Field(default=None, max_length=64)
+    category_name: str | None = Field(default=None, max_length=100)
+    tag_codes: list[str] = Field(default_factory=list)
+    tag_names: list[str] = Field(default_factory=list)
+    suggested_new_tags: list[str] = Field(default_factory=list)
+    importance_level: str = Field(default="medium", max_length=20)
+    publish_time: datetime | None = None
+    selection_reason: str | None = Field(default=None, max_length=1000)
+    business_insight: str | None = Field(default=None, max_length=1000)
+    source_title: str | None = Field(default=None, max_length=500)
+    source_url: str | None = Field(default=None, max_length=1000)
+
+
+class InsightIntelligenceImportPreviewResponse(BaseModel):
+    file_name: str
+    file_type: str
+    extracted_text_length: int
+    items: list[InsightIntelligenceImportItem] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class InsightIntelligenceImportConfirmRequest(BaseModel):
+    file_name: str | None = Field(default=None, max_length=300)
+    items: list[InsightIntelligenceImportItem] = Field(default_factory=list)
+    visibility_scope: str = Field(default="assigned", max_length=30)
+
+
+class InsightIntelligenceImportConfirmResponse(BaseModel):
+    created_count: int
+    skipped_count: int = 0
+    intelligence_ids: list[int] = Field(default_factory=list)
+    items: list[InsightIntelligenceRead] = Field(default_factory=list)
 
 
 class InsightVisibilityRuleCreate(BaseModel):

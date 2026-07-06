@@ -512,8 +512,6 @@ class InsightReportService:
             filters.append(InsightReport.report_type == report_type)
         if status:
             filters.append(InsightReport.status == status)
-        if not is_admin:
-            filters.append(await self._report_company_isolation_filter(db, user_id=user_id, is_admin=is_admin))
         filters.append(
             await insight_permission_service.visibility_filter_for_user(
                 db,
@@ -879,14 +877,21 @@ class InsightReportService:
         if payload.period_end:
             filters.append(or_(InsightIntelligence.publish_time <= payload.period_end, InsightIntelligence.create_time <= payload.period_end))
         if not is_admin:
-            filters.append(await self._intelligence_company_isolation_filter(db, user_id=user_id, is_admin=is_admin))
             filters.append(
-                await insight_permission_service.visibility_filter_for_user(
-                    db,
-                    InsightIntelligence,
-                    target_type="intelligence",
-                    user_id=user_id,
-                    is_admin=is_admin,
+                or_(
+                    await insight_permission_service.visibility_filter_for_user(
+                        db,
+                        InsightIntelligence,
+                        target_type="intelligence",
+                        user_id=user_id,
+                        is_admin=is_admin,
+                    ),
+                    await insight_permission_service.inherited_intelligence_filter_for_user(
+                        db,
+                        InsightIntelligence,
+                        user_id=user_id,
+                        is_admin=is_admin,
+                    ),
                 )
             )
 
@@ -1088,12 +1093,20 @@ class InsightReportService:
         ]
         if not is_admin:
             visible_asset_filters.append(
-                await insight_permission_service.visibility_filter_for_user(
-                    db,
-                    InsightIntelligenceAsset,
-                    target_type="asset",
-                    user_id=user_id,
-                    is_admin=is_admin,
+                or_(
+                    await insight_permission_service.visibility_filter_for_user(
+                        db,
+                        InsightIntelligenceAsset,
+                        target_type="asset",
+                        user_id=user_id,
+                        is_admin=is_admin,
+                    ),
+                    await insight_permission_service.inherited_asset_filter_for_user(
+                        db,
+                        InsightIntelligenceAsset,
+                        user_id=user_id,
+                        is_admin=is_admin,
+                    ),
                 )
             )
         visible_asset_ids = list((await db.exec(select(InsightIntelligenceAsset.id).where(*visible_asset_filters))).all())
@@ -1855,8 +1868,6 @@ class InsightReportService:
         permission: str = "view",
     ) -> InsightReport:
         filters = [InsightReport.id == report_id, InsightReport.is_deleted == 0]
-        if not is_admin:
-            filters.append(await self._report_company_isolation_filter(db, user_id=user_id, is_admin=is_admin))
         filters.append(
             await insight_permission_service.visibility_filter_for_user(
                 db,
@@ -2103,6 +2114,7 @@ class InsightReportService:
             "bocha_search": "博查搜索",
             "bocha_news": "博查资讯",
             "bocha_web": "博查网页",
+            "doubao_web_search": "豆包联网搜索",
             "official_site": "官网",
             "web_page": "通用网页",
             "firecrawl": "网页抓取",

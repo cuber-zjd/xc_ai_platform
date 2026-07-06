@@ -32,6 +32,7 @@ class InsightCrawlerChannel(str, Enum):
     BAIDU_NEWS = "baidu_news"
     BOCHA = "bocha"
     BOCHA_NEWS = "bocha_news"
+    DOUBAO_WEB_SEARCH = "doubao_web_search"
     FIRECRAWL = "firecrawl"
     GENERIC_WEB = "generic_web"
     MANUAL_URL = "manual_url"

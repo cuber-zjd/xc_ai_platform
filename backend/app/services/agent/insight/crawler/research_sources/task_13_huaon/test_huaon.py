@@ -8,11 +8,14 @@ from bs4 import BeautifulSoup
 def clean_time(date_str):
     date_str = date_str.strip()
     try:
-        if re.match(r'\d{4}-\d{2}-\d{2}', date_str):
-            return f"{date_str} 00:00:00"
+        clean = date_str.replace(".", "-").replace("/", "-")
+        match = re.search(r'(20\d{2})-(\d{1,2})-(\d{1,2})', clean)
+        if match:
+            year, month, day = match.groups()
+            return f"{int(year):04d}-{int(month):02d}-{int(day):02d} 00:00:00"
     except Exception:
         pass
-    return time.strftime("%Y-%m-%d %H:%M:%S")
+    return ""
 
 def crawl_huaon(keyword, keywords_pattern):
     print(f"开始爬取 huaon.com - 关键字: '{keyword}'")
@@ -81,7 +84,7 @@ if __name__ == "__main__":
     mixue_pattern = r"蜜雪|冰城|鲜活"
     chabaidao_pattern = r"茶百道|百道"
     
-    for kw, pat, filename in [("蜜雪冰城", mixue_pattern, "data/mixue_news.json"), ("茶百道", pat, "data/chabaidao_news.json")]:
+    for kw, pat, filename in [("蜜雪冰城", mixue_pattern, "data/mixue_news.json"), ("茶百道", chabaidao_pattern, "data/chabaidao_news.json")]:
         results = crawl_huaon(kw, pat)
         with open(filename, "w", encoding="utf-8") as f:
             json.dump(results, f, ensure_ascii=False, indent=2)

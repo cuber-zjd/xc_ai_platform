@@ -1,11 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { apiClient } from '@/api/client';
+import { useAuthStore } from '@/store/useAuthStore';
 import type {
     CptPublishResponse,
     FrAiReportAgentChatPayload,
     FrAiReportAgentChatResponse,
     FrAiReportAgentCapabilitiesResponse,
+    FrAiReportAgentStreamEvent,
+    FrAiReportAgentStreamPayload,
     FrAiReportFeedbackPayload,
     FrAiReportFeedbackRead,
     FrAiReportRequirementReviewPayload,
@@ -25,6 +28,10 @@ import type {
     FrReportDatasetPreviewResponse,
     FrReportFileStructureRead,
     FrReportFileListResponse,
+    FrReportCaseRead,
+    FrReportCaseSampleBuildPayload,
+    FrReportCaseSampleJobRead,
+    FrReportCaseSearchResponse,
     FrReportVisibilityPreferencePayload,
     FrReportVisibilityPreferenceRead,
     FrReportVersionListResponse,
@@ -46,6 +53,23 @@ import type {
 } from '@/features/fr-ai-report/types';
 
 const BASE_URL = '/fr/ai-reports';
+
+type FrAiReportAgentStreamHandlers = {
+    onEvent?: (event: FrAiReportAgentStreamEvent) => void;
+    onFinal?: (event: FrAiReportAgentStreamEvent) => void;
+};
+
+const normalizeAgentStreamEvent = (eventName: string, parsed: Record<string, unknown>): FrAiReportAgentStreamEvent => {
+    const event = { type: eventName, ...parsed } as FrAiReportAgentStreamEvent & Record<string, unknown>;
+    event.previewUrl = (event.previewUrl ?? event.preview_url) as string | undefined;
+    event.snapshotId = (event.snapshotId ?? event.snapshot_id) as string | undefined;
+    event.reportId = (event.reportId ?? event.report_id) as string | undefined;
+    event.fileVersionId = (event.fileVersionId ?? event.file_version_id) as string | undefined;
+    event.structureVersionId = (event.structureVersionId ?? event.structure_version_id) as string | undefined;
+    event.versionNo = (event.versionNo ?? event.version_no) as number | undefined;
+    event.archiveObjectPath = (event.archiveObjectPath ?? event.archive_object_path) as string | undefined;
+    return event;
+};
 
 export function useGenerateFrAiReport() {
     const queryClient = useQueryClient();
@@ -242,6 +266,111 @@ export function useFrAiReportAgentChat() {
     });
 }
 
+export function useFrAiReportAgentStream() {
+    const queryClient = useQueryClient();
+
+    const invalidateFromFinal = (event: FrAiReportAgentStreamEvent) => {
+        if (event.objectPath) {
+            queryClient.invalidateQueries({ queryKey: ['fr-report-versions', event.objectPath] });
+            queryClient.invalidateQueries({ queryKey: ['fr-ai-report-files'] });
+        }
+    };
+
+    const run = async (payload: FrAiReportAgentStreamPayload, handlers: FrAiReportAgentStreamHandlers = {}) => {
+        const formData = new FormData();
+        formData.append('objectPath', payload.objectPath);
+        formData.append('message', payload.message);
+        formData.append('autonomyMode', payload.autonomyMode ?? 'high');
+        if (payload.selectedCell) {
+            formData.append('selectedCell', payload.selectedCell);
+        }
+        if (payload.selectedDataset) {
+            formData.append('selectedDataset', payload.selectedDataset);
+        }
+        if (payload.context) {
+            formData.append('context_json', JSON.stringify(payload.context));
+        }
+        if (payload.file) {
+            formData.append('file', payload.file);
+        }
+        for (const file of payload.files ?? []) {
+            formData.append('files', file);
+        }
+
+        const token = useAuthStore.getState().token;
+        const response = await fetch(`${apiClient.defaults.baseURL ?? ''}${BASE_URL}/agent/run/stream`, {
+            method: 'POST',
+            headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+            body: formData,
+        });
+        if (!response.ok || !response.body) {
+            let detail = `请求失败：${response.status}`;
+            try {
+                const payload = await response.json();
+                detail = payload?.detail || payload?.msg || detail;
+            } catch {
+                // ignore non-json error body
+            }
+            throw new Error(detail);
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let buffer = '';
+        let gotFinal = false;
+        const dispatchChunk = (chunk: string) => {
+            const blocks = chunk.split(/\n\n/);
+            buffer = blocks.pop() ?? '';
+            for (const block of blocks) {
+                const lines = block.split(/\n/);
+                let eventName = 'message_delta';
+                const dataLines: string[] = [];
+                for (const line of lines) {
+                    if (line.startsWith('event:')) {
+                        eventName = line.slice(6).trim();
+                    } else if (line.startsWith('data:')) {
+                        dataLines.push(line.slice(5).trimStart());
+                    }
+                }
+                if (!dataLines.length) {
+                    continue;
+                }
+                const parsed = JSON.parse(dataLines.join('\n')) as Record<string, unknown>;
+                const event = normalizeAgentStreamEvent(eventName, parsed);
+                handlers.onEvent?.(event);
+                if (event.type === 'final_result') {
+                    gotFinal = true;
+                    invalidateFromFinal(event);
+                    handlers.onFinal?.(event);
+                }
+            }
+        };
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) {
+                break;
+            }
+            dispatchChunk(buffer + decoder.decode(value, { stream: true }));
+        }
+        if (buffer.trim()) {
+            dispatchChunk(`${buffer}\n\n`);
+        }
+        if (!gotFinal) {
+            handlers.onFinal?.({
+                type: 'final_result',
+                status: 'failed',
+                assistantMessage: '连接已经结束，但没有收到最终结果。本次没有确认写入 CPT。',
+                objectPath: payload.objectPath,
+                warnings: [],
+                errors: ['SSE 流缺少 final_result 事件'],
+            });
+        }
+    };
+
+    return { run };
+}
+
 export function useFrAiReportAgentCapabilities() {
     return useQuery({
         queryKey: ['fr-ai-report-agent-capabilities'],
@@ -250,6 +379,66 @@ export function useFrAiReportAgentCapabilities() {
             return response as unknown as FrAiReportAgentCapabilitiesResponse;
         },
         staleTime: 5 * 60 * 1000,
+    });
+}
+
+export function useStartFrReportCaseSampleBuild() {
+    const queryClient = useQueryClient();
+
+    return useMutation({
+        mutationFn: async (payload: FrReportCaseSampleBuildPayload = {}) => {
+            const response = await apiClient.post<FrReportCaseSampleJobRead>(`${BASE_URL}/cases/sample-build`, payload, {
+                timeout: 30000,
+            });
+            return response as unknown as FrReportCaseSampleJobRead;
+        },
+        onSuccess: (data) => {
+            queryClient.invalidateQueries({ queryKey: ['fr-report-case-sample-job', data.jobId] });
+            queryClient.invalidateQueries({ queryKey: ['fr-report-cases'] });
+        },
+    });
+}
+
+export function useFrReportCaseSampleJob(jobId?: string | null) {
+    return useQuery({
+        queryKey: ['fr-report-case-sample-job', jobId],
+        queryFn: async () => {
+            const response = await apiClient.get<FrReportCaseSampleJobRead>(`${BASE_URL}/cases/sample-jobs/${jobId}`);
+            return response as unknown as FrReportCaseSampleJobRead;
+        },
+        enabled: Boolean(jobId),
+        refetchInterval: (query) => {
+            const status = query.state.data?.status;
+            return status === 'running' || status === 'pending' ? 3000 : false;
+        },
+    });
+}
+
+export function useFrReportCasesSearch(query = '', tags: string[] = [], limit = 10) {
+    return useQuery({
+        queryKey: ['fr-report-cases', query, tags.join(','), limit],
+        queryFn: async () => {
+            const response = await apiClient.get<FrReportCaseSearchResponse>(`${BASE_URL}/cases/search`, {
+                params: {
+                    query: query || undefined,
+                    tags: tags.length ? tags.join(',') : undefined,
+                    limit,
+                },
+                timeout: 30000,
+            });
+            return response as unknown as FrReportCaseSearchResponse;
+        },
+    });
+}
+
+export function useFrReportCase(caseId?: string | null) {
+    return useQuery({
+        queryKey: ['fr-report-case', caseId],
+        queryFn: async () => {
+            const response = await apiClient.get<FrReportCaseRead>(`${BASE_URL}/cases/${caseId}`);
+            return response as unknown as FrReportCaseRead;
+        },
+        enabled: Boolean(caseId),
     });
 }
 

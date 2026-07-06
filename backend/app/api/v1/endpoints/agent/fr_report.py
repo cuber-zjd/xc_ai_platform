@@ -1,7 +1,8 @@
 import json
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api.deps import get_current_user, get_db
@@ -10,7 +11,6 @@ from app.schemas.agent.fr_report.ai_report import (
     CptPublishResponse,
     FrAiReportAgentCapabilitiesResponse,
     FrAiReportAgentChatResponse,
-    FrAiReportAgentContext,
     GenerateCptStepResponse,
     FrAiReportFeedbackCreate,
     FrAiReportFeedbackRead,
@@ -51,14 +51,92 @@ from app.schemas.agent.fr_report.report_file import (
     FrReportVisibilityPreferenceRead,
     FrReportVisibilityPreferenceUpdate,
 )
+from app.schemas.agent.fr_report.report_case import (
+    FrReportCaseRead,
+    FrReportCaseSampleBuildRequest,
+    FrReportCaseSampleJobRead,
+    FrReportCaseSearchRequest,
+    FrReportCaseSearchResponse,
+)
 from app.schemas.page import Page
 from app.schemas.result import Result
 from app.services.agent.fr_report.report_file_service import fr_report_file_service
 from app.services.agent.fr_report.ai_operation_service import fr_report_ai_operation_service
 from app.services.agent.fr_report.report_generation_service import fr_ai_report_service
+from app.services.agent.fr_report.high_authority_agent_service import fr_report_high_authority_agent_service
+from app.services.agent.fr_report.report_case_service import fr_report_case_service
 from app.services.agent.fr_report.version_control_service import fr_report_version_control_service
 
 router = APIRouter()
+
+
+@router.post("/cases/sample-build", response_model=Result[FrReportCaseSampleJobRead])
+async def start_report_case_sample_build(
+    *,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+    payload: FrReportCaseSampleBuildRequest,
+) -> Result[FrReportCaseSampleJobRead]:
+    try:
+        result = await fr_report_case_service.start_sample_build(db, payload, user_id=current_user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    background_tasks.add_task(fr_report_case_service.run_sample_build_job, result.jobId, user_id=current_user.id)
+    return Result.success(result)
+
+
+@router.get("/cases/sample-jobs/{job_id}", response_model=Result[FrReportCaseSampleJobRead])
+async def get_report_case_sample_job(
+    *,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+    job_id: str,
+) -> Result[FrReportCaseSampleJobRead]:
+    _ = current_user
+    try:
+        result = await fr_report_case_service.get_sample_job(db, job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return Result.success(result)
+
+
+@router.get("/cases/search", response_model=Result[FrReportCaseSearchResponse])
+async def search_report_cases(
+    *,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+    query: str = "",
+    tags: str | None = None,
+    source_object_path: str | None = None,
+    limit: int = 10,
+    include_inactive: bool = False,
+) -> Result[FrReportCaseSearchResponse]:
+    _ = current_user
+    payload = FrReportCaseSearchRequest(
+        query=query,
+        tags=[item.strip() for item in (tags or "").split(",") if item.strip()],
+        sourceObjectPath=source_object_path,
+        limit=limit,
+        includeInactive=include_inactive,
+    )
+    result = await fr_report_case_service.search_cases(db, payload)
+    return Result.success(result)
+
+
+@router.get("/cases/{case_id}", response_model=Result[FrReportCaseRead])
+async def get_report_case(
+    *,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+    case_id: str,
+) -> Result[FrReportCaseRead]:
+    _ = current_user
+    try:
+        result = await fr_report_case_service.get_case(db, case_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return Result.success(result)
 
 
 @router.get("/files", response_model=Result[FrReportFileListResponse])
@@ -187,21 +265,8 @@ async def generate_report_ai_operation_draft(
     current_user: SysUser = Depends(get_current_user),
     payload: FrReportAiOperationRequest,
 ) -> Result[FrReportAiOperationDraftResponse]:
-    if not payload.prompt.strip():
-        raise HTTPException(status_code=400, detail="请输入 AI 修改指令")
-    try:
-        result = await fr_report_ai_operation_service.generate_operation_draft(
-            db=db,
-            user_id=current_user.id,
-            payload=payload,
-        )
-    except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return Result.success(result)
+    _ = db, current_user, payload
+    raise HTTPException(status_code=410, detail="旧待应用草稿入口已停用；请使用 /agent/run/stream 的完整 CPT 文件编辑链路。")
 
 
 @router.post("/ai/new-report-plan", response_model=Result[FrReportAiNewReportPlanResponse])
@@ -243,19 +308,8 @@ async def apply_report_ai_operation_draft(
     current_user: SysUser = Depends(get_current_user),
     payload: FrReportAiApplyDraftRequest,
 ) -> Result[FrReportAiApplyDraftResponse]:
-    try:
-        result = await fr_report_ai_operation_service.apply_operation_draft(
-            db=db,
-            user_id=current_user.id,
-            payload=payload,
-        )
-    except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
-    return Result.success(result)
+    _ = db, current_user, payload
+    raise HTTPException(status_code=410, detail="旧待应用草稿写入入口已停用；请使用 /agent/run/stream 的完整 CPT 文件编辑链路。")
 
 
 @router.get("/versions", response_model=Result[FrReportVersionListResponse])
@@ -387,21 +441,48 @@ async def chat_with_report_agent(
     file: UploadFile | None = File(default=None),
     files: list[UploadFile] | None = File(default=None),
 ) -> Result[FrAiReportAgentChatResponse]:
+    _ = db, current_user, message, action, context_json, file, files
+    raise HTTPException(status_code=410, detail="旧非流式聊天入口已停用；请使用 /agent/run/stream 的完整 CPT 文件编辑链路。")
+
+
+@router.post("/agent/run/stream")
+async def stream_report_agent_run(
+    *,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+    objectPath: str = Form(...),
+    message: str = Form(...),
+    selectedCell: str | None = Form(default=None),
+    selectedDataset: str | None = Form(default=None),
+    autonomyMode: str = Form(default="high"),
+    context_json: str | None = Form(default=None),
+    file: UploadFile | None = File(default=None),
+    files: list[UploadFile] | None = File(default=None),
+) -> StreamingResponse:
+    if not message.strip():
+        raise HTTPException(status_code=400, detail="请输入要调整的内容")
     context_payload = _parse_json_object(context_json, "context_json") if context_json else {}
-    try:
-        context = FrAiReportAgentContext.model_validate(context_payload)
-        result = await fr_ai_report_service.agent_chat(
-            db,
+    upload_files = [item for item in (files or []) if item is not None]
+    if file is not None:
+        upload_files.insert(0, file)
+    return StreamingResponse(
+        fr_report_high_authority_agent_service.run_stream(
+            db=db,
             user_id=current_user.id,
+            object_path=objectPath,
             message=message,
-            action=action,
-            context=context,
-            file=file,
-            files=files or [],
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return Result.success(result)
+            selected_cell=selectedCell,
+            selected_dataset=selectedDataset,
+            context=context_payload or {},
+            files=upload_files,
+            autonomy_mode=autonomyMode or "high",
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/agent/capabilities", response_model=Result[FrAiReportAgentCapabilitiesResponse])

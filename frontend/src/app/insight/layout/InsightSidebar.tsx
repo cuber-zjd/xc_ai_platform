@@ -1,4 +1,4 @@
-import { BarChart3, Building2, ChevronDown, FileBarChart, FileText, Home, LogOut, Settings, SlidersHorizontal, Tags } from "lucide-react";
+import { BarChart3, Building2, ChevronDown, FileBarChart, FileText, Gauge, Home, LogOut, Settings, SlidersHorizontal, Tags } from "lucide-react";
 import { NavLink, useNavigate } from "react-router-dom";
 
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -12,6 +12,7 @@ const insightNavItems = [
     { label: "监测配置", path: "/insight/monitoring", icon: SlidersHorizontal },
     { label: "分类标签", path: "/insight/tags", icon: Tags },
     { label: "报告中心", path: "/insight/reports", icon: FileBarChart },
+    { label: "经营智能", path: "/insight/operation-intelligence", icon: Gauge, adminOnly: true },
     { label: "质量运营", path: "/insight/quality", icon: BarChart3, adminOnly: true },
     { label: "系统设置", path: "/insight/settings", icon: Settings, adminOnly: true },
 ];

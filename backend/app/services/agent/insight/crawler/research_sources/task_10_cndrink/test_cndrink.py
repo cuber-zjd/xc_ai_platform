@@ -9,11 +9,13 @@ def clean_time(date_str):
     date_str = date_str.strip()
     try:
         clean = date_str.replace(".", "-")
-        if re.match(r'\d{4}-\d{2}-\d{2}', clean):
-            return f"{clean} 00:00:00"
+        match = re.search(r'(20\d{2})-(\d{1,2})-(\d{1,2})', clean)
+        if match:
+            year, month, day = match.groups()
+            return f"{int(year):04d}-{int(month):02d}-{int(day):02d} 00:00:00"
     except Exception:
         pass
-    return time.strftime("%Y-%m-%d %H:%M:%S")
+    return ""
 
 def crawl_cndrink(keyword):
     # 采用 Foodaily 平台代署名代理方案来绕过主站 Cloudflare 的 403 封锁

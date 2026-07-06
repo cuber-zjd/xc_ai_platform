@@ -366,7 +366,7 @@ def _default_channel(
         "channel_url": url,
         "applicable_scenarios": _normalize_monitor_scenarios(scenarios),
         "collection_method": method,
-        "access_status": "pending",
+        "access_status": "supported" if code in {"baidu_news", "bocha_search", "doubao_web_search"} else "pending",
         "default_trust_level": trust,
         "default_frequency": frequency,
         "sort_no": sort_no,
@@ -387,8 +387,15 @@ def _default_execution_policy(code: str, channel_type: str, method: str) -> dict
         return {
             "tier": "discovery",
             "cost_level": "paid",
-            "trigger_mode": "quality_gap",
-            "role": "付费补充源，仅在百度资讯结果不足或质量不足时调用",
+            "trigger_mode": "always_with_budget",
+            "role": "付费补充源，按监测对象合并关键词后默认补充 1 次，受预算和去重保护",
+        }
+    if code == "doubao_web_search":
+        return {
+            "tier": "discovery",
+            "cost_level": "ai_paid",
+            "trigger_mode": "always_with_ai_budget",
+            "role": "AI 联网补充源，保留搜索动作、引用和模型整理后的结构化线索",
         }
     if channel_type in {"industry_media", "finance_news", "general_news", "policy_regulation"}:
         return {
@@ -421,7 +428,8 @@ def _default_execution_policy(code: str, channel_type: str, method: str) -> dict
 
 DEFAULT_CHANNELS: tuple[dict, ...] = (
     _default_channel("baidu_news", "百度资讯", "search_engine", "https://news.baidu.com", list(MONITOR_SCENARIOS), method="api", trust="medium", sort_no=1, comment="默认搜索发现源：每个监测对象默认启用。优先用百度资讯做低成本发现，按监测对象合并关键词后搜索，再进入正文抓取和 AI 入库判断。"),
-    _default_channel("bocha_search", "博查搜索", "search_engine", None, list(MONITOR_SCENARIOS), method="api", trust="medium", sort_no=2, comment="默认搜索发现源：每个监测对象默认启用，但按成本控制策略调用。建议先跑百度资讯，百度结果不足、命中质量低或需要补充网页线索时再调用博查；同一监测对象每日合并关键词、缓存去重并限制调用次数。"),
+    _default_channel("bocha_search", "博查搜索", "search_engine", None, list(MONITOR_SCENARIOS), method="api", trust="medium", sort_no=2, comment="默认搜索发现源：每个监测对象默认启用。按监测对象合并关键词后默认补充 1 次，缓存去重并限制调用次数，避免按模块或网站重复消耗点数。"),
+    _default_channel("doubao_web_search", "豆包联网搜索", "search_engine", "https://ark.cn-beijing.volces.com/api/v3/responses", list(MONITOR_SCENARIOS), method="api", trust="medium", sort_no=3, comment="默认搜索发现源：使用火山方舟 Responses API 的 web_search 工具补充发现公开资讯；系统保留搜索动作、引用标注和结构化线索，适合补充博查与百度未覆盖的信息。"),
     _default_channel("eastmoney", "东方财富官网", "finance_news", "https://www.eastmoney.com", ["经营财经", "企业新闻", "资本市场"], trust="medium", sort_no=10),
     _default_channel("tonghuashun", "同花顺", "finance_news", "https://www.10jqka.com.cn", ["经营财经", "企业新闻", "资本市场"], trust="medium", sort_no=20),
     _default_channel("xueqiu", "雪球网", "finance_news", "https://xueqiu.com", ["经营财经", "投资者观点"], trust="medium", sort_no=30),

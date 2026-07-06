@@ -1,14 +1,22 @@
 from dataclasses import dataclass
 from datetime import datetime
 from html import unescape
+import asyncio
+import json
+import random
+import re
 from re import DOTALL, IGNORECASE, compile as compile_regex, sub
 from typing import Any
 from urllib.parse import quote_plus, urlparse
 
 import httpx
+from sqlalchemy import or_
+from sqlmodel import select
 
 from app.core.config import settings
+from app.db.session import async_session
 from app.models.agent.insight import InsightCrawlerChannel
+from app.models.system.sys_model import SysModel
 from app.services.agent.insight.crawler.content_cleaner import insight_content_cleaner
 
 
@@ -52,6 +60,7 @@ class BaiduSearchClient:
                 "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
             )
         }
+        await asyncio.sleep(random.uniform(0.4, 1.2))
         async with httpx.AsyncClient(timeout=settings.INSIGHT_SEARCH_TIMEOUT_SECONDS, follow_redirects=True) as client:
             response = await client.get(url, headers=headers)
             response.raise_for_status()
@@ -68,13 +77,14 @@ class BaiduSearchClient:
                 title = self._clean_html(match.group("title"))
                 context_html = response.text[match.start() : min(match.end() + 1200, len(response.text))]
                 context_text = self._clean_html(context_html)
+                snippet = self._short_snippet(context_text, title)
                 hits.append(
                     InsightSearchHit(
                         channel=channel,
                         title=title or resolved_url,
                         url=resolved_url,
-                        snippet=self._short_snippet(context_text, title),
-                        published_at=insight_content_cleaner.parse_publish_time({}, context_text),
+                        snippet=snippet,
+                        published_at=insight_content_cleaner.parse_publish_time({}, snippet, context_text),
                         raw={"source": source, "query": query, "original_url": item_url, "search_context": context_text[:500]},
                     )
                 )
@@ -205,5 +215,229 @@ class BochaSearchClient:
         return None
 
 
+class DoubaoWebSearchClient:
+    """火山方舟 Responses API 联网搜索适配器。
+
+    豆包联网搜索不是传统搜索 API，流式返回里主要包含搜索动作、引用标注和最终回答。
+    因此这里要求模型把可入库线索整理为 JSON，再保留原始搜索动作和引用，作为审计信息。
+    """
+
+    preferred_model_code = "doubao-seed-2-1-turbo-260628"
+
+    async def search(self, query: str, count: int, freshness: str | None) -> list[InsightSearchHit]:
+        model = await self._load_model_config()
+        endpoint = f"{model.base_url.rstrip('/')}/responses"
+        prompt = self._build_prompt(query, count, freshness)
+        payload = {
+            "model": model.model_code,
+            "stream": True,
+            "tools": [{"type": "web_search"}],
+            "input": [
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": prompt}],
+                }
+            ],
+        }
+        headers = {
+            "Authorization": f"Bearer {model.api_key}",
+            "Content-Type": "application/json",
+        }
+        text_parts: list[str] = []
+        web_queries: list[str] = []
+        annotations: list[dict[str, Any]] = []
+        event_samples: list[dict[str, Any]] = []
+
+        async with httpx.AsyncClient(timeout=max(settings.INSIGHT_SEARCH_TIMEOUT_SECONDS, 90)) as client:
+            async with client.stream("POST", endpoint, json=payload, headers=headers) as response:
+                response.raise_for_status()
+                async for raw_line in response.aiter_lines():
+                    line = raw_line.strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data_text = line.removeprefix("data:").strip()
+                    if not data_text or data_text == "[DONE]":
+                        continue
+                    try:
+                        event = json.loads(data_text)
+                    except json.JSONDecodeError:
+                        continue
+                    event_type = str(event.get("type") or "")
+                    if len(event_samples) < 40:
+                        event_samples.append(self._event_excerpt(event))
+                    if event_type == "response.output_text.delta":
+                        delta = event.get("delta")
+                        if isinstance(delta, str):
+                            text_parts.append(delta)
+                    if event_type == "response.output_text.annotation.added":
+                        annotation = event.get("annotation")
+                        if isinstance(annotation, dict):
+                            annotations.append(annotation)
+                    query_text = self._extract_web_query(event)
+                    if query_text and query_text not in web_queries:
+                        web_queries.append(query_text)
+
+        answer_text = "".join(text_parts).strip()
+        raw_context = {
+            "source_channel": "doubao_web_search",
+            "model": model.model_code,
+            "search_queries": web_queries,
+            "annotations": annotations[:50],
+            "answer_text": answer_text,
+            "event_samples": event_samples,
+        }
+        return self._parse_answer(answer_text, raw_context, count)
+
+    async def _load_model_config(self) -> SysModel:
+        async with async_session() as session:
+            exact = (
+                await session.exec(
+                    select(SysModel).where(
+                        SysModel.is_deleted == 0,
+                        SysModel.is_enabled,
+                        SysModel.model_type == "chat",
+                        or_(
+                            SysModel.model_code == self.preferred_model_code,
+                            SysModel.model_name == self.preferred_model_code,
+                        ),
+                    )
+                )
+            ).first()
+            if exact:
+                return exact
+            volc = (
+                await session.exec(
+                    select(SysModel)
+                    .where(
+                        SysModel.is_deleted == 0,
+                        SysModel.is_enabled,
+                        SysModel.model_type == "chat",
+                        SysModel.provider == "volcengine",
+                    )
+                    .order_by(SysModel.model_level, SysModel.priority)
+                )
+            ).first()
+            if volc:
+                return volc
+        raise ValueError("未找到可用于豆包联网搜索的火山方舟 chat 模型配置")
+
+    def _build_prompt(self, query: str, count: int, freshness: str | None) -> str:
+        time_hint = "近 15 天"
+        value = (freshness or "").strip().lower()
+        if value in {"oneweek", "one_week", "week", "7d"}:
+            time_hint = "近 7 天"
+        elif value in {"oneday", "one_day", "day", "24h"}:
+            time_hint = "近 24 小时"
+        elif value in {"onemonth", "one_month", "month", "30d"}:
+            time_hint = "近 30 天"
+        return (
+            f"请联网搜索“{query}”相关的公开资讯，优先选择{time_hint}内的信息。"
+            "只保留与食品饮料、农产品加工、粮油、大豆/玉米加工、功能糖/糖浆、植物蛋白、"
+            "客户/竞对动态、政策监管、技术专利、市场价格和风险舆情相关的内容。"
+            f"最多返回 {max(1, count)} 条。"
+            "请只输出严格 JSON，不要输出解释文字，格式为："
+            "{\"items\":[{\"title\":\"标题\",\"url\":\"原文链接\",\"summary\":\"一句话摘要\","
+            "\"source\":\"来源\",\"published_at\":\"YYYY-MM-DD 或空字符串\",\"why\":\"为什么值得关注\"}]}"
+        )
+
+    def _extract_web_query(self, event: dict[str, Any]) -> str | None:
+        candidates = [
+            event.get("query"),
+            event.get("action", {}).get("query") if isinstance(event.get("action"), dict) else None,
+            event.get("item", {}).get("action", {}).get("query") if isinstance(event.get("item"), dict) else None,
+        ]
+        for candidate in candidates:
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+        return None
+
+    def _event_excerpt(self, event: dict[str, Any]) -> dict[str, Any]:
+        result = {"type": event.get("type")}
+        query = self._extract_web_query(event)
+        if query:
+            result["query"] = query
+        annotation = event.get("annotation")
+        if isinstance(annotation, dict):
+            result["annotation"] = {key: annotation.get(key) for key in ("type", "title", "url", "text")}
+        return result
+
+    def _parse_answer(self, answer_text: str, raw_context: dict[str, Any], count: int) -> list[InsightSearchHit]:
+        records = self._json_records(answer_text)
+        if not records:
+            records = self._markdown_records(answer_text)
+        hits: list[InsightSearchHit] = []
+        seen: set[str] = set()
+        for record in records:
+            url = self._first_text(record.get("url"), record.get("link"))
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            title = self._first_text(record.get("title"), record.get("name"), url) or url
+            summary = self._first_text(record.get("summary"), record.get("why"), record.get("snippet"))
+            published_at = (
+                insight_content_cleaner.parse_publish_time(record)
+                or insight_content_cleaner.parse_publish_time({}, self._first_text(record.get("published_at"), summary))
+            )
+            hits.append(
+                InsightSearchHit(
+                    channel=InsightCrawlerChannel.DOUBAO_WEB_SEARCH,
+                    title=title,
+                    url=url,
+                    snippet=summary,
+                    published_at=published_at,
+                    raw=raw_context | {"item": record},
+                )
+            )
+            if len(hits) >= count:
+                break
+        return hits
+
+    def _json_records(self, text: str) -> list[dict[str, Any]]:
+        value = text.strip()
+        if value.startswith("```"):
+            value = re.sub(r"^```(?:json)?", "", value, flags=re.IGNORECASE).strip()
+            value = re.sub(r"```$", "", value).strip()
+        try:
+            data = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+        if isinstance(data, dict) and isinstance(data.get("items"), list):
+            return [item for item in data["items"] if isinstance(item, dict)]
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        return []
+
+    def _markdown_records(self, text: str) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        for line in text.splitlines():
+            if "|" not in line or "---" in line:
+                continue
+            cells = [cell.strip() for cell in line.strip("|").split("|")]
+            if len(cells) < 2:
+                continue
+            joined = " ".join(cells)
+            url_match = re.search(r"\((https?://[^)]+)\)", joined) or re.search(r"(https?://\S+)", joined)
+            if not url_match:
+                continue
+            title = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", cells[0]).strip()
+            records.append(
+                {
+                    "title": title or cells[0],
+                    "url": url_match.group(1).rstrip("。；,，"),
+                    "published_at": cells[1] if len(cells) > 1 else "",
+                    "source": cells[2] if len(cells) > 2 else "",
+                    "summary": cells[-1] if cells else "",
+                }
+            )
+        return records
+
+    def _first_text(self, *values: Any) -> str | None:
+        for value in values:
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
+
+
 baidu_search_client = BaiduSearchClient()
 bocha_search_client = BochaSearchClient()
+doubao_web_search_client = DoubaoWebSearchClient()

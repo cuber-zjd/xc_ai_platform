@@ -36,6 +36,7 @@ from app.models.agent.insight.report import (
 )
 from app.models.agent.insight.report_subscription import InsightReportSubscription
 from app.models.agent.insight.review import InsightReviewRecord
+from app.models.agent.insight.role import InsightRole, InsightRoleMember
 from app.models.agent.insight.subject import InsightSubject
 from app.models.agent.insight.tag import InsightIntelligenceTag, InsightTag, InsightTagCategory
 from app.models.agent.insight.task import InsightTask
@@ -61,6 +62,8 @@ __all__ = [
     "InsightIntelligenceTag",
     "InsightNotification",
     "InsightReviewRecord",
+    "InsightRole",
+    "InsightRoleMember",
     "InsightReport",
     "InsightReportExport",
     "InsightReportMaterial",

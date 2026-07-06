@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Check, Loader2, Pencil, Play, Plus, Search, Trash2 } from "lucide-react";
+import { Check, Loader2, Pencil, Play, Plus, Search, ShieldCheck, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { cn } from "@/lib/utils";
 
 import type { InsightChannelRead, InsightMonitorConfigCreate, InsightMonitorConfigRead } from "../api";
-import { SectionCard } from "../components";
+import { AccessRuleDialog, SectionCard } from "../components";
 import {
     useInsightChannels,
     useInsightCreateMonitorConfig,
@@ -21,7 +21,7 @@ import {
 } from "../hooks";
 import { PageContainer } from "../layout/PageContainer";
 
-const pageSize = 12;
+const pageSizeOptions = [12, 24, 48];
 
 const monitorTypeOptions = [
     { value: "enterprise", label: "企业监测" },
@@ -121,10 +121,14 @@ export function MonitorConfigPage() {
     const [keyword, setKeyword] = useState("");
     const [typeFilter, setTypeFilter] = useState("all");
     const [page, setPage] = useState(1);
+    const [pageSize, setPageSize] = useState(12);
     const [selectedId, setSelectedId] = useState<number | null>(null);
     const [dialogOpen, setDialogOpen] = useState(false);
     const [editingConfig, setEditingConfig] = useState<InsightMonitorConfigRead | null>(null);
     const [form, setForm] = useState<MonitorFormState>(emptyForm);
+    const [accessOpen, setAccessOpen] = useState(false);
+    const [bulkAccessOpen, setBulkAccessOpen] = useState(false);
+    const [selectedConfigIds, setSelectedConfigIds] = useState<number[]>([]);
 
     const monitorQuery = useInsightMonitorConfigs({
         page,
@@ -143,6 +147,8 @@ export function MonitorConfigPage() {
     const totalPages = Math.max(1, Math.ceil(total / pageSize));
     const selectedConfig = configs.find((item) => item.id === selectedId) ?? configs[0] ?? null;
     const channels = channelQuery.data?.items ?? [];
+    const currentPageConfigIds = useMemo(() => configs.map((item) => item.id), [configs]);
+    const currentPageAllSelected = currentPageConfigIds.length > 0 && currentPageConfigIds.every((id) => selectedConfigIds.includes(id));
 
     useEffect(() => {
         if (page > totalPages) setPage(totalPages);
@@ -220,11 +226,11 @@ export function MonitorConfigPage() {
             toast.error("缺少监测对象或关键词，无法测试");
             return;
         }
-        toast.info("开始轻量测试：百度资讯 + 博查搜索，不抓正文");
+        toast.info("开始轻量测试：百度资讯 + 博查搜索 + 豆包联网搜索，不抓正文");
         testMutation.mutate(
             {
                 query,
-                channels: ["baidu_news", "bocha"],
+                channels: ["baidu_news", "bocha", "doubao_web_search"],
                 freshness: "oneWeek",
                 max_results: 6,
                 crawl_top_n: 0,
@@ -236,11 +242,23 @@ export function MonitorConfigPage() {
                 onSuccess: (result) => {
                     const baiduCount = result.hits.filter((item) => item.channel === "baidu_news").length;
                     const bochaCount = result.hits.filter((item) => item.channel === "bocha").length;
-                    toast.success(`测试完成：命中 ${result.hits.length} 条，百度 ${baiduCount} 条，博查 ${bochaCount} 条`);
+                    const doubaoCount = result.hits.filter((item) => item.channel === "doubao_web_search").length;
+                    toast.success(`测试完成：命中 ${result.hits.length} 条，百度 ${baiduCount} 条，博查 ${bochaCount} 条，豆包 ${doubaoCount} 条`);
                 },
                 onError: (error) => toast.error(error instanceof Error ? error.message : "测试失败"),
             },
         );
+    };
+
+    const toggleConfigSelection = (configId: number) => {
+        setSelectedConfigIds((current) => (current.includes(configId) ? current.filter((id) => id !== configId) : [...current, configId]));
+    };
+
+    const toggleCurrentPageSelection = () => {
+        setSelectedConfigIds((current) => {
+            if (currentPageAllSelected) return current.filter((id) => !currentPageConfigIds.includes(id));
+            return Array.from(new Set([...current, ...currentPageConfigIds]));
+        });
     };
 
     const isMutating = createMutation.isPending || updateMutation.isPending;
@@ -278,6 +296,27 @@ export function MonitorConfigPage() {
                         <div className="text-sm font-black text-slate-900">监测对象</div>
                         <div className="text-xs font-bold text-slate-500">{total} 个</div>
                     </div>
+                    <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-slate-100 px-3 py-2">
+                        <Button type="button" variant="outline" size="sm" className="h-8 rounded-lg bg-white text-xs" disabled={!configs.length} onClick={toggleCurrentPageSelection}>
+                            {currentPageAllSelected ? "取消本页" : "全选本页"}
+                        </Button>
+                        <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="h-8 rounded-lg bg-white text-xs text-blue-700"
+                            disabled={!selectedConfigIds.length}
+                            onClick={() => setBulkAccessOpen(true)}
+                        >
+                            <ShieldCheck className="size-3.5" />
+                            批量授权 {selectedConfigIds.length || ""}
+                        </Button>
+                        {selectedConfigIds.length ? (
+                            <Button type="button" variant="ghost" size="sm" className="h-8 rounded-lg text-xs text-slate-500" onClick={() => setSelectedConfigIds([])}>
+                                清空
+                            </Button>
+                        ) : null}
+                    </div>
                     <div className="min-h-0 flex-1 overflow-y-auto p-2">
                         {monitorQuery.isLoading ? (
                             <div className="flex h-40 items-center justify-center text-sm font-semibold text-slate-500">
@@ -287,19 +326,52 @@ export function MonitorConfigPage() {
                         ) : configs.length ? (
                             <div className="space-y-2">
                                 {configs.map((config) => (
-                                    <button
+                                    <div
                                         key={config.id}
-                                        type="button"
+                                        role="button"
+                                        tabIndex={0}
                                         className={cn(
-                                            "w-full rounded-xl border p-3 text-left transition",
+                                            "w-full cursor-pointer rounded-xl border p-3 text-left transition",
                                             selectedConfig?.id === config.id ? "border-blue-200 bg-blue-50/80" : "border-slate-100 bg-white hover:border-blue-100 hover:bg-slate-50",
                                         )}
                                         onClick={() => setSelectedId(config.id)}
+                                        onKeyDown={(event) => {
+                                            if (event.key === "Enter" || event.key === " ") {
+                                                event.preventDefault();
+                                                setSelectedId(config.id);
+                                            }
+                                        }}
                                     >
                                         <div className="flex items-start justify-between gap-2">
-                                            <div className="min-w-0">
-                                                <div className="truncate text-sm font-black text-slate-950">{config.config_name}</div>
-                                                <div className="mt-1 truncate text-xs font-bold text-slate-500">{config.object_name || "未填写对象"}</div>
+                                            <div className="flex min-w-0 gap-2">
+                                                <button
+                                                    type="button"
+                                                    role="checkbox"
+                                                    aria-checked={selectedConfigIds.includes(config.id)}
+                                                    className={cn(
+                                                        "mt-0.5 grid size-5 shrink-0 place-items-center rounded-md border transition",
+                                                        selectedConfigIds.includes(config.id)
+                                                            ? "border-blue-500 bg-blue-600 text-white"
+                                                            : "border-slate-200 bg-white text-transparent hover:border-blue-300",
+                                                    )}
+                                                    onClick={(event) => {
+                                                        event.stopPropagation();
+                                                        toggleConfigSelection(config.id);
+                                                    }}
+                                                    onKeyDown={(event) => {
+                                                        if (event.key === "Enter" || event.key === " ") {
+                                                            event.preventDefault();
+                                                            event.stopPropagation();
+                                                            toggleConfigSelection(config.id);
+                                                        }
+                                                    }}
+                                                >
+                                                    <Check className="size-3.5" />
+                                                </button>
+                                                <div className="min-w-0">
+                                                    <div className="truncate text-sm font-black text-slate-950">{config.config_name}</div>
+                                                    <div className="mt-1 truncate text-xs font-bold text-slate-500">{config.object_name || "未填写对象"}</div>
+                                                </div>
                                             </div>
                                             <Badge className={cn("shrink-0", config.status === "active" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-slate-200 bg-slate-100 text-slate-500")} variant="outline">
                                                 {statusLabelMap[config.status] ?? config.status}
@@ -310,7 +382,7 @@ export function MonitorConfigPage() {
                                                 <span key={module} className="rounded-md bg-slate-100 px-2 py-1 text-[11px] font-bold text-slate-600">{module}</span>
                                             ))}
                                         </div>
-                                    </button>
+                                    </div>
                                 ))}
                             </div>
                         ) : (
@@ -320,6 +392,22 @@ export function MonitorConfigPage() {
                     <div className="flex shrink-0 items-center justify-between border-t border-slate-100 px-3 py-2 text-xs font-bold text-slate-500">
                         <span>{page} / {totalPages}</span>
                         <div className="flex gap-2">
+                            <Select
+                                value={String(pageSize)}
+                                onValueChange={(value) => {
+                                    setPageSize(Number(value) || 12);
+                                    setPage(1);
+                                }}
+                            >
+                                <SelectTrigger className="h-8 w-24 rounded-lg border-slate-200 bg-white text-xs font-bold">
+                                    <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    {pageSizeOptions.map((value) => (
+                                        <SelectItem key={value} value={String(value)}>每页 {value}</SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
                             <Button type="button" variant="outline" size="sm" className="h-8 rounded-lg" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</Button>
                             <Button type="button" variant="outline" size="sm" className="h-8 rounded-lg" disabled={page >= totalPages} onClick={() => setPage((value) => Math.min(totalPages, value + 1))}>下一页</Button>
                         </div>
@@ -328,7 +416,16 @@ export function MonitorConfigPage() {
 
                 <SectionCard className="flex min-h-0 flex-col p-0">
                     {selectedConfig ? (
-                        <MonitorDetail config={selectedConfig} channels={channels} onEdit={handleEdit} onDelete={handleDelete} onTest={handleTest} deleting={deleteMutation.isPending} testing={testMutation.isPending} />
+                        <MonitorDetail
+                            config={selectedConfig}
+                            channels={channels}
+                            onEdit={handleEdit}
+                            onDelete={handleDelete}
+                            onTest={handleTest}
+                            onOpenAccess={() => setAccessOpen(true)}
+                            deleting={deleteMutation.isPending}
+                            testing={testMutation.isPending}
+                        />
                     ) : (
                         <div className="flex min-h-0 flex-1 items-center justify-center text-sm font-semibold text-slate-500">选择一个监测对象查看详情</div>
                     )}
@@ -352,11 +449,44 @@ export function MonitorConfigPage() {
                     <MonitorConfigForm form={form} channels={channels} isMutating={isMutating} onChange={(patch) => setForm((current) => ({ ...current, ...patch }))} onSave={handleSave} onCancel={() => setDialogOpen(false)} />
                 </DialogContent>
             </Dialog>
+            <AccessRuleDialog
+                open={accessOpen}
+                onOpenChange={setAccessOpen}
+                targetType="monitor_config"
+                targetId={selectedConfig?.id ?? null}
+                targetName={selectedConfig?.config_name ?? ""}
+            />
+            <AccessRuleDialog
+                open={bulkAccessOpen}
+                onOpenChange={setBulkAccessOpen}
+                targetType="monitor_config"
+                targetId={selectedConfigIds[0] ?? null}
+                targetIds={selectedConfigIds}
+                targetName={`已选择 ${selectedConfigIds.length} 个监测配置`}
+            />
         </PageContainer>
     );
 }
 
-function MonitorDetail({ config, channels, onEdit, onDelete, onTest, deleting, testing }: { config: InsightMonitorConfigRead; channels: InsightChannelRead[]; onEdit: (config: InsightMonitorConfigRead) => void; onDelete: (config: InsightMonitorConfigRead) => void; onTest: (config: InsightMonitorConfigRead) => void; deleting: boolean; testing: boolean }) {
+function MonitorDetail({
+    config,
+    channels,
+    onEdit,
+    onDelete,
+    onTest,
+    onOpenAccess,
+    deleting,
+    testing,
+}: {
+    config: InsightMonitorConfigRead;
+    channels: InsightChannelRead[];
+    onEdit: (config: InsightMonitorConfigRead) => void;
+    onDelete: (config: InsightMonitorConfigRead) => void;
+    onTest: (config: InsightMonitorConfigRead) => void;
+    onOpenAccess: () => void;
+    deleting: boolean;
+    testing: boolean;
+}) {
     const selectedChannels = channels.filter(
         (channel) => config.source_channel_ids.includes(channel.id) || config.enabled_modules.some((module) => channel.applicable_scenarios.includes(module)),
     );
@@ -375,6 +505,10 @@ function MonitorDetail({ config, channels, onEdit, onDelete, onTest, deleting, t
                     <Button type="button" variant="outline" size="sm" className="h-9 rounded-lg bg-white text-blue-700" disabled={testing} onClick={() => onTest(config)}>
                         {testing ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
                         测试采集
+                    </Button>
+                    <Button type="button" variant="outline" size="sm" className="h-9 rounded-lg bg-white text-blue-700" onClick={onOpenAccess}>
+                        <ShieldCheck className="size-4" />
+                        权限
                     </Button>
                     <Button type="button" variant="outline" size="sm" className="h-9 rounded-lg bg-white" onClick={() => onEdit(config)}>
                         <Pencil className="size-4" />

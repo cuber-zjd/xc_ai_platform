@@ -20,10 +20,12 @@ async def init_db():
         await _ensure_fr_ai_report_task_columns(conn)
         await _ensure_fr_report_snapshot_columns(conn)
         await _ensure_fr_report_database_connection_columns(conn)
+        await _ensure_sys_model_columns(conn)
         await _ensure_insight_monitor_config_schedule_columns(conn)
         await _ensure_insight_data_source_schedule_columns(conn)
         await _ensure_insight_data_source_hierarchy_columns(conn)
         await _ensure_insight_monitor_context_columns(conn)
+        await _ensure_insight_intelligence_context_columns(conn)
         await _retire_legacy_insight_data_sources(conn)
         await _ensure_insight_company_columns(conn)
         await _ensure_insight_access_control_columns(conn)
@@ -37,6 +39,7 @@ async def init_db():
     await _seed_embedding_model_configs()
     await _seed_fr_report_database_drivers()
     await _seed_insight_default_tags()
+    await _seed_insight_default_roles()
 
     logger.info("数据库表创建完成。")
 
@@ -100,6 +103,29 @@ async def _ensure_fr_report_database_connection_columns(conn):
             "UPDATE fr_report_database_connection "
             "SET driver_key = 'sqlserver' "
             "WHERE driver_key IS NULL OR driver_key = ''"
+        )
+    )
+
+
+async def _ensure_sys_model_columns(conn):
+    """补齐模型配置的多模态能力标记。"""
+    await conn.execute(
+        text(
+            "ALTER TABLE sys_model "
+            "ADD COLUMN IF NOT EXISTS is_multimodal BOOLEAN DEFAULT FALSE"
+        )
+    )
+    await conn.execute(
+        text(
+            "UPDATE sys_model "
+            "SET is_multimodal = TRUE "
+            "WHERE is_multimodal IS DISTINCT FROM TRUE "
+            "AND (model_type = 'vision' "
+            "OR model_code ILIKE '%vision%' "
+            "OR model_code ILIKE '%gpt-4o%' "
+            "OR model_code ILIKE '%omni%' "
+            "OR model_name ILIKE '%vision%' "
+            "OR model_name ILIKE '%多模态%')"
         )
     )
 
@@ -237,6 +263,23 @@ async def _ensure_insight_monitor_context_columns(conn):
     )
 
 
+async def _ensure_insight_intelligence_context_columns(conn):
+    """让正式情报直接继承监测配置权限，避免每条情报重复授权。"""
+    await conn.execute(text("ALTER TABLE insight_intelligence ADD COLUMN IF NOT EXISTS monitor_config_id INTEGER"))
+    await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_insight_intelligence_monitor_config_id ON insight_intelligence (monitor_config_id)"))
+    await conn.execute(
+        text(
+            "UPDATE insight_intelligence intel "
+            "SET monitor_config_id = result.monitor_config_id "
+            "FROM insight_crawl_result result "
+            "WHERE intel.monitor_config_id IS NULL "
+            "AND (intel.raw_payload ->> 'crawl_result_id') ~ '^[0-9]+$' "
+            "AND CAST(intel.raw_payload ->> 'crawl_result_id' AS INTEGER) = result.id "
+            "AND result.monitor_config_id IS NOT NULL"
+        )
+    )
+
+
 async def _ensure_insight_data_source_hierarchy_columns(conn):
     """补齐 Insight 执行源分层归属字段，兼容旧数据源。"""
     await conn.execute(text("ALTER TABLE insight_data_source ADD COLUMN IF NOT EXISTS channel_id INTEGER"))
@@ -328,6 +371,7 @@ async def _ensure_insight_crawler_channel_values(conn):
     """补齐 Insight 采集通道枚举的新增值。"""
     await conn.execute(text("ALTER TYPE insightcrawlerchannel ADD VALUE IF NOT EXISTS 'BAIDU_NEWS'"))
     await conn.execute(text("ALTER TYPE insightcrawlerchannel ADD VALUE IF NOT EXISTS 'BOCHA_NEWS'"))
+    await conn.execute(text("ALTER TYPE insightcrawlerchannel ADD VALUE IF NOT EXISTS 'DOUBAO_WEB_SEARCH'"))
 
 
 async def _ensure_insight_company_columns(conn):
@@ -535,6 +579,50 @@ async def _seed_model_configs():
             await session.commit()
             logger.info(f"已初始化 {len(models)} 个模型配置")
 
+        turbo_model = (
+            await session.exec(
+                select(SysModel).where(
+                    SysModel.model_code == "doubao-seed-2-1-turbo-260628",
+                    SysModel.is_deleted == 0,
+                )
+            )
+        ).first()
+        if turbo_model:
+            return
+        volc_chat = (
+            await session.exec(
+                select(SysModel)
+                .where(
+                    SysModel.provider == "volcengine",
+                    SysModel.model_type == "chat",
+                    SysModel.is_deleted == 0,
+                    SysModel.is_enabled,
+                )
+                .order_by(SysModel.model_level, SysModel.priority)
+            )
+        ).first()
+        if not volc_chat:
+            return
+        session.add(
+            SysModel(
+                model_name="doubao-seed-2-1-turbo",
+                model_code="doubao-seed-2-1-turbo-260628",
+                provider="volcengine",
+                api_key=volc_chat.api_key,
+                base_url=volc_chat.base_url,
+                model_level=2,
+                model_type="chat",
+                capability="general",
+                max_tokens=4096,
+                default_temperature=0.0,
+                priority=6,
+                is_enabled=True,
+                comment="Insight 豆包联网搜索默认模型，复用已配置火山方舟连接。",
+            )
+        )
+        await session.commit()
+        logger.info("已补齐 Insight 豆包联网搜索模型配置：doubao-seed-2-1-turbo-260628")
+
 
 async def _seed_embedding_model_configs():
     """基于现有火山引擎 Key 补齐 Insight 可用的向量模型配置。"""
@@ -663,3 +751,12 @@ async def _seed_insight_default_tags():
             await session.commit()
         if created_categories:
             logger.info(f"已补齐 Insight 默认标签分类 {created_categories} 个")
+
+
+async def _seed_insight_default_roles():
+    """补齐 Insight 专用角色，避免复用平台通用角色造成权限混乱。"""
+    from app.db.session import async_session
+    from app.services.agent.insight.role_service import insight_role_service
+
+    async with async_session() as session:
+        await insight_role_service.seed_defaults(session)

@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 from hashlib import sha256
-from re import search, sub
+from re import Match, finditer, search, sub
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -163,32 +163,116 @@ class InsightContentCleaner:
             return None
         text = value.strip()
 
+        leading_relative = self._parse_leading_relative_datetime(text)
+        if leading_relative:
+            return leading_relative
+
+        news_message_time = self._parse_news_message_datetime(text)
+        if news_message_time:
+            return news_message_time
+
+        absolute_patterns = (
+            r"(?<![\d.])(?P<year>20\d{2})[-/.年](?P<month>1[0-2]|0?[1-9])[-/.月](?P<day>3[01]|[12]\d|0?[1-9])(?:日)?(?![\d.])(?:\s+(?P<hour>[01]?\d|2[0-3]):(?P<minute>[0-5]\d))?",
+            r"(?<![\d.])(?P<month>1[0-2]|0?[1-9])[-/.月](?P<day>3[01]|[12]\d|0?[1-9])(?:日)?(?![\d.])(?:\s+(?P<hour>[01]?\d|2[0-3]):(?P<minute>[0-5]\d))?",
+        )
+        for pattern in absolute_patterns:
+            for match in finditer(pattern, text):
+                if self._is_event_date_context(text, match):
+                    continue
+                parsed = self._build_datetime_from_match(match)
+                if parsed:
+                    return parsed
+
         relative = self._parse_relative_datetime(text)
         if relative:
             return relative
+        return None
 
-        absolute_patterns = (
-            r"(?P<year>20\d{2})[-/.年](?P<month>1[0-2]|0?[1-9])[-/.月](?P<day>3[01]|[12]\d|0?[1-9])(?:日)?(?:\s+(?P<hour>[01]?\d|2[0-3]):(?P<minute>[0-5]\d))?",
-            r"(?P<month>1[0-2]|0?[1-9])[-/.月](?P<day>3[01]|[12]\d|0?[1-9])(?:日)?(?:\s+(?P<hour>[01]?\d|2[0-3]):(?P<minute>[0-5]\d))?",
+    def _build_datetime_from_match(self, match: Match[str]) -> datetime | None:
+        now = datetime.now()
+        groupdict = match.groupdict()
+        year = int(groupdict.get("year") or now.year)
+        month = int(match.group("month"))
+        day = int(match.group("day"))
+        hour = int(groupdict.get("hour") or 0)
+        minute = int(groupdict.get("minute") or 0)
+        try:
+            parsed = datetime(year, month, day, hour, minute)
+        except ValueError:
+            return None
+        if parsed > now + timedelta(days=2):
+            if groupdict.get("year"):
+                return None
+            try:
+                parsed = parsed.replace(year=year - 1)
+            except ValueError:
+                return None
+        return parsed
+
+    def _parse_leading_relative_datetime(self, text: str) -> datetime | None:
+        head = text[:40]
+        if search(r"^\s*(刚刚|今天|昨天|前天|大前天|\d+\s*(?:分钟|小时|天|日|周|个月|月)前)", head):
+            return self._parse_relative_datetime(head)
+        return None
+
+    def _parse_news_message_datetime(self, text: str) -> datetime | None:
+        head = text[:120]
+        patterns = (
+            r"(?P<month>1[0-2]|0?[1-9])月(?P<day>3[01]|[12]\d|0?[1-9])日?\s*(?:消息|电|讯|报道)",
+            r"(?P<month>1[0-2]|0?[1-9])[-/.](?P<day>3[01]|[12]\d|0?[1-9])\s*(?:消息|电|讯|报道)",
         )
-        for pattern in absolute_patterns:
-            match = search(pattern, text)
+        for pattern in patterns:
+            match = search(pattern, head)
             if not match:
                 continue
             now = datetime.now()
-            year = int(match.groupdict().get("year") or now.year)
-            month = int(match.group("month"))
-            day = int(match.group("day"))
-            hour = int(match.groupdict().get("hour") or 0)
-            minute = int(match.groupdict().get("minute") or 0)
             try:
-                parsed = datetime(year, month, day, hour, minute)
+                parsed = datetime(now.year, int(match.group("month")), int(match.group("day")))
             except ValueError:
                 continue
-            if parsed > now + timedelta(days=2) and "year" not in match.groupdict():
-                parsed = parsed.replace(year=year - 1)
+            if parsed > now + timedelta(days=2):
+                try:
+                    parsed = parsed.replace(year=now.year - 1)
+                except ValueError:
+                    continue
             return parsed
         return None
+
+    def _is_event_date_context(self, text: str, match: Match[str]) -> bool:
+        start = max(0, match.start() - 24)
+        end = min(len(text), match.end() + 24)
+        context = text[start:end]
+        event_keywords = (
+            "股权登记日",
+            "除权除息日",
+            "现金红利发放日",
+            "申请公布日期",
+            "授权公告日",
+            "授权公告日期",
+            "申请日期",
+            "公告日",
+            "上市日期",
+            "成立日期",
+            "登记日期",
+            "申购日期",
+            "缴款日",
+            "截止",
+            "截至",
+            "报告期",
+            "财年",
+            "全年",
+            "上半年",
+            "下半年",
+            "举办时间",
+            "开幕时间",
+            "召开时间",
+            "为期",
+        )
+        if any(keyword in context for keyword in event_keywords):
+            return True
+        if match.start() > 80 and search(r"(?:日消息|电|讯|报道)", text[: match.start()]):
+            return True
+        return False
 
     def _parse_relative_datetime(self, text: str) -> datetime | None:
         relative_match = search(r"(?P<num>\d+)\s*(?P<unit>分钟|小时|天|日|周|个月|月)前", text)
@@ -200,11 +284,22 @@ class InsightContentCleaner:
             if unit == "小时":
                 return datetime.now() - timedelta(hours=number)
             if unit in {"天", "日"}:
-                return datetime.now() - timedelta(days=number)
+                base = datetime.now() - timedelta(days=number)
+                return base.replace(hour=0, minute=0, second=0, microsecond=0)
             if unit == "周":
-                return datetime.now() - timedelta(days=number * 7)
+                base = datetime.now() - timedelta(days=number * 7)
+                return base.replace(hour=0, minute=0, second=0, microsecond=0)
             if unit in {"个月", "月"}:
-                return datetime.now() - timedelta(days=number * 30)
+                base = datetime.now() - timedelta(days=number * 30)
+                return base.replace(hour=0, minute=0, second=0, microsecond=0)
+        relative_day_offsets = {"大前天": 3, "前天": 2}
+        for keyword, offset in relative_day_offsets.items():
+            if keyword in text:
+                base = datetime.now() - timedelta(days=offset)
+                time_match = search(r"(?P<hour>[01]?\d|2[0-3]):(?P<minute>[0-5]\d)", text)
+                if time_match:
+                    return base.replace(hour=int(time_match.group("hour")), minute=int(time_match.group("minute")), second=0, microsecond=0)
+                return base.replace(hour=0, minute=0, second=0, microsecond=0)
         if "刚刚" in text:
             return datetime.now()
         if "今天" in text:

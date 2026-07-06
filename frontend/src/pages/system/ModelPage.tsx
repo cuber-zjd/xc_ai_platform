@@ -86,6 +86,7 @@ const CAPABILITY_MAP: Record<string, string> = {
 
 const MODEL_TYPE_OPTIONS = [
     { value: "chat", label: "对话模型" },
+    { value: "vision", label: "视觉模型" },
     { value: "embedding", label: "向量模型" },
     { value: "rerank", label: "重排模型" },
 ];
@@ -121,6 +122,7 @@ interface ModelFormState {
     model_level: string;
     model_type: string;
     capability: string;
+    is_multimodal: string;
     max_tokens: string;
     default_temperature: string;
     priority: string;
@@ -138,6 +140,7 @@ const DEFAULT_FORM_STATE: ModelFormState = {
     model_level: "3",
     model_type: "chat",
     capability: "general",
+    is_multimodal: "false",
     max_tokens: "4096",
     default_temperature: "0",
     priority: "100",
@@ -277,6 +280,7 @@ export default function ModelPage() {
                             <TableHead>级别</TableHead>
                             <TableHead>能力</TableHead>
                             <TableHead>类型</TableHead>
+                            <TableHead>多模态</TableHead>
                             <TableHead>优先级</TableHead>
                             <TableHead>API Key</TableHead>
                             <TableHead>状态</TableHead>
@@ -286,13 +290,13 @@ export default function ModelPage() {
                     <TableBody>
                         {isLoading ? (
                             <TableRow>
-                                <TableCell colSpan={9} className="h-28 text-center">
+                                <TableCell colSpan={10} className="h-28 text-center">
                                     <Loader2 className="mx-auto h-6 w-6 animate-spin" />
                                 </TableCell>
                             </TableRow>
                         ) : !models?.length ? (
                             <TableRow>
-                                <TableCell colSpan={9} className="h-28 text-center text-muted-foreground">
+                                <TableCell colSpan={10} className="h-28 text-center text-muted-foreground">
                                     还没有模型配置，点击右上角“新增模型”开始创建。
                                 </TableCell>
                             </TableRow>
@@ -319,6 +323,15 @@ export default function ModelPage() {
                                         </TableCell>
                                         <TableCell>{CAPABILITY_MAP[model.capability ?? "general"] ?? (model.capability || "-")}</TableCell>
                                         <TableCell>{MODEL_TYPE_OPTIONS.find((item) => item.value === model.model_type)?.label ?? model.model_type}</TableCell>
+                                        <TableCell>
+                                            {model.is_multimodal ? (
+                                                <Badge variant="outline" className="border-teal-200 bg-teal-50 text-teal-700">
+                                                    支持图片
+                                                </Badge>
+                                            ) : (
+                                                <span className="text-sm text-muted-foreground">仅文本</span>
+                                            )}
+                                        </TableCell>
                                         <TableCell>{model.priority}</TableCell>
                                         <TableCell>
                                             <code className="rounded bg-zinc-100 px-2 py-1 text-xs dark:bg-zinc-800">
@@ -632,6 +645,21 @@ function ModelDialog({
                             </Select>
                         </Field>
 
+                        <Field label="多模态能力" htmlFor="is_multimodal">
+                            <Select
+                                value={formState.is_multimodal}
+                                onValueChange={(value) => setFormState((prev) => ({ ...prev, is_multimodal: value }))}
+                            >
+                                <SelectTrigger id="is_multimodal">
+                                    <SelectValue placeholder="请选择是否支持图片" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="true">支持图片 / 多模态</SelectItem>
+                                    <SelectItem value="false">仅文本</SelectItem>
+                                </SelectContent>
+                            </Select>
+                        </Field>
+
                         <Field label="最大 Token" htmlFor="max_tokens">
                             <Input
                                 id="max_tokens"
@@ -747,6 +775,7 @@ function mapModelToFormState(model: ModelConfig): ModelFormState {
         model_level: String(model.model_level),
         model_type: model.model_type,
         capability: model.capability ?? "general",
+        is_multimodal: String(Boolean(model.is_multimodal)),
         max_tokens: model.max_tokens ? String(model.max_tokens) : "",
         default_temperature: String(model.default_temperature ?? 0),
         priority: String(model.priority),
@@ -765,6 +794,7 @@ function buildPayload(formState: ModelFormState, isEdit: boolean): ModelCreatePa
         model_level: Number(formState.model_level),
         model_type: formState.model_type,
         capability: formState.capability,
+        is_multimodal: formState.is_multimodal === "true",
         max_tokens: formState.max_tokens ? Number(formState.max_tokens) : undefined,
         default_temperature: formState.default_temperature ? Number(formState.default_temperature) : 0,
         priority: formState.priority ? Number(formState.priority) : 100,

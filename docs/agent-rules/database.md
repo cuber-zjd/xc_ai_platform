@@ -60,6 +60,8 @@
 - FineReport 报表数据集预览使用 `fr_report_database_driver` 保存平台级数据库驱动字典，驱动不按用户隔离；当前种子数据包含 `sqlserver` 和 `mysql8`。
 - FineReport 报表数据库连接使用 `fr_report_database_connection` 保存用户级连接信息，连接引用平台级 `driver_key`，用于数据集预览和后续 AI SQL/报表调整。
 - FineReport 报表版本控制使用 `fr_report_project`、`fr_report_structure_version`、`fr_report_file_version` 和 `fr_report_external_change_log`：平台结构版本和真实 CPT 文件版本分开保存，文件版本需记录当前对象路径、版本库归档路径、hash、ETag、lastModified、manifest 和回档状态。
+- FineReport 案例库使用 `fr_report_case_sample_job`、`fr_report_case` 和 `fr_report_case_chunk`：任务表记录样本报表扫描与自发现进度，案例表记录来源报表、可复用场景、截图和质量状态，切片表记录关键 XML/结构片段、关键词和可选向量。案例数量不预设，由样本报表逐个分析结果自然产生。
+- 模型配置表 `sys_model` 使用 `is_multimodal` 标记是否支持图片等多模态输入；小驰图片附件解析和外部图片抽取只能选择该字段为 `true` 的 chat/vision 模型，老库启动时通过 `ADD COLUMN IF NOT EXISTS` 自动补列。
 - 生产环境禁止依赖手动改表。
 - 如果后续引入 Alembic，表结构变化必须生成迁移脚本。
 - 种子数据放在 `backend/app/db/init_db.py` 或明确的脚本中，并保持幂等。

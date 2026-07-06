@@ -60,7 +60,7 @@ class Settings(BaseSettings):
     ONLYOFFICE_JWT_SECRET: str = "ai_platform_onlyoffice_secret"
 
     # FineReport
-    FINEREPORT_PREVIEW_BASE_URL: str = ""
+    FINEREPORT_PREVIEW_BASE_URL: str = "http://192.168.14.41:1080"
     FR_AI_FINEREPORT_DB_NAME: str = "XcTest"
     FR_AI_MINIO_ENDPOINT: str = "192.168.14.41:9000"
     FR_AI_MINIO_ACCESS_KEY: str = "minioadmin"

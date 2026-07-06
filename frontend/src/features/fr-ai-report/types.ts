@@ -255,11 +255,44 @@ export interface FrAiReportAgentChatPayload {
     files?: File[];
 }
 
+export interface FrAiReportAgentStreamPayload {
+    objectPath: string;
+    message: string;
+    selectedCell?: string | null;
+    selectedDataset?: string | null;
+    autonomyMode?: 'high' | 'balanced' | string;
+    context?: FrAiReportAgentContext | Record<string, unknown> | null;
+    file?: File | null;
+    files?: File[];
+}
+
 export interface FrAiReportAgentEvent {
     type: string;
     content?: string | null;
     toolName?: string | null;
     payload: Record<string, unknown>;
+}
+
+export interface FrAiReportAgentStreamEvent {
+    type: string;
+    content?: string;
+    summary?: string;
+    toolName?: string;
+    payload?: Record<string, unknown>;
+    status?: string;
+    assistantMessage?: string;
+    objectPath?: string;
+    snapshotId?: string;
+    previewUrl?: string;
+    reportId?: string;
+    fileVersionId?: string;
+    structureVersionId?: string;
+    versionNo?: number;
+    archiveObjectPath?: string;
+    warnings?: string[];
+    errors?: string[];
+    conflict?: Record<string, unknown> | null;
+    operationDraft?: FrReportAiOperationDraftResponse | null;
 }
 
 export interface FrAiReportAgentToolRead {
@@ -320,6 +353,90 @@ export interface FrAiReportAgentChatResponse {
     capabilities?: FrAiReportAgentCapabilitiesResponse | null;
     warnings: string[];
     errors: string[];
+}
+
+export interface FrReportCaseSampleBuildPayload {
+    sourcePrefix?: string;
+    sampleMin?: number;
+    sampleMax?: number;
+    includeScreenshot?: boolean;
+    previewSuccessOnly?: boolean;
+    useModelAnalysis?: boolean;
+}
+
+export interface FrReportCaseSampleJobRead {
+    jobId: string;
+    sourcePrefix: string;
+    sampleMin: number;
+    sampleMax: number;
+    includeScreenshot: boolean;
+    previewSuccessOnly: boolean;
+    useModelAnalysis: boolean;
+    status: string;
+    totalScanned: number;
+    selectedCount: number;
+    analyzedCount: number;
+    candidateCount: number;
+    caseCount: number;
+    failedCount: number;
+    currentObjectPath?: string | null;
+    summary: Record<string, unknown>;
+    selectedReports: Record<string, unknown>[];
+    warnings: string[];
+    errors: string[];
+    createTime?: string | null;
+    updateTime?: string | null;
+}
+
+export interface FrReportCaseChunkRead {
+    chunkId: string;
+    caseId: string;
+    sourceObjectPath: string;
+    chunkType: string;
+    title: string;
+    selector?: string | null;
+    content: string;
+    rawXml?: string | null;
+    tags: string[];
+    searchText: string;
+    status: string;
+}
+
+export interface FrReportCaseRead {
+    caseId: string;
+    sampleJobId?: string | null;
+    sourceObjectPath: string;
+    reportPath?: string | null;
+    reportName: string;
+    title: string;
+    scenario?: string | null;
+    reason?: string | null;
+    evidence: Record<string, unknown>;
+    structureSummary: Record<string, unknown>;
+    snippetRefs: Record<string, unknown>[];
+    tags: string[];
+    keywords: string[];
+    searchText: string;
+    qualityScore: number;
+    previewUrl?: string | null;
+    previewStatus?: string | null;
+    screenshotObjectPath?: string | null;
+    status: string;
+    createTime?: string | null;
+    updateTime?: string | null;
+    chunks: FrReportCaseChunkRead[];
+}
+
+export interface FrReportCaseSearchHit {
+    case: FrReportCaseRead;
+    score: number;
+    matchReason: string;
+}
+
+export interface FrReportCaseSearchResponse {
+    query: string;
+    hits: FrReportCaseSearchHit[];
+    generationMode: string;
 }
 
 export interface PreviewValidationResult {

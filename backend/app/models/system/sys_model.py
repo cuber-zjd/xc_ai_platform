@@ -45,6 +45,11 @@ class SysModelBase(SQLModel):
         default="general", index=True,
         description="能力标签：complex-reasoning / general / fast / code"
     )
+    is_multimodal: bool = Field(
+        default=False,
+        index=True,
+        description="是否支持多模态输入：支持图片等非文本内容时为 true",
+    )
 
     # 模型参数默认值
     max_tokens: Optional[int] = Field(

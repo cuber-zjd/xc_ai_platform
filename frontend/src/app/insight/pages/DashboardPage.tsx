@@ -1,6 +1,6 @@
 import type React from "react";
 import { Link } from "react-router-dom";
-import { Building2, Database, FileText, Flame } from "lucide-react";
+import { Building2, FileText, Flame, SlidersHorizontal } from "lucide-react";
 
 import { DemoCard, DemoTag, SectionHeader, StatCard } from "../components/DemoPrimitives";
 import { useInsightDashboard } from "../hooks";
@@ -18,7 +18,7 @@ export function DashboardPage() {
     const latestItems = dashboard?.latest_items ?? [];
     const focusItems = dashboard?.focus_items ?? [];
     const trend = dashboard?.trend ?? [];
-    const sourceDistribution = dashboard?.source_distribution ?? [];
+    const typeDistribution = dashboard?.source_distribution ?? [];
     const isDashboardLoading = dashboardQuery.isLoading && !dashboard;
 
     return (
@@ -37,11 +37,11 @@ export function DashboardPage() {
                     icon={<Building2 className="size-7" />}
                 />
                 <MetricCard
-                    metric={metricMap.get("data_sources")}
-                    fallbackLabel="数据源"
+                    metric={metricMap.get("monitor_configs")}
+                    fallbackLabel="监测配置"
                     tone="cyan"
                     loading={isDashboardLoading}
-                    icon={<Database className="size-7" />}
+                    icon={<SlidersHorizontal className="size-7" />}
                 />
                 <MetricCard
                     metric={metricMap.get("today_intelligence")}
@@ -67,17 +67,20 @@ export function DashboardPage() {
                 </DemoCard>
 
                 <DemoCard className="flex min-h-[18rem] min-w-0 flex-col p-4">
-                    <SectionHeader title="情报来源分布" action="可见范围" />
+                    <SectionHeader title="情报类型分布" action="当前可见" />
                     <div className="flex min-h-0 flex-1 items-center justify-center">
-                        <SourceDonut slices={sourceDistribution} />
+                        <TypeDonut slices={typeDistribution} />
                     </div>
                 </DemoCard>
 
                 <DemoCard className="flex min-h-[18rem] min-w-0 flex-col p-4 xl:col-span-2 2xl:col-span-1">
-                    <SectionHeader title="重点动态" action="按重要性" />
+                    <SectionHeader title="重点动态" action="重要性 + 时效" />
+                    <div className="mb-3 rounded-xl border border-blue-100 bg-blue-50 px-3 py-2 text-xs font-semibold leading-5 text-blue-800">
+                        从当前可见情报中，按重要性、发布时间和风险/机会信号综合排序。
+                    </div>
                     <div className="min-h-0 flex-1 overflow-auto">
                         {focusItems.length > 0 ? (
-                            <div className="space-y-4">
+                            <div className="space-y-3">
                                 {focusItems.map((item, index) => (
                                     <Link key={item.id} to={`/insight/intelligence/${item.id}`} className="flex items-start gap-3 rounded-xl p-2 transition hover:bg-blue-50/60">
                                         <span className={rankClass(index)}>{index + 1}</span>
@@ -86,6 +89,7 @@ export function DashboardPage() {
                                             <span className="mt-1 block text-xs text-slate-500">
                                                 {item.subject_name || formatInsightType(item.intelligence_type)} · {formatInsightDate(item.publish_time)}
                                             </span>
+                                            {item.reason ? <span className="mt-1 block line-clamp-2 text-xs font-semibold text-blue-700">{item.reason}</span> : null}
                                         </span>
                                     </Link>
                                 ))}
@@ -129,7 +133,7 @@ export function DashboardPage() {
                             {!dashboardQuery.isLoading && latestItems.length === 0 ? (
                                 <tr>
                                     <td colSpan={5} className="px-4 py-10 text-center text-sm font-semibold text-slate-500">
-                                        暂无可见情报，先到数据源配置发起一次采集。
+                                        暂无可见情报，先到监测配置发起采集，或在情报中心导入正式情报。
                                     </td>
                                 </tr>
                             ) : null}
@@ -212,9 +216,9 @@ function TrendChart({ points }: { points: InsightDashboardTrendPoint[] }) {
     );
 }
 
-function SourceDonut({ slices }: { slices: InsightDashboardSourceSlice[] }) {
+function TypeDonut({ slices }: { slices: InsightDashboardSourceSlice[] }) {
     if (slices.length === 0) {
-        return <EmptyHint text="暂无来源分布数据" />;
+        return <EmptyHint text="暂无类型分布数据" />;
     }
     const total = slices.reduce((sum, item) => sum + item.count, 0);
     const gradient = slices
@@ -238,7 +242,7 @@ function SourceDonut({ slices }: { slices: InsightDashboardSourceSlice[] }) {
                 <div className="absolute inset-6 flex flex-col items-center justify-center rounded-full bg-white text-center shadow-inner">
                     <span className="text-sm text-slate-600">合计</span>
                     <strong className="text-3xl font-black text-slate-950">{total}</strong>
-                    <span className="text-sm text-slate-600">条来源</span>
+                    <span className="text-sm text-slate-600">条情报</span>
                 </div>
             </div>
             <div className="w-full space-y-3 text-sm sm:w-auto">
@@ -293,7 +297,15 @@ function normalizeTags(value: InsightIntelligenceListItem["suggested_tags"]): st
     if (!Array.isArray(value)) {
         return [];
     }
-    return value.map((item) => item.name).filter((name): name is string => Boolean(name));
+    const blockedNames = new Set(["baidu_news", "bocha", "bocha_news", "doubao_web_search", "AI自动评审", "AI搜索初筛", "AI分析", "搜索发现", "搜索命中"]);
+    const blockedSources = new Set(["search_channel", "ai_review", "llm_analysis", "quality_rule", "smoke"]);
+    return value
+        .filter((item) => !blockedSources.has(String(item.source || "")))
+        .map((item) => item.name)
+        .filter((name): name is string => {
+            if (!name) return false;
+            return !blockedNames.has(name);
+        });
 }
 
 function formatDelta(value: number) {

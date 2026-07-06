@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote, urlencode, urljoin, urlparse
 from uuid import uuid4
 
 import httpx
@@ -8,8 +8,8 @@ from sqlmodel import func, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.config import settings
-from app.models.agent.insight import InsightNotification
-from app.models.system.sys_role import SysUserRole
+from app.models.agent.insight import InsightNotification, InsightRoleMember
+from app.models.system.sys_dept import SysDept
 from app.models.system.sys_user import SysUser
 from app.schemas.agent.insight.notification import InsightNotificationCreate, InsightNotificationRead, InsightNotificationRecipient
 from app.schemas.page import Page
@@ -212,13 +212,30 @@ class InsightNotificationService:
                 else:
                     missing.append(str(item.get("recipient_name") or item.get("recipient_id") or "user"))
             elif recipient_type == "dept":
+                dept_values = self._dept_lookup_values(item)
+                if not dept_values:
+                    missing.append("dept")
+                    continue
+                dept_filters = [
+                    SysDept.is_deleted == 0,
+                    or_(
+                        SysDept.id.in_([int(value) for value in dept_values if value.isdigit()]),
+                        SysDept.sync_id.in_(dept_values),
+                        SysDept.name.in_(dept_values),
+                    ),
+                ]
+                depts = list((await db.exec(select(SysDept).where(*dept_filters))).all())
+                resolved_dept_ids = {str(dept.id) for dept in depts if dept.id is not None}
+                resolved_dept_ids.update(str(dept.sync_id) for dept in depts if dept.sync_id)
+                if not resolved_dept_ids:
+                    resolved_dept_ids.update(dept_values)
                 users = list(
                     (
                         await db.exec(
                             select(SysUser).where(
                                 SysUser.is_deleted == 0,
                                 SysUser.status == 1,
-                                SysUser.dept_id == str(item.get("recipient_id") or item.get("recipient_name") or ""),
+                                SysUser.dept_id.in_(resolved_dept_ids),
                             )
                         )
                     ).all()
@@ -233,12 +250,13 @@ class InsightNotificationService:
                     (
                         await db.exec(
                             select(SysUser)
-                            .join(SysUserRole, SysUserRole.user_id == SysUser.id)
+                            .join(InsightRoleMember, InsightRoleMember.user_id == SysUser.id)
                             .where(
                                 SysUser.is_deleted == 0,
                                 SysUser.status == 1,
-                                SysUserRole.is_deleted == 0,
-                                SysUserRole.role_id == int(role_id),
+                                InsightRoleMember.is_deleted == 0,
+                                InsightRoleMember.status == "active",
+                                InsightRoleMember.role_id == int(role_id),
                             )
                         )
                     ).all()
@@ -288,6 +306,14 @@ class InsightNotificationService:
         if user and user.is_deleted == 0 and user.status == 1:
             return user.employee_id or user.username
         return next((value for value in lookup_values if value), None)
+
+    def _dept_lookup_values(self, item: dict) -> list[str]:
+        values: list[str] = []
+        for key in ("recipient_id", "recipient_name", "wecom_userid"):
+            value = item.get(key)
+            if value is not None and str(value).strip():
+                values.append(str(value).strip())
+        return list(dict.fromkeys(values))
 
     def _collect_employee_ids(self, users: list[SysUser], userids: set[str], missing: list[str], label: str) -> None:
         if not users:
@@ -367,7 +393,9 @@ class InsightNotificationService:
         base_url = settings.INSIGHT_PUBLIC_BASE_URL.strip()
         if not base_url:
             return ""
-        return urljoin(f"{base_url.rstrip('/')}/", target_url.lstrip("/"))
+        front_target = f"/ai{target_url}" if target_url.startswith("/insight") else target_url
+        query = urlencode({"target_path": front_target}, quote_via=quote)
+        return urljoin(f"{base_url.rstrip('/')}/", f"ai-api/v1/insight/wecom/oauth/authorize?{query}")
 
     async def _get_wecom_access_token(self) -> str:
         if self._access_token and self._access_token_expire_at and self._access_token_expire_at > datetime.now():

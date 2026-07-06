@@ -12,6 +12,7 @@ from app.schemas.agent.insight.monitor_config import (
     InsightMonitorConfigUpdate,
 )
 from app.schemas.page import Page
+from app.services.agent.insight.permission_service import insight_permission_service
 
 
 class InsightMonitorConfigService:
@@ -39,9 +40,12 @@ class InsightMonitorConfigService:
         filters = [InsightMonitorConfig.is_deleted == 0]
         if not is_admin:
             filters.append(
-                or_(
-                    InsightMonitorConfig.owner_user_id == user_id,
-                    InsightMonitorConfig.visibility_scope == "public",
+                await insight_permission_service.visibility_filter_for_user(
+                    db,
+                    InsightMonitorConfig,
+                    target_type="monitor_config",
+                    user_id=user_id,
+                    is_admin=is_admin,
                 )
             )
         if keyword:
@@ -128,7 +132,7 @@ class InsightMonitorConfigService:
         is_admin: bool = False,
     ) -> InsightMonitorConfigRead:
         row = await self._get_config(db, config_id)
-        self._ensure_can_modify(row, user_id=user_id, is_admin=is_admin)
+        await self._ensure_can_modify(db, row, user_id=user_id, is_admin=is_admin)
         data = payload.model_dump(exclude_unset=True)
         merged = {
             "monitor_type": data.get("monitor_type", row.monitor_type),
@@ -158,7 +162,7 @@ class InsightMonitorConfigService:
 
     async def delete_config(self, db: AsyncSession, config_id: int, user_id: int | None, is_admin: bool = False) -> None:
         row = await self._get_config(db, config_id)
-        self._ensure_can_modify(row, user_id=user_id, is_admin=is_admin)
+        await self._ensure_can_modify(db, row, user_id=user_id, is_admin=is_admin)
         row.is_deleted = 1
         row.status = "disabled"
         row.schedule_enabled = False
@@ -180,8 +184,27 @@ class InsightMonitorConfigService:
             raise ValueError("监测配置不存在")
         return row
 
-    def _ensure_can_modify(self, row: InsightMonitorConfig, *, user_id: int | None, is_admin: bool) -> None:
+    async def _ensure_can_modify(self, db: AsyncSession, row: InsightMonitorConfig, *, user_id: int | None, is_admin: bool) -> None:
         if is_admin or (user_id is not None and row.owner_user_id == user_id):
+            return
+        edit_filter = await insight_permission_service.visibility_filter_for_user(
+            db,
+            InsightMonitorConfig,
+            target_type="monitor_config",
+            user_id=user_id,
+            is_admin=is_admin,
+            permission="edit",
+        )
+        allowed = (
+            await db.exec(
+                select(InsightMonitorConfig.id).where(
+                    InsightMonitorConfig.id == row.id,
+                    InsightMonitorConfig.is_deleted == 0,
+                    edit_filter,
+                )
+            )
+        ).first()
+        if allowed:
             return
         raise ValueError("只能维护自己创建的监测配置")
 

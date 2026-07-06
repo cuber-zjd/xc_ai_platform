@@ -22,6 +22,7 @@ class InsightIntelligence(BaseDBModel, table=True):
     summary: str | None = Field(default=None)
     content: str | None = Field(default=None)
     company_id: int | None = Field(default=None, foreign_key="insight_company.id", index=True)
+    monitor_config_id: int | None = Field(default=None, foreign_key="insight_monitor_config.id", index=True)
     subject_type: InsightSubjectType = Field(default=InsightSubjectType.COMPANY, index=True)
     subject_id: int | None = Field(default=None, index=True)
     subject_name: str | None = Field(default=None, index=True, max_length=200)

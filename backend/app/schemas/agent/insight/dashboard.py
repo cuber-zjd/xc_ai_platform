@@ -34,6 +34,7 @@ class InsightDashboardFocusItem(BaseModel):
     importance_level: str
     publish_time: datetime | None = None
     score: int = Field(default=0)
+    reason: str | None = None
 
 
 class InsightDashboardSummary(BaseModel):

@@ -23,6 +23,8 @@ class InsightAccessRuleRead(InsightBaseRead):
     target_id: int
     principal_type: str
     principal_id: int | None = None
+    principal_name: str | None = None
+    principal_code: str | None = None
     permission: str
     grant_type: str
     effective_from: datetime | None = None

@@ -221,12 +221,12 @@ class FrReportFileService:
 
     async def list_database_connections(self, db: AsyncSession, user_id: int) -> list[FrReportDatabaseConnectionRead]:
         statement = select(FrReportDatabaseConnection).where(
-            FrReportDatabaseConnection.user_id == user_id,
             FrReportDatabaseConnection.is_deleted == 0,
             FrReportDatabaseConnection.status == "active",
         )
         rows = (await db.exec(statement)).all()
         driver_map = await self._database_driver_map(db)
+        rows = self._dedupe_shared_connections(rows, user_id)
         return [self._to_connection_read(row, driver_map.get(row.driver_key)) for row in rows]
 
     async def list_database_drivers(self, db: AsyncSession) -> list[FrReportDatabaseDriverRead]:
@@ -254,12 +254,7 @@ class FrReportFileService:
         if driver is None:
             raise ValueError("未找到对应的数据库驱动，请先选择已支持的驱动")
 
-        statement = select(FrReportDatabaseConnection).where(
-            FrReportDatabaseConnection.user_id == user_id,
-            FrReportDatabaseConnection.connection_name == connection_name,
-            FrReportDatabaseConnection.is_deleted == 0,
-        )
-        row = (await db.exec(statement)).first()
+        row = await self._find_shared_database_connection_for_update(db, user_id, connection_name)
         if row is None:
             row = FrReportDatabaseConnection(
                 user_id=user_id,
@@ -388,12 +383,48 @@ class FrReportFileService:
         connection_name: str,
     ) -> FrReportDatabaseConnection | None:
         statement = select(FrReportDatabaseConnection).where(
-            FrReportDatabaseConnection.user_id == user_id,
             FrReportDatabaseConnection.connection_name == connection_name.strip(),
             FrReportDatabaseConnection.is_deleted == 0,
             FrReportDatabaseConnection.status == "active",
         )
-        return (await db.exec(statement)).first()
+        rows = list((await db.exec(statement)).all())
+        if not rows:
+            return None
+        return self._prefer_user_connection(rows, user_id)
+
+    async def _find_shared_database_connection_for_update(
+        self,
+        db: AsyncSession,
+        user_id: int,
+        connection_name: str,
+    ) -> FrReportDatabaseConnection | None:
+        statement = select(FrReportDatabaseConnection).where(
+            FrReportDatabaseConnection.connection_name == connection_name,
+            FrReportDatabaseConnection.is_deleted == 0,
+        )
+        rows = list((await db.exec(statement)).all())
+        if not rows:
+            return None
+        return self._prefer_user_connection(rows, user_id)
+
+    def _dedupe_shared_connections(
+        self,
+        rows: list[FrReportDatabaseConnection],
+        user_id: int,
+    ) -> list[FrReportDatabaseConnection]:
+        selected: dict[str, FrReportDatabaseConnection] = {}
+        for row in sorted(rows, key=lambda item: (item.connection_name.lower(), item.user_id != user_id, item.id)):
+            key = row.connection_name.strip().lower()
+            if key and key not in selected:
+                selected[key] = row
+        return list(selected.values())
+
+    def _prefer_user_connection(
+        self,
+        rows: list[FrReportDatabaseConnection],
+        user_id: int,
+    ) -> FrReportDatabaseConnection:
+        return sorted(rows, key=lambda item: (item.user_id != user_id, item.id))[0]
 
     async def _get_database_driver(self, db: AsyncSession, driver_key: str) -> FrReportDatabaseDriver | None:
         statement = select(FrReportDatabaseDriver).where(

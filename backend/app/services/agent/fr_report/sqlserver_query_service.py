@@ -179,6 +179,107 @@ class SqlServerQueryService:
             warnings.append("未识别到明确 JOIN 字段，请在需求中说明表关联关系，例如：订单.customer_id = 客户.id")
         return relation, warnings, errors
 
+    async def inspect_table_schema_with_config(
+        self,
+        table_name: str,
+        connection_config: dict[str, Any],
+    ) -> tuple[dict[str, Any] | None, list[str], list[str]]:
+        warnings: list[str] = []
+        errors: list[str] = []
+        try:
+            schema_name, pure_table_name = self._parse_table_name(table_name)
+        except ValueError as exc:
+            errors.append(str(exc))
+            return None, warnings, errors
+
+        try:
+            columns = await asyncio.to_thread(
+                self._query_table_columns_with_config,
+                schema_name,
+                pure_table_name,
+                connection_config,
+            )
+        except Exception as exc:
+            logger.warning(f"FineReport AI 表结构查询失败：{exc}")
+            errors.append(f"数据库表结构查询失败：{exc}")
+            return None, warnings, errors
+
+        if not columns:
+            errors.append(f"未查询到表结构：{table_name}")
+            return None, warnings, errors
+
+        matched_schemas = sorted({str(item["TABLE_SCHEMA"]) for item in columns})
+        if len(matched_schemas) > 1:
+            warnings.append(f"表名 {pure_table_name} 匹配到多个 schema，已使用 {matched_schemas[0]}")
+            columns = [item for item in columns if item["TABLE_SCHEMA"] == matched_schemas[0]]
+
+        resolved_schema = str(columns[0]["TABLE_SCHEMA"])
+        fields = [
+            {
+                "name": str(column["COLUMN_NAME"]),
+                "label": str(column["COLUMN_NAME"]),
+                "type": self._map_sqlserver_type(str(column["DATA_TYPE"])),
+                "role": self._infer_role(str(column["COLUMN_NAME"]), str(column["DATA_TYPE"])),
+                "nullable": str(column["IS_NULLABLE"]).upper() == "YES",
+                "sourceType": str(column["DATA_TYPE"]),
+            }
+            for column in columns
+        ]
+        return {
+            "tableName": f"{resolved_schema}.{pure_table_name}",
+            "dataSourceStatus": "provided",
+            "fields": fields,
+        }, warnings, errors
+
+    async def inspect_tables_schema_with_config(
+        self,
+        table_names: list[str],
+        connection_config: dict[str, Any],
+    ) -> tuple[dict[str, Any] | None, list[str], list[str]]:
+        warnings: list[str] = []
+        errors: list[str] = []
+        schemas: list[dict[str, Any]] = []
+        for table_name in table_names:
+            schema, table_warnings, table_errors = await self.inspect_table_schema_with_config(table_name, connection_config)
+            warnings.extend(table_warnings)
+            errors.extend(table_errors)
+            if schema:
+                schemas.append(schema)
+
+        if not schemas:
+            return None, warnings, errors
+        if len(schemas) == 1:
+            return schemas[0], warnings, errors
+
+        aliases = self._build_aliases(schemas)
+        relation = {
+            "tableName": "__join__",
+            "dataSourceStatus": "provided",
+            "tables": [
+                {
+                    "tableName": schema["tableName"],
+                    "alias": aliases[schema["tableName"]],
+                    "fields": schema["fields"],
+                }
+                for schema in schemas
+            ],
+            "fields": [
+                {
+                    **field,
+                    "name": f"{aliases[schema['tableName']]}__{field['name']}",
+                    "sourceField": field["name"],
+                    "sourceTable": schema["tableName"],
+                    "tableAlias": aliases[schema["tableName"]],
+                }
+                for schema in schemas
+                for field in schema["fields"]
+            ],
+            "joinHints": self._infer_join_hints(schemas, aliases),
+        }
+        if not relation["joinHints"]:
+            warnings.append("未识别到明确 JOIN 字段，请在需求中说明表关联关系，例如：订单.customer_id = 客户.id")
+        return relation, warnings, errors
+
     async def sample_data_model(self, data_model: Any, row_count: int = 5) -> dict[str, list[dict[str, Any]]]:
         if not settings.FR_AI_SQLSERVER_ENABLED or not self.is_configured:
             return {}
@@ -496,6 +597,49 @@ class SqlServerQueryService:
             columns = [item[0] for item in (cursor.description or [])]
             rows = cursor.fetchmany(max(1, min(max_rows, 100)))
             return [self._normalize_row(row) for row in self._rows_to_dicts(cursor, rows)], columns
+        finally:
+            connection.close()
+
+    def _query_table_columns_with_config(
+        self,
+        schema_name: str | None,
+        table_name: str,
+        connection_config: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        connection = self._connect_with_config(connection_config)
+        db_type = str(connection_config.get("db_type") or "sqlserver").lower()
+        try:
+            cursor = connection.cursor()
+            if db_type == "mysql":
+                database = str(connection_config.get("database") or "")
+                cursor.execute(
+                    """
+                    SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, DATA_TYPE, IS_NULLABLE, ORDINAL_POSITION
+                    FROM INFORMATION_SCHEMA.COLUMNS
+                    WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s
+                    ORDER BY ORDINAL_POSITION
+                    """,
+                    (schema_name or database, table_name),
+                )
+            elif schema_name:
+                cursor.execute(
+                    f"""
+                    SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, DATA_TYPE, IS_NULLABLE, ORDINAL_POSITION
+                    FROM INFORMATION_SCHEMA.COLUMNS
+                    WHERE TABLE_SCHEMA = '{schema_name}' AND TABLE_NAME = '{table_name}'
+                    ORDER BY ORDINAL_POSITION
+                    """
+                )
+            else:
+                cursor.execute(
+                    f"""
+                    SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, DATA_TYPE, IS_NULLABLE, ORDINAL_POSITION
+                    FROM INFORMATION_SCHEMA.COLUMNS
+                    WHERE TABLE_NAME = '{table_name}'
+                    ORDER BY TABLE_SCHEMA, ORDINAL_POSITION
+                    """
+                )
+            return self._rows_to_dicts(cursor)
         finally:
             connection.close()
 

@@ -14,7 +14,10 @@ from app.models.agent.insight import (
     InsightIntelligence,
     InsightIntelligenceCandidate,
     InsightIntelligenceSource,
+    InsightMonitorConfig,
     InsightReviewRecord,
+    InsightTag,
+    InsightIntelligenceTag,
     InsightTask,
     InsightUserIntelligencePool,
     InsightVisibilityRule,
@@ -37,6 +40,8 @@ from app.schemas.agent.insight.intelligence import (
     InsightIntelligenceCandidateRead,
     InsightIntelligenceCreate,
     InsightIntelligenceDetail,
+    InsightIntelligenceImportConfirmRequest,
+    InsightIntelligenceImportConfirmResponse,
     InsightIntelligenceListItem,
     InsightIntelligenceRead,
     InsightIntelligenceSourceCreate,
@@ -76,6 +81,7 @@ class InsightIntelligenceService:
         "bocha_search",
         "bocha_news",
         "bocha_web",
+        "doubao_web_search",
         "firecrawl",
         "generic_web",
         "manual_url",
@@ -101,7 +107,7 @@ class InsightIntelligenceService:
         week_focus_count = self._count_focus_items(visible_items, week_start, today)
         previous_week_focus_count = self._count_focus_items(visible_items, previous_week_start, week_start - timedelta(days=1))
         company_count = await self._count_dashboard_companies(db, user_id=user_id, is_admin=is_admin)
-        data_source_count = await self._count_dashboard_data_sources(db)
+        monitor_config_count = await self._count_dashboard_monitor_configs(db, user_id=user_id, is_admin=is_admin)
 
         latest_items = await self._list_dashboard_latest_items(db, visible_ids, limit=8)
         focus_items = self._build_focus_items(visible_items, limit=5)
@@ -124,10 +130,10 @@ class InsightIntelligenceService:
                     delta=0,
                 ),
                 InsightDashboardMetric(
-                    key="data_sources",
-                    label="数据源",
-                    value=data_source_count,
-                    compare_label="已启用",
+                    key="monitor_configs",
+                    label="监测配置",
+                    value=monitor_config_count,
+                    compare_label="当前可见",
                     delta=0,
                 ),
                 InsightDashboardMetric(
@@ -193,7 +199,13 @@ class InsightIntelligenceService:
             review_time=datetime.now(),
             visibility_scope=InsightVisibilityScope(payload.visibility_scope),
             owner_user_id=user_id,
-            raw_payload={"suggested_tags": payload.suggested_tags or [], "manual": True},
+            raw_payload=self._merge_intelligence_metadata(
+                {"suggested_tags": payload.suggested_tags or [], "manual": True},
+                category_code=payload.category_code,
+                tag_codes=payload.tag_codes,
+                selection_reason=payload.selection_reason,
+                business_insight=payload.business_insight,
+            ),
             status="active",
             create_by=str(user_id) if user_id else None,
             update_by=str(user_id) if user_id else None,
@@ -217,6 +229,7 @@ class InsightIntelligenceService:
         await db.commit()
         await db.refresh(intelligence)
         sources = [source] if source else []
+        await self._sync_intelligence_tags(db, intelligence.id or 0, payload.tag_codes, source="manual")
         from app.services.agent.insight.asset_service import insight_asset_service
 
         await insight_asset_service.upsert_intelligence_asset(db, intelligence, sources)
@@ -244,6 +257,10 @@ class InsightIntelligenceService:
                 is_admin=is_admin,
             )
         suggested_tags = data.pop("suggested_tags", None)
+        category_code = data.pop("category_code", None)
+        tag_codes = data.pop("tag_codes", None)
+        selection_reason = data.pop("selection_reason", None)
+        business_insight = data.pop("business_insight", None)
         if "subject_type" in data and data["subject_type"] is not None:
             data["subject_type"] = InsightSubjectType(data["subject_type"])
         if "visibility_scope" in data and data["visibility_scope"] is not None:
@@ -254,6 +271,14 @@ class InsightIntelligenceService:
             raw_payload = intelligence.raw_payload or {}
             raw_payload["suggested_tags"] = suggested_tags
             intelligence.raw_payload = raw_payload
+        if category_code is not None or tag_codes is not None or selection_reason is not None or business_insight is not None:
+            intelligence.raw_payload = self._merge_intelligence_metadata(
+                intelligence.raw_payload or {},
+                category_code=category_code,
+                tag_codes=tag_codes,
+                selection_reason=selection_reason,
+                business_insight=business_insight,
+            )
         intelligence.update_time = datetime.now()
         intelligence.update_by = str(user_id) if user_id else None
         self._add_review_record(
@@ -269,11 +294,67 @@ class InsightIntelligenceService:
         await db.commit()
         await db.refresh(intelligence)
         sources = await self._list_sources(db, intelligence_id)
+        if tag_codes is not None:
+            await self._sync_intelligence_tags(db, intelligence.id or 0, tag_codes, source="manual")
         from app.services.agent.insight.asset_service import insight_asset_service
 
         await insight_asset_service.upsert_intelligence_asset(db, intelligence, sources)
         await db.commit()
         return self._to_intelligence_detail(intelligence, sources)
+
+    async def import_confirm(
+        self,
+        db: AsyncSession,
+        payload: InsightIntelligenceImportConfirmRequest,
+        *,
+        user_id: int | None,
+    ) -> InsightIntelligenceImportConfirmResponse:
+        created: list[InsightIntelligenceRead] = []
+        skipped_count = 0
+        for item in payload.items:
+            if not item.title.strip():
+                skipped_count += 1
+                continue
+            detail = await self.create_intelligence(
+                db,
+                InsightIntelligenceCreate(
+                    title=item.title.strip(),
+                    summary=item.summary,
+                    content=item.content,
+                    company_id=item.company_id,
+                    subject_type=item.subject_type or "custom",
+                    subject_name=item.subject_name,
+                    intelligence_type=item.intelligence_type or "行业资讯",
+                    importance_level=item.importance_level or "medium",
+                    publish_time=item.publish_time,
+                    visibility_scope=payload.visibility_scope,
+                    category_code=item.category_code,
+                    tag_codes=item.tag_codes,
+                    selection_reason=item.selection_reason,
+                    business_insight=item.business_insight,
+                    suggested_tags=[
+                        {"name": name, "code": code, "source": "controlled_dictionary"}
+                        for code, name in zip(item.tag_codes, item.tag_names, strict=False)
+                    ],
+                    source=InsightIntelligenceSourceCreate(
+                        source_type="file_import",
+                        source_title=item.source_title or payload.file_name or item.title[:200],
+                        source_url=item.source_url,
+                        source_publish_time=item.publish_time,
+                        content_excerpt=item.summary or (item.content[:500] if item.content else None),
+                        credibility_score=0.75,
+                        source_metadata={"file_name": payload.file_name, "imported_by_ai": True},
+                    ),
+                ),
+                user_id,
+            )
+            created.append(InsightIntelligenceRead.model_validate(detail.model_dump()))
+        return InsightIntelligenceImportConfirmResponse(
+            created_count=len(created),
+            skipped_count=skipped_count,
+            intelligence_ids=[item.id for item in created if item.id],
+            items=created,
+        )
 
     async def add_source(
         self,
@@ -324,6 +405,8 @@ class InsightIntelligenceService:
         sys_company_id: int | None = None,
         project_name: str | None = None,
         sentiment: str | None = None,
+        category_code: str | None = None,
+        importance_level: str | None = None,
         tag: str | None = None,
         data_source_id: int | None = None,
         date_from: datetime | None = None,
@@ -355,12 +438,16 @@ class InsightIntelligenceService:
             filters.append(InsightIntelligence.data_source_id == data_source_id)
         if sentiment:
             filters.append(InsightIntelligence.sentiment == sentiment)
+        if importance_level:
+            filters.append(InsightIntelligence.importance_level == importance_level)
         if date_from:
             filters.append(InsightIntelligence.publish_time >= date_from)
         if date_to:
             filters.append(InsightIntelligence.publish_time <= date_to)
         if project_name:
             filters.append(cast(InsightIntelligence.raw_payload, String).ilike(f"%{project_name.strip()}%"))
+        if category_code:
+            filters.append(cast(InsightIntelligence.raw_payload, String).ilike(f"%\"category_code\": \"{category_code.strip()}\"%"))
         if tag:
             filters.append(cast(InsightIntelligence.raw_payload, String).ilike(f"%{tag.strip()}%"))
         if sys_company_id:
@@ -371,13 +458,18 @@ class InsightIntelligenceService:
                 .where(InsightCompany.is_deleted == 0)
             )
         if not is_admin:
-            filters.append(await self._company_isolation_filter(db, user_id=user_id, is_admin=is_admin))
             filters.append(
                 or_(
                     await insight_permission_service.visibility_filter_for_user(
                         db,
                         InsightIntelligence,
                         target_type="intelligence",
+                        user_id=user_id,
+                        is_admin=is_admin,
+                    ),
+                    await insight_permission_service.inherited_intelligence_filter_for_user(
+                        db,
+                        InsightIntelligence,
                         user_id=user_id,
                         is_admin=is_admin,
                     ),
@@ -403,8 +495,9 @@ class InsightIntelligenceService:
             db,
             [item.id for item in intelligences if item.id],
         )
+        tags_by_intelligence = await self._list_tags_by_intelligence_ids(db, [item.id for item in intelligences if item.id])
         items = [
-            self._to_intelligence_list_item(item, sources_by_intelligence.get(item.id or 0, []))
+            self._to_intelligence_list_item(item, sources_by_intelligence.get(item.id or 0, []), tags_by_intelligence.get(item.id or 0, []))
             for item in intelligences
         ]
         return Page.create(items=items, total=total, page=page, size=size)
@@ -559,13 +652,18 @@ class InsightIntelligenceService:
             InsightIntelligence.status == "active",
         ]
         if not is_admin:
-            filters.append(await self._company_isolation_filter(db, user_id=user_id, is_admin=is_admin))
             filters.append(
                 or_(
                     await insight_permission_service.visibility_filter_for_user(
                         db,
                         InsightIntelligence,
                         target_type="intelligence",
+                        user_id=user_id,
+                        is_admin=is_admin,
+                    ),
+                    await insight_permission_service.inherited_intelligence_filter_for_user(
+                        db,
+                        InsightIntelligence,
                         user_id=user_id,
                         is_admin=is_admin,
                     ),
@@ -580,7 +678,8 @@ class InsightIntelligenceService:
         if not intelligence:
             raise ValueError("正式情报不存在或无权访问")
         sources = await self._list_sources(db, intelligence_id)
-        return self._to_intelligence_detail(intelligence, sources)
+        tags_by_intelligence = await self._list_tags_by_intelligence_ids(db, [intelligence_id])
+        return self._to_intelligence_detail(intelligence, sources, tags_by_intelligence.get(intelligence_id, []))
 
     async def grant_visibility(
         self,
@@ -1019,7 +1118,6 @@ class InsightIntelligenceService:
             InsightIntelligence.is_deleted == 0,
         ]
         if not is_admin:
-            filters.append(await self._company_isolation_filter(db, user_id=user_id, is_admin=is_admin))
             filters.append(
                 or_(
                     InsightIntelligence.owner_user_id == user_id,
@@ -1028,6 +1126,13 @@ class InsightIntelligenceService:
                         db,
                         InsightIntelligence,
                         target_type="intelligence",
+                        user_id=user_id,
+                        is_admin=is_admin,
+                        permission="edit",
+                    ),
+                    await insight_permission_service.inherited_intelligence_filter_for_user(
+                        db,
+                        InsightIntelligence,
                         user_id=user_id,
                         is_admin=is_admin,
                         permission="edit",
@@ -1103,11 +1208,31 @@ class InsightIntelligenceService:
             raise ValueError("来源证据至少需要填写 URL、标题、摘录或文件路径之一")
 
     async def _get_visible_intelligence_ids(self, db: AsyncSession, user_id: int | None) -> list[int]:
-        return await insight_permission_service.visible_target_ids_for_user(
+        if not user_id:
+            return []
+        direct_ids = await insight_permission_service.visible_target_ids_for_user(
             db,
             target_type="intelligence",
             user_id=user_id,
         )
+        inherited_filter = await insight_permission_service.inherited_intelligence_filter_for_user(
+            db,
+            InsightIntelligence,
+            user_id=user_id,
+            is_admin=False,
+        )
+        inherited_ids = list(
+            (
+                await db.exec(
+                    select(InsightIntelligence.id).where(
+                        InsightIntelligence.is_deleted == 0,
+                        InsightIntelligence.status == "active",
+                        inherited_filter,
+                    )
+                )
+            ).all()
+        )
+        return list(dict.fromkeys([*direct_ids, *inherited_ids]))
 
     async def _get_user_pool_intelligence_ids(self, db: AsyncSession, user_id: int | None, pool_type: str) -> list[int]:
         if not user_id:
@@ -1141,7 +1266,6 @@ class InsightIntelligenceService:
             granted_ids = await self._get_visible_intelligence_ids(db, user_id=user_id)
             filters.append(
                 or_(
-                    InsightIntelligence.visibility_scope == InsightVisibilityScope.PUBLIC,
                     InsightIntelligence.owner_user_id == user_id,
                     InsightIntelligence.review_user_id == user_id,
                     InsightIntelligence.id.in_(granted_ids) if granted_ids else False,
@@ -1189,8 +1313,9 @@ class InsightIntelligenceService:
             db,
             [item.id for item in intelligences if item.id],
         )
+        tags_by_intelligence = await self._list_tags_by_intelligence_ids(db, [item.id for item in intelligences if item.id])
         return [
-            self._to_intelligence_list_item(item, sources_by_intelligence.get(item.id or 0, []))
+            self._to_intelligence_list_item(item, sources_by_intelligence.get(item.id or 0, []), tags_by_intelligence.get(item.id or 0, []))
             for item in intelligences
         ]
 
@@ -1203,15 +1328,37 @@ class InsightIntelligenceService:
     ) -> int:
         filters = [InsightCompany.is_deleted == 0, InsightCompany.status == "active"]
         if not is_admin:
-            filters.append(InsightCompany.owner_user_id == user_id)
+            filters.append(
+                await insight_permission_service.visibility_filter_for_user(
+                    db,
+                    InsightCompany,
+                    target_type="company",
+                    user_id=user_id,
+                    is_admin=is_admin,
+                )
+            )
         statement = select(func.count()).select_from(InsightCompany).where(*filters)
         return (await db.exec(statement)).one()
 
-    async def _count_dashboard_data_sources(self, db: AsyncSession) -> int:
-        statement = select(func.count()).select_from(InsightDataSource).where(
-            InsightDataSource.is_deleted == 0,
-            InsightDataSource.status == "enabled",
-        )
+    async def _count_dashboard_monitor_configs(
+        self,
+        db: AsyncSession,
+        *,
+        user_id: int | None,
+        is_admin: bool,
+    ) -> int:
+        filters = [InsightMonitorConfig.is_deleted == 0, InsightMonitorConfig.status == "active"]
+        if not is_admin:
+            filters.append(
+                await insight_permission_service.visibility_filter_for_user(
+                    db,
+                    InsightMonitorConfig,
+                    target_type="monitor_config",
+                    user_id=user_id,
+                    is_admin=is_admin,
+                )
+            )
+        statement = select(func.count()).select_from(InsightMonitorConfig).where(*filters)
         return (await db.exec(statement)).one()
 
     async def _build_source_distribution(
@@ -1222,12 +1369,13 @@ class InsightIntelligenceService:
         if not intelligence_ids:
             return []
         statement = (
-            select(InsightIntelligenceSource.source_type, func.count())
+            select(InsightIntelligence.intelligence_type, func.count())
             .where(
-                InsightIntelligenceSource.intelligence_id.in_(intelligence_ids),
-                InsightIntelligenceSource.is_deleted == 0,
+                InsightIntelligence.id.in_(intelligence_ids),
+                InsightIntelligence.is_deleted == 0,
+                InsightIntelligence.status == "active",
             )
-            .group_by(InsightIntelligenceSource.source_type)
+            .group_by(InsightIntelligence.intelligence_type)
             .order_by(func.count().desc())
             .limit(6)
         )
@@ -1251,7 +1399,12 @@ class InsightIntelligenceService:
         *,
         limit: int,
     ) -> list[InsightDashboardFocusItem]:
-        sorted_items = sorted(intelligences, key=self._focus_score, reverse=True)
+        recent_items = [
+            item
+            for item in intelligences
+            if (datetime.now() - (item.publish_time or item.create_time)).days <= 30
+        ]
+        sorted_items = sorted(recent_items or intelligences, key=self._focus_score, reverse=True)
         return [
             InsightDashboardFocusItem(
                 id=item.id or 0,
@@ -1261,6 +1414,7 @@ class InsightIntelligenceService:
                 importance_level=item.importance_level,
                 publish_time=item.publish_time or item.create_time,
                 score=self._focus_score(item),
+                reason=self._focus_reason(item),
             )
             for item in sorted_items[:limit]
         ]
@@ -1274,6 +1428,23 @@ class InsightIntelligenceService:
         if intelligence.sentiment and intelligence.sentiment != "neutral":
             score += 6
         return score
+
+    def _focus_reason(self, intelligence: InsightIntelligence) -> str:
+        event_time = intelligence.publish_time or intelligence.create_time
+        age_days = max((datetime.now() - event_time).days, 0)
+        parts = []
+        importance_label = {"high": "高重要性", "medium": "中等重要性", "low": "低重要性"}.get(intelligence.importance_level, "已入库情报")
+        parts.append(importance_label)
+        if age_days <= 1:
+            parts.append("近 1 天新增")
+        elif age_days <= 7:
+            parts.append(f"近 {age_days} 天新增")
+        elif age_days <= 30:
+            parts.append("近 30 天内动态")
+        if intelligence.sentiment and intelligence.sentiment != "neutral":
+            parts.append("含风险或机会信号")
+        parts.append(self._intelligence_type_label(intelligence.intelligence_type))
+        return "、".join(part for part in parts if part)
 
     def _count_focus_items(
         self,
@@ -1304,11 +1475,15 @@ class InsightIntelligenceService:
         return start_date <= current_date <= end_date
 
     def _source_type_label(self, source_type: str) -> str:
+        type_label = self._intelligence_type_label(source_type)
+        if type_label != source_type:
+            return type_label
         labels = {
             "baidu": "百度搜索",
             "bocha": "博查搜索",
             "bocha_search": "博查搜索",
             "baidu_news": "百度资讯",
+            "doubao_web_search": "豆包联网搜索",
             "firecrawl": "网页抓取",
             "manual": "人工录入",
             "official": "官网",
@@ -1317,6 +1492,22 @@ class InsightIntelligenceService:
             "wechat": "公众号",
         }
         return labels.get(source_type, source_type or "其他来源")
+
+    def _intelligence_type_label(self, intelligence_type: str) -> str:
+        labels = {
+            "新品情报": "新品情报",
+            "经营动态": "经营动态",
+            "行业资讯": "行业资讯",
+            "政策法规": "政策法规",
+            "专利技术": "专利技术",
+            "财报公告": "财报公告",
+            "竞对动态": "竞对动态",
+            "客户动向": "客户动向",
+            "风险预警": "风险预警",
+            "销售机会": "销售机会",
+            "产品动态": "产品动态",
+        }
+        return labels.get(intelligence_type, intelligence_type or "其他情报")
 
     async def _list_sources_by_intelligence_ids(
         self,
@@ -1337,6 +1528,33 @@ class InsightIntelligenceService:
         result: dict[int, list[InsightIntelligenceSource]] = {}
         for source in sources:
             result.setdefault(source.intelligence_id, []).append(source)
+        return result
+
+    async def _list_tags_by_intelligence_ids(
+        self,
+        db: AsyncSession,
+        intelligence_ids: list[int],
+    ) -> dict[int, list[InsightTag]]:
+        if not intelligence_ids:
+            return {}
+        rows = list(
+            (
+                await db.exec(
+                    select(InsightIntelligenceTag, InsightTag)
+                    .join(InsightTag, InsightTag.id == InsightIntelligenceTag.tag_id)
+                    .where(
+                        InsightIntelligenceTag.intelligence_id.in_(intelligence_ids),
+                        InsightIntelligenceTag.is_deleted == 0,
+                        InsightTag.is_deleted == 0,
+                        InsightTag.status == "active",
+                    )
+                    .order_by(InsightTag.sort_no.asc(), InsightTag.id.asc())
+                )
+            ).all()
+        )
+        result: dict[int, list[InsightTag]] = {}
+        for relation, tag in rows:
+            result.setdefault(relation.intelligence_id, []).append(tag)
         return result
 
     async def _list_sources(self, db: AsyncSession, intelligence_id: int) -> list[InsightIntelligenceSource]:
@@ -1365,6 +1583,7 @@ class InsightIntelligenceService:
             summary=candidate.candidate_summary,
             content=crawl_result.markdown_content,
             company_id=candidate.company_id,
+            monitor_config_id=crawl_result.monitor_config_id,
             subject_type=candidate.subject_type,
             subject_name=candidate.subject_name,
             data_source_id=crawl_result.data_source_id,
@@ -1383,6 +1602,7 @@ class InsightIntelligenceService:
             raw_payload={
                 "candidate_id": candidate.id,
                 "crawl_result_id": crawl_result.id,
+                "monitor_config_id": crawl_result.monitor_config_id,
                 "suggested_tags": candidate.suggested_tags,
                 "confidence": candidate.confidence,
                 "ai_analysis": {
@@ -1602,6 +1822,9 @@ class InsightIntelligenceService:
         return [str(item) for item in raw_issues if str(item).strip()] if isinstance(raw_issues, list) else []
 
     def _to_intelligence_read(self, intelligence: InsightIntelligence) -> InsightIntelligenceRead:
+        raw_payload = intelligence.raw_payload or {}
+        category_code = self._raw_str(raw_payload.get("category_code")) if isinstance(raw_payload, dict) else None
+        tag_codes = self._raw_list(raw_payload.get("tag_codes")) if isinstance(raw_payload, dict) else []
         return InsightIntelligenceRead(
             id=intelligence.id,
             create_time=intelligence.create_time,
@@ -1626,17 +1849,30 @@ class InsightIntelligenceService:
             review_status=intelligence.review_status,
             visibility_scope=intelligence.visibility_scope.value,
             status=intelligence.status,
+            category_code=category_code,
+            category_name=self._raw_str(raw_payload.get("category_name")) if isinstance(raw_payload, dict) else None,
+            tag_codes=tag_codes,
+            tag_names=self._raw_list(raw_payload.get("tag_names")) if isinstance(raw_payload, dict) else [],
+            selection_reason=self._extract_selection_reason(raw_payload),
+            business_insight=self._extract_business_insight(raw_payload),
         )
 
     def _to_intelligence_list_item(
         self,
         intelligence: InsightIntelligence,
         sources: list[InsightIntelligenceSource],
+        tags: list[InsightTag] | None = None,
     ) -> InsightIntelligenceListItem:
         primary_source = sources[0] if sources else None
         raw_payload = intelligence.raw_payload or {}
+        read = self._to_intelligence_read(intelligence)
+        if tags:
+            read.tag_codes = [tag.tag_code for tag in tags]
+            read.tag_names = [tag.tag_name for tag in tags]
+            read.category_code = read.category_code or tags[0].tag_type
+            read.category_name = read.category_name or tags[0].tag_type
         return InsightIntelligenceListItem(
-            **self._to_intelligence_read(intelligence).model_dump(),
+            **read.model_dump(),
             primary_source_url=primary_source.source_url if primary_source else None,
             primary_source_title=primary_source.source_title if primary_source else None,
             primary_source_type=primary_source.source_type if primary_source else None,
@@ -1679,13 +1915,149 @@ class InsightIntelligenceService:
         self,
         intelligence: InsightIntelligence,
         sources: list[InsightIntelligenceSource],
+        tags: list[InsightTag] | None = None,
     ) -> InsightIntelligenceDetail:
+        read = self._to_intelligence_read(intelligence)
+        if tags:
+            read.tag_codes = [tag.tag_code for tag in tags]
+            read.tag_names = [tag.tag_name for tag in tags]
+            read.category_code = read.category_code or tags[0].tag_type
+            read.category_name = read.category_name or tags[0].tag_type
         return InsightIntelligenceDetail(
-            **self._to_intelligence_read(intelligence).model_dump(),
+            **read.model_dump(),
             content=intelligence.content,
             raw_payload=intelligence.raw_payload,
             sources=[self._to_source_read(source) for source in sources],
         )
+
+    def _merge_intelligence_metadata(
+        self,
+        raw_payload: dict[str, object],
+        *,
+        category_code: str | None,
+        tag_codes: list[str] | None,
+        selection_reason: str | None,
+        business_insight: str | None,
+    ) -> dict[str, object]:
+        payload = dict(raw_payload)
+        if category_code is not None:
+            payload["category_code"] = category_code.strip() if category_code else None
+            category_name = self._category_name_from_code(category_code)
+            if category_name:
+                payload["category_name"] = category_name
+        if tag_codes is not None:
+            payload["tag_codes"] = [str(code).strip() for code in tag_codes if str(code).strip()]
+        if selection_reason is not None:
+            payload["selection_reason"] = selection_reason.strip() if selection_reason else None
+        if business_insight is not None:
+            payload["business_insight"] = business_insight.strip() if business_insight else None
+        return payload
+
+    async def _sync_intelligence_tags(self, db: AsyncSession, intelligence_id: int, tag_codes: list[str] | None, *, source: str) -> None:
+        if not intelligence_id:
+            return
+        existing = list(
+            (
+                await db.exec(
+                    select(InsightIntelligenceTag).where(
+                        InsightIntelligenceTag.intelligence_id == intelligence_id,
+                        InsightIntelligenceTag.is_deleted == 0,
+                    )
+                )
+            ).all()
+        )
+        for relation in existing:
+            relation.is_deleted = 1
+        codes = [str(code).strip() for code in (tag_codes or []) if str(code).strip()]
+        if not codes:
+            return
+        tags = list(
+            (
+                await db.exec(
+                    select(InsightTag).where(
+                        InsightTag.tag_code.in_(codes),
+                        InsightTag.is_deleted == 0,
+                        InsightTag.status == "active",
+                    )
+                )
+            ).all()
+        )
+        for tag in tags:
+            if tag.id:
+                db.add(InsightIntelligenceTag(intelligence_id=intelligence_id, tag_id=tag.id, source=source, confidence=1.0))
+
+    def _extract_selection_reason(self, raw_payload: dict[str, object] | None) -> str | None:
+        if not isinstance(raw_payload, dict):
+            return None
+        direct = self._raw_str(raw_payload.get("selection_reason"))
+        if direct:
+            return direct
+        ai_review = raw_payload.get("ai_review")
+        if isinstance(ai_review, dict):
+            reason = self._raw_str(ai_review.get("reason"))
+            value = self._raw_str(ai_review.get("business_value"))
+            return "；".join([item for item in [reason, value] if item]) or None
+        ai_review = self._extract_ai_review_from_tags(raw_payload)
+        if ai_review:
+            reason = self._raw_str(ai_review.get("reason"))
+            value = self._raw_str(ai_review.get("business_value"))
+            return "；".join([item for item in [reason, value] if item]) or None
+        ai_analysis = raw_payload.get("ai_analysis")
+        if isinstance(ai_analysis, dict):
+            return self._raw_str(ai_analysis.get("source_summary")) or self._raw_str(ai_analysis.get("sentiment_reason"))
+        return None
+
+    def _extract_business_insight(self, raw_payload: dict[str, object] | None) -> str | None:
+        if not isinstance(raw_payload, dict):
+            return None
+        direct = self._raw_str(raw_payload.get("business_insight"))
+        if direct:
+            return direct
+        ai_review = raw_payload.get("ai_review")
+        if isinstance(ai_review, dict):
+            return self._join_business_parts(ai_review)
+        ai_review = self._extract_ai_review_from_tags(raw_payload)
+        if ai_review:
+            return self._join_business_parts(ai_review)
+        ai_analysis = raw_payload.get("ai_analysis")
+        if isinstance(ai_analysis, dict):
+            return self._join_business_parts(ai_analysis)
+        return None
+
+    def _extract_ai_review_from_tags(self, raw_payload: dict[str, object]) -> dict[str, object] | None:
+        suggested_tags = raw_payload.get("suggested_tags")
+        if not isinstance(suggested_tags, list):
+            return None
+        for item in suggested_tags:
+            if isinstance(item, dict) and item.get("source") == "ai_review":
+                return item
+        return None
+
+    def _join_business_parts(self, payload: dict[str, object]) -> str | None:
+        parts: list[str] = []
+        business_value = self._raw_str(payload.get("business_value"))
+        if business_value:
+            parts.append(business_value)
+        opportunities = payload.get("opportunities")
+        if isinstance(opportunities, list) and opportunities:
+            parts.append("机会：" + "、".join(str(item) for item in opportunities[:3]))
+        risks = payload.get("risks")
+        if isinstance(risks, list) and risks:
+            parts.append("风险：" + "、".join(str(item) for item in risks[:3]))
+        return "；".join(parts) or None
+
+    def _category_name_from_code(self, category_code: str | None) -> str | None:
+        value = str(category_code or "").strip()
+        return value or None
+
+    def _raw_str(self, value: object) -> str | None:
+        text = str(value or "").strip()
+        return text or None
+
+    def _raw_list(self, value: object) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(item).strip() for item in value if str(item).strip()]
 
     def _to_source_read(self, source: InsightIntelligenceSource) -> InsightIntelligenceSourceRead:
         return InsightIntelligenceSourceRead(

@@ -97,7 +97,12 @@ redis_data/
 
 # --- Documentation / Logs ---
 *.log
+*.out
+*.err
+*.jsonl
 logs/
+tmp/
+backend/tmp/
 *.bak
 *.tmp
 *.temp
@@ -106,9 +111,17 @@ logs/
 .openclaw/
 brain/
 artifacts/
+outputs/
 .gemini/
 *.vibe_coding.md
 !AGENTS.md
 !DESIGN.md
 !README.md
 backend/dev_rfc.trc
+backend/.uv-cache*/
+backend/storage/insight_adapter_runs/
+backend/storage/insight_adapter_run_reports/
+backend/storage/insight_bootstrap_logs/
+backend/storage/insight_exports/
+backend/storage/docx-render/
+backend/storage/pdfs/

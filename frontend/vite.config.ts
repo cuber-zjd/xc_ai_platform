@@ -3,6 +3,8 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
 
+const proxyTarget = process.env.VITE_PROXY_TARGET || 'http://localhost:8000'
+
 export default defineConfig({
   base: '/ai/',
 
@@ -22,7 +24,7 @@ export default defineConfig({
 
     proxy: {
       '/ai-api': {
-        target: 'http://localhost:8000',
+        target: proxyTarget,
         changeOrigin: true,
       },
     },

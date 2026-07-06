@@ -18,6 +18,7 @@ class SysModelCreate(BaseModel):
     model_level: int = 3
     model_type: str = "chat"
     capability: Optional[str] = "general"
+    is_multimodal: bool = False
     max_tokens: Optional[int] = 4096
     default_temperature: float = 0.0
     priority: int = 100
@@ -37,6 +38,7 @@ class SysModelUpdate(BaseModel):
     model_level: Optional[int] = None
     model_type: Optional[str] = None
     capability: Optional[str] = None
+    is_multimodal: Optional[bool] = None
     max_tokens: Optional[int] = None
     default_temperature: Optional[float] = None
     priority: Optional[int] = None
@@ -56,6 +58,7 @@ class SysModelRead(BaseModel):
     model_level: int
     model_type: str
     capability: Optional[str]
+    is_multimodal: bool
     max_tokens: Optional[int]
     default_temperature: float
     priority: int

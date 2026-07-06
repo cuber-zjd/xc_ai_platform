@@ -27,6 +27,7 @@ import {
     type InsightDataSourceUpdate,
     type InsightDeepResearchRequest,
     type InsightIntelligenceBulkActionRequest,
+    type InsightIntelligenceImportConfirmRequest,
     type InsightIntelligenceCreate,
     type InsightIntelligenceListParams,
     type InsightIntelligenceSourceCreate,
@@ -37,6 +38,8 @@ import {
     type InsightMonitorConfigUpdate,
     type InsightNotificationCreate,
     type InsightNotificationListParams,
+    type InsightOperationCustomerLifecycle,
+    type InsightOperationOverview,
     type InsightPoolUpsertRequest,
     type InsightReportGenerateRequest,
     type InsightReportListParams,
@@ -49,6 +52,10 @@ import {
     type InsightReportTemplatePublishRequest,
     type InsightReportTemplateUpdate,
     type InsightReportUpdateRequest,
+    type InsightRoleCreate,
+    type InsightRoleListParams,
+    type InsightRoleMemberUpsert,
+    type InsightRoleUpdate,
     type InsightSearchDiscoveryRequest,
     type InsightTagCategoryCreate,
     type InsightTagCategoryUpdate,
@@ -61,13 +68,21 @@ export const insightQueryKeys = {
     all: ["insight"] as const,
     health: () => [...insightQueryKeys.all, "health"] as const,
     dashboard: () => [...insightQueryKeys.all, "dashboard"] as const,
+    operationOverview: () => [...insightQueryKeys.all, "operation-overview"] as const,
+    operationCustomerLifecycle: () => [...insightQueryKeys.all, "operation-customer-lifecycle"] as const,
     qualityOverview: () => [...insightQueryKeys.all, "quality-overview"] as const,
     settingsStatus: () => [...insightQueryKeys.all, "settings-status"] as const,
     dictionaryOverview: () => [...insightQueryKeys.all, "dictionary-overview"] as const,
     tagCategories: () => [...insightQueryKeys.all, "tag-categories"] as const,
     channels: (params: InsightChannelListParams) => [...insightQueryKeys.all, "channels", params] as const,
-    dictionaryTags: () => [...insightQueryKeys.all, "dictionary-tags"] as const,
+    dictionaryTags: (tagType?: string) => [...insightQueryKeys.all, "dictionary-tags", tagType ?? "all"] as const,
     systemCompanies: () => [...insightQueryKeys.all, "system-companies"] as const,
+    selectorUsers: (keyword?: string, deptId?: string) => [...insightQueryKeys.all, "selector-users", keyword ?? "", deptId ?? ""] as const,
+    selectorDepts: (keyword?: string) => [...insightQueryKeys.all, "selector-depts", keyword ?? ""] as const,
+    selectorRoles: (keyword?: string) => [...insightQueryKeys.all, "selector-roles", keyword ?? ""] as const,
+    selectorCompanies: (keyword?: string) => [...insightQueryKeys.all, "selector-companies", keyword ?? ""] as const,
+    insightRoles: (params: InsightRoleListParams) => [...insightQueryKeys.all, "insight-roles", params] as const,
+    insightRoleMembers: (roleId: number) => [...insightQueryKeys.all, "insight-role-members", roleId] as const,
     notifications: (params: InsightNotificationListParams) => [...insightQueryKeys.all, "notifications", params] as const,
     companies: (params: InsightCompanyListParams) => [...insightQueryKeys.all, "companies", params] as const,
     companyDetail: (companyId: number) => [...insightQueryKeys.all, "company", companyId] as const,
@@ -101,6 +116,20 @@ export function useInsightDashboard() {
     return useQuery({
         queryKey: insightQueryKeys.dashboard(),
         queryFn: insightApi.getDashboard,
+    });
+}
+
+export function useInsightOperationOverview() {
+    return useQuery<InsightOperationOverview>({
+        queryKey: insightQueryKeys.operationOverview(),
+        queryFn: insightApi.getOperationOverview,
+    });
+}
+
+export function useInsightOperationCustomerLifecycle() {
+    return useQuery<InsightOperationCustomerLifecycle>({
+        queryKey: insightQueryKeys.operationCustomerLifecycle(),
+        queryFn: insightApi.getOperationCustomerLifecycle,
     });
 }
 
@@ -219,6 +248,13 @@ export function useInsightDictionaryOverview() {
     });
 }
 
+export function useInsightDictionaryTags(tagType?: string) {
+    return useQuery({
+        queryKey: insightQueryKeys.dictionaryTags(tagType),
+        queryFn: () => insightApi.listDictionaryTags({ tag_type: tagType, include_disabled: false }),
+    });
+}
+
 export function useInsightTagCategories() {
     return useQuery({
         queryKey: insightQueryKeys.tagCategories(),
@@ -331,6 +367,111 @@ export function useInsightSystemCompanies() {
     return useQuery({
         queryKey: insightQueryKeys.systemCompanies(),
         queryFn: insightApi.listSystemCompanies,
+    });
+}
+
+export function useInsightSelectorUsers(keyword?: string, deptId?: string) {
+    return useQuery({
+        queryKey: insightQueryKeys.selectorUsers(keyword, deptId),
+        queryFn: () => insightApi.searchSelectorUsers({ keyword: keyword || undefined, dept_id: deptId || undefined, limit: 80 }),
+    });
+}
+
+export function useInsightSelectorDepts(keyword?: string) {
+    return useQuery({
+        queryKey: insightQueryKeys.selectorDepts(keyword),
+        queryFn: () => insightApi.listSelectorDepts({ keyword: keyword || undefined, limit: 300 }),
+    });
+}
+
+export function useInsightSelectorRoles(keyword?: string) {
+    return useQuery({
+        queryKey: insightQueryKeys.selectorRoles(keyword),
+        queryFn: () => insightApi.listSelectorRoles({ keyword: keyword || undefined, limit: 200 }),
+    });
+}
+
+export function useInsightSelectorCompanies(keyword?: string) {
+    return useQuery({
+        queryKey: insightQueryKeys.selectorCompanies(keyword),
+        queryFn: () => insightApi.listSelectorCompanies({ keyword: keyword || undefined, limit: 300 }),
+    });
+}
+
+export function useInsightRoles(params: InsightRoleListParams) {
+    return useQuery({
+        queryKey: insightQueryKeys.insightRoles(params),
+        queryFn: () => insightApi.listInsightRoles(params),
+    });
+}
+
+export function useInsightCreateRole() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: (payload: InsightRoleCreate) => insightApi.createInsightRole(payload),
+        onSuccess: () => {
+            void queryClient.invalidateQueries({ queryKey: insightQueryKeys.all });
+        },
+    });
+}
+
+export function useInsightUpdateRole() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: (payload: InsightRoleUpdateMutationPayload) => insightApi.updateInsightRole(payload.roleId, payload.data),
+        onSuccess: () => {
+            void queryClient.invalidateQueries({ queryKey: insightQueryKeys.all });
+        },
+    });
+}
+
+export function useInsightDeleteRole() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: (roleId: number) => insightApi.deleteInsightRole(roleId),
+        onSuccess: () => {
+            void queryClient.invalidateQueries({ queryKey: insightQueryKeys.all });
+        },
+    });
+}
+
+export function useInsightSeedDefaultRoles() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: insightApi.seedDefaultInsightRoles,
+        onSuccess: () => {
+            void queryClient.invalidateQueries({ queryKey: insightQueryKeys.all });
+        },
+    });
+}
+
+export function useInsightRoleMembers(roleId: number | null) {
+    return useQuery({
+        queryKey: insightQueryKeys.insightRoleMembers(roleId ?? 0),
+        queryFn: () => insightApi.listInsightRoleMembers(roleId ?? 0),
+        enabled: Boolean(roleId),
+    });
+}
+
+export function useInsightAddRoleMembers() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: (payload: InsightRoleMemberUpsertMutationPayload) => insightApi.addInsightRoleMembers(payload.roleId, payload.data),
+        onSuccess: (_data, variables) => {
+            void queryClient.invalidateQueries({ queryKey: insightQueryKeys.insightRoleMembers(variables.roleId) });
+            void queryClient.invalidateQueries({ queryKey: insightQueryKeys.all });
+        },
+    });
+}
+
+export function useInsightRemoveRoleMember() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: (payload: InsightRoleMemberRemoveMutationPayload) => insightApi.removeInsightRoleMember(payload.roleId, payload.memberId),
+        onSuccess: (_data, variables) => {
+            void queryClient.invalidateQueries({ queryKey: insightQueryKeys.insightRoleMembers(variables.roleId) });
+            void queryClient.invalidateQueries({ queryKey: insightQueryKeys.all });
+        },
     });
 }
 
@@ -837,6 +978,22 @@ export function useInsightCreateIntelligence() {
     });
 }
 
+export function useInsightPreviewImportIntelligence() {
+    return useMutation({
+        mutationFn: (payload: FormData) => insightApi.previewImportIntelligence(payload),
+    });
+}
+
+export function useInsightConfirmImportIntelligence() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: (payload: InsightIntelligenceImportConfirmRequest) => insightApi.confirmImportIntelligence(payload),
+        onSuccess: () => {
+            void queryClient.invalidateQueries({ queryKey: insightQueryKeys.all });
+        },
+    });
+}
+
 export function useInsightUpdateIntelligence() {
     const queryClient = useQueryClient();
     return useMutation({
@@ -954,6 +1111,21 @@ export interface InsightTagCategoryUpdateMutationPayload {
 export interface InsightChannelUpdateMutationPayload {
     channelId: number;
     data: InsightChannelUpdate;
+}
+
+export interface InsightRoleUpdateMutationPayload {
+    roleId: number;
+    data: InsightRoleUpdate;
+}
+
+export interface InsightRoleMemberUpsertMutationPayload {
+    roleId: number;
+    data: InsightRoleMemberUpsert;
+}
+
+export interface InsightRoleMemberRemoveMutationPayload {
+    roleId: number;
+    memberId: number;
 }
 
 export interface InsightMonitorConfigUpdateMutationPayload {

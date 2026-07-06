@@ -101,15 +101,27 @@ async def main() -> int:
                     )
                 ).all()
             )
-            totals["requested"] = len(rows)
-            print(f"准备执行 {len(rows)} 个 active 监测配置。", flush=True)
+            row_snapshots = [
+                {
+                    "id": row.id or 0,
+                    "config_name": row.config_name,
+                    "object_name": row.object_name,
+                    "fetch_frequency": row.fetch_frequency,
+                }
+                for row in rows
+            ]
+            totals["requested"] = len(row_snapshots)
+            print(f"准备执行 {len(row_snapshots)} 个 active 监测配置。", flush=True)
 
-            for index, row in enumerate(rows, start=1):
+            for index, snapshot in enumerate(row_snapshots, start=1):
                 item_started_at = datetime.now()
-                row_id = row.id or 0
-                config_name = row.config_name
-                object_name = row.object_name
-                fetch_frequency = row.fetch_frequency
+                row_id = int(snapshot["id"])
+                config_name = str(snapshot["config_name"])
+                object_name = str(snapshot["object_name"] or "")
+                fetch_frequency = str(snapshot["fetch_frequency"] or "")
+                row = await db.get(InsightMonitorConfig, row_id)
+                if not row or row.is_deleted != 0 or row.status != "active":
+                    continue
                 row.last_schedule_status = "running"
                 row.last_schedule_message = "全量近半月测试采集中"
                 row.last_fetch_time = item_started_at
@@ -119,7 +131,7 @@ async def main() -> int:
 
                 progress: dict[str, Any] = {
                     "index": index,
-                    "total": len(rows),
+                    "total": len(row_snapshots),
                     "monitor_config_id": row_id,
                     "config_name": config_name,
                     "object_name": object_name,
@@ -216,7 +228,7 @@ async def main() -> int:
 
                 _write_jsonl(log_file, progress)
                 print(
-                    f"[{index}/{len(rows)}] {progress['status']} "
+                    f"[{index}/{len(row_snapshots)}] {progress['status']} "
                     f"#{progress['monitor_config_id']} {progress['config_name']} "
                     f"{progress.get('counts', {})}",
                     flush=True,

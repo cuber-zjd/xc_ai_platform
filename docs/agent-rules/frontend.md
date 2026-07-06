@@ -124,10 +124,12 @@ pnpm dev
 - 新建报表弹窗只保留报表名称和保存目录，调用 `POST /ai-api/v1/fr/ai-reports/empty/create` 生成空白 CPT 并写入版本库；弹窗内不得上传资料、运行 SQL/DSL 或调用 `agent/chat`。侧边栏小驰才负责基于当前报表进行聊天式生成和修改。
 - 侧边栏小驰主界面保持聊天优先：默认只展示对话流、多行输入框、附件入口和少量动作按钮；上下文、工具、技能、待应用修改项、版本和执行轨迹默认折叠或放入弹窗。
 - 小驰工具和技能信息通过 `GET /ai-api/v1/fr/ai-reports/agent/capabilities` 获取，前端只负责展示、启用系统技能和收集个人开发习惯；不得在前端伪造工具成功、扩大工具权限或绕过后端确认门。
-- 小驰聊天输入使用 `POST /ai-api/v1/fr/ai-reports/agent/chat`，后端通过大模型语义路由判断普通沟通、当前报表修改、开始生成或保存 CPT；前端按钮只表达用户明确点击的快捷动作，普通输入不得在前端用关键词重做一套意图判断或固定流程编排。
-- 小驰待应用修改项确认成功后，前端应清空待应用列表和本轮提示词，只保留已应用快照 ID 用于后续生成 CPT；旧修改项不得继续进入下一轮 `agent/chat` 上下文。只有状态为 `draft` 且操作类型全部为 `xml_patch` 的内容才能展示确认按钮；其他操作类型不得伪装成可确认修改。
-- 前端可应用操作白名单需要与后端 CPT 修改主路径同步，`xml_patch` 是唯一可确认类型；前端不得再用“样式、填报、脚本不支持”这类固定能力边界拦截用户需求，是否可写由后端版本控制、XML 校验和预览验证决定。待应用修改项面向用户只展示自然语言修改范围和风险提示，不展示原始 JSON 或 XML；中风险、高风险修改必须让用户在应用前明确确认。
-- 帆软报表助手主界面不得摆放保存、撤销、公式、边框、填充等尚未接入真实行为的类设计器按钮；主操作区只保留真实可用入口，例如新建报表和 FineReport 预览。小驰生成待应用修改项后，应在输入框上方直接展示确认卡片，包含修改范围、风险和确认按钮，弹窗详情只作为补充查看。
+- 小驰聊天输入优先使用 `POST /ai-api/v1/fr/ai-reports/agent/run/stream`，普通输入默认传 `autonomyMode=high`，前端通过 SSE 展示读取 CPT、查询数据库、解析附件、检索案例库、写入版本、预览校验和自修复进度；`agent/chat` 仅作旧流程兼容。前端按钮只表达用户明确点击的快捷动作，普通输入不得在前端用关键词重做一套意图判断或固定流程编排。
+- 小驰输入框支持粘贴、拖入或选择图片附件时，前端只负责按附件上传，不在浏览器端做 OCR 或伪解析；后端会根据当前模型档位选择多模态模型解析图片。模型管理页需要展示并维护“多模态能力/支持图片”字段。
+- 小驰高权限链路写入成功后，前端应直接展示版本号、写入路径、FineReport 预览入口、验证结果和回档入口，并清理旧待应用状态；旧待应用修改项只允许作为显式 review/兼容模式，不得继续进入下一轮上下文。
+- FineReport 案例库前端接口通过 `useStartFrReportCaseSampleBuild`、`useFrReportCaseSampleJob`、`useFrReportCasesSearch` 和 `useFrReportCase` 调用；页面展示时应表达为“样本报表分析中发现的参考案例”，不要把案例库渲染成固定操作模板或强制用户先选案例。
+- 前端不得再把片段改写当作可确认类型，也不得用“样式、填报、脚本不支持”这类固定能力边界拦截用户需求；已有 CPT 修改只确认完整 CPT 写入结果。是否可写由后端版本控制、XML 校验、路径白名单和预览验证决定。面向用户只展示自然语言修改范围和风险提示，不展示原始 JSON 或 XML。
+- 帆软报表助手主界面不得摆放保存、撤销、公式、边框、填充等尚未接入真实行为的类设计器按钮；主操作区只保留真实可用入口，例如新建报表、显示范围和 FineReport 预览。小驰生成或写入结果应在输入框上方直接给出状态卡片，弹窗详情只作为补充查看。
 - 小驰主回答优先展示后端返回的自然语言 `assistantMessage` 或工具产物摘要；前端兜底文案必须简短、贴合状态，避免把所有回答套成固定模板。
 - 聊天事件需要以用户可读的执行轨迹展示，展示“计划/工具/结果/风险”，不展示模型原始思考；执行轨迹默认折叠，避免主界面拥挤。
 - 路由：用户侧路由 `/fr-ai-reports`，在 `frontend/src/router/index.tsx` 中懒加载。
@@ -158,10 +160,12 @@ pnpm dev
 - Insight 页面必须通过 `/insight/*` 路由挂载到独立 `InsightLayout`，不得复用旧系统 `UserLayout`、`AdminLayout` 或页面级 `app-*` 容器样式。
 - Insight AI 助手入口为 `/insight/assistant`，页面直接调用 `/ai-api/v1/insight/assistant/chat` 和 `/ai-api/v1/insight/research/deep`，回答和研究结论必须展示库内引用、情报详情入口和来源 URL，不得用前端静态内容伪造证据。
 - Insight 质量运营入口为 `/insight/quality`，页面读取 `GET /ai-api/v1/insight/quality/overview` 展示真实质量指标；缺数据图表必须展示空状态，不得使用样例点或假指标兜底。
+- Insight 经营智能入口为 `/insight/operation-intelligence`，仅管理员可见，页面读取 `GET /ai-api/v1/insight/operation/overview` 展示健源公司销量利润、客户流失、采购库存和套保风险的真实聚合指标，并读取 `GET /ai-api/v1/insight/operation/customer-lifecycle` 展示新客户质量、90 天挽回窗口、沉默客户分层、应收叠加和高价值行动清单；不得用样例指标或前端静态结论替代后端证据链。
 - Insight 主题通过 `InsightThemeScope` 挂载 `data-app="insight"` 与 `.insight-theme`，并在 `frontend/src/app/insight/theme/tokens.css` 内局部重声明 shadcn/ui CSS variables。
 - 新增 Insight 页面优先复用 `frontend/src/app/insight/components/` 下的页面级组件，例如 `PageTitle`、`SectionCard`、`FilterBar`、`InsightTag`、`ChartCard`。
 - Insight 风格 token、业务语义色和图表规范分别维护在 `theme/tokens.css`、`theme/semantic-colors.ts`、`theme/chart-theme.ts`，不得通过修改 `:root` 或旧系统全局样式实现换肤。
 - Insight 可复用 shadcn/ui 基础组件，但对外视觉必须由 insight 局部 token 和封装组件控制，避免旧系统紫蓝玻璃风格污染新业务域。
+- Insight 所有可见交互控件必须优先使用 shadcn/ui 或 `frontend/src/app/insight/components/` 中的业务封装组件，例如 `InsightSelect`、`Button`、`Dialog`、选择器、分页和批量操作条；不得直接裸写浏览器原生 `select`、`checkbox`、`radio`、`button`、菜单、开关、分页器或弹窗，避免出现系统原生样式、蓝底下拉菜单和不一致交互。隐藏文件输入和极简文本输入可例外，但外层展示、触发和状态必须由统一组件承载。
 - Insight 登录后业务页不使用常驻顶层 Header，用户信息与退出入口放到侧边栏底部；主内容区从业务内容开始，避免顶部壳层占用可视高度。
 - Insight 页面默认不展示占位型大标题和解释型小标题；如需页面级操作，保留紧凑操作区即可，页面语义通过侧栏选中态、Tab、筛选栏和内容本身表达。
 - Insight 页面默认采用固定工作台结构：页面根容器不进行纵向整页滚动，顶部工具条、Tab、筛选和分页等控制区保持稳定，滚动只出现在列表、表格、详情、预览、日志和可展开内容等组件内部。

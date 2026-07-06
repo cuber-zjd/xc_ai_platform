@@ -4,12 +4,15 @@ from io import BytesIO
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
+from sqlalchemy import or_
 from sqlmodel import func, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api.deps import get_current_user, get_db
-from app.models.agent.insight import InsightChannelAdapterRun
+from app.models.agent.insight import InsightChannelAdapterRun, InsightRole
+from app.models.system.sys_company import SysCompany
+from app.models.system.sys_dept import SysDept
 from app.models.system.sys_user import SysUser
 from app.schemas.agent.insight.adapter import InsightChannelAdapterDefinitionRead, InsightChannelAdapterRunRead
 from app.schemas.agent.insight.crawl import (
@@ -79,6 +82,9 @@ from app.schemas.agent.insight.intelligence import (
     InsightIntelligenceCandidateListItem,
     InsightIntelligenceCreate,
     InsightIntelligenceListItem,
+    InsightIntelligenceImportConfirmRequest,
+    InsightIntelligenceImportConfirmResponse,
+    InsightIntelligenceImportPreviewResponse,
     InsightIntelligenceSourceCreate,
     InsightIntelligenceSourceRead,
     InsightIntelligenceUpdate,
@@ -111,8 +117,17 @@ from app.schemas.agent.insight.report import (
 )
 from app.schemas.agent.insight.permission import InsightAccessRuleBulkResponse, InsightAccessRuleBulkUpsert, InsightAccessRuleRead, InsightAccessRuleUpsert
 from app.schemas.agent.insight.notification import InsightNotificationCreate, InsightNotificationRead
+from app.schemas.agent.insight.operation import InsightOperationCustomerLifecycle, InsightOperationOverview
 from app.schemas.agent.insight.quality import InsightQualityOverview
+from app.schemas.agent.insight.role import (
+    InsightRoleCreate,
+    InsightRoleMemberRead,
+    InsightRoleMemberUpsert,
+    InsightRoleRead,
+    InsightRoleUpdate,
+)
 from app.schemas.agent.insight.settings import InsightSettingsStatusRead
+from app.schemas.agent.insight.selector import InsightSelectorOption
 from app.schemas.agent.insight.task import InsightTaskRead
 from app.schemas.agent.insight.monitor_config import (
     InsightLegacySourceSyncResponse,
@@ -132,14 +147,18 @@ from app.services.agent.insight.data_source_service import insight_data_source_s
 from app.services.agent.insight.health_service import insight_health_service
 from app.services.agent.insight.dictionary_service import insight_dictionary_service
 from app.services.agent.insight.intelligence_service import insight_intelligence_service
+from app.services.agent.insight.intelligence_import_service import insight_intelligence_import_service
 from app.services.agent.insight.report_service import insight_report_service
 from app.services.agent.insight.report_subscription_service import insight_report_subscription_service
 from app.services.agent.insight.scheduler_service import insight_scheduler_service
 from app.services.agent.insight.permission_service import insight_permission_service
 from app.services.agent.insight.notification_service import insight_notification_service
+from app.services.agent.insight.operation_intelligence_service import insight_operation_intelligence_service
 from app.services.agent.insight.quality_service import insight_quality_service
 from app.services.agent.insight.requirement_import_service import insight_requirement_import_service
+from app.services.agent.insight.role_service import insight_role_service
 from app.services.agent.insight.settings_service import insight_settings_service
+from app.services.agent.insight.wecom_oauth_service import insight_wecom_oauth_service
 from app.services.agent.insight.monitor_config_service import insight_monitor_config_service
 from app.services.agent.insight.monitor_execution_service import insight_monitor_execution_service
 from app.services.agent.insight.crawler.channel_adapter_service import insight_channel_adapter_service
@@ -177,6 +196,169 @@ async def get_insight_settings_status(
     if not _is_admin(current_user):
         raise HTTPException(status_code=403, detail="仅管理员可查看系统设置")
     return Result.success(data=insight_settings_service.get_status())
+
+
+@router.get("/operation/overview", response_model=Result[InsightOperationOverview])
+async def get_operation_intelligence_overview(
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[InsightOperationOverview]:
+    _ensure_admin(current_user, "仅管理员可查看经营智能分析")
+    result = await insight_operation_intelligence_service.get_overview()
+    return Result.success(data=result)
+
+
+@router.get("/operation/customer-lifecycle", response_model=Result[InsightOperationCustomerLifecycle])
+async def get_operation_customer_lifecycle(
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[InsightOperationCustomerLifecycle]:
+    _ensure_admin(current_user, "仅管理员可查看客户生命周期分析")
+    result = await insight_operation_intelligence_service.get_customer_lifecycle()
+    return Result.success(data=result)
+
+
+@router.get("/selectors/users", response_model=Result[list[InsightSelectorOption]])
+async def search_insight_users(
+    *,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+    keyword: str | None = None,
+    dept_id: str | None = None,
+    limit: int = 50,
+) -> Result[list[InsightSelectorOption]]:
+    _ = current_user
+    limit = min(max(limit, 1), 100)
+    filters = [SysUser.is_deleted == 0, SysUser.status == 1]
+    if dept_id:
+        filters.append(SysUser.dept_id == dept_id)
+    if keyword:
+        value = f"%{keyword.strip()}%"
+        filters.append(or_(SysUser.full_name.ilike(value), SysUser.username.ilike(value), SysUser.employee_id.ilike(value)))
+    rows = list((await db.exec(select(SysUser).where(*filters).order_by(SysUser.id.asc()).limit(limit))).all())
+    return Result.success(
+        data=[
+            InsightSelectorOption(
+                id=row.id or 0,
+                label=row.full_name or row.username,
+                value=str(row.id),
+                type="user",
+                subtitle=f"{row.employee_id or row.username}{' · ' + row.job_title if row.job_title else ''}",
+                employee_id=row.employee_id or row.username,
+            )
+            for row in rows
+        ]
+    )
+
+
+@router.get("/selectors/depts", response_model=Result[list[InsightSelectorOption]])
+async def list_insight_depts(
+    *,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+    keyword: str | None = None,
+    limit: int = 200,
+) -> Result[list[InsightSelectorOption]]:
+    _ = current_user
+    limit = min(max(limit, 1), 500)
+    filters = [SysDept.is_deleted == 0]
+    if keyword:
+        filters.append(SysDept.name.ilike(f"%{keyword.strip()}%"))
+    rows = list((await db.exec(select(SysDept).where(*filters).order_by(SysDept.order.asc(), SysDept.id.asc()).limit(limit))).all())
+    return Result.success(
+        data=[
+            InsightSelectorOption(
+                id=row.id or 0,
+                label=row.name,
+                value=str(row.sync_id or row.id),
+                type="dept",
+                subtitle=row.code,
+                code=row.code,
+                parent_id=row.parent_id,
+            )
+            for row in rows
+        ]
+    )
+
+
+@router.get("/selectors/roles", response_model=Result[list[InsightSelectorOption]])
+async def list_insight_roles(
+    *,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+    keyword: str | None = None,
+    limit: int = 100,
+) -> Result[list[InsightSelectorOption]]:
+    _ = current_user
+    limit = min(max(limit, 1), 200)
+    filters = [InsightRole.is_deleted == 0, InsightRole.status == "active"]
+    if keyword:
+        value = f"%{keyword.strip()}%"
+        filters.append(or_(InsightRole.role_name.ilike(value), InsightRole.role_code.ilike(value)))
+    rows = list((await db.exec(select(InsightRole).where(*filters).order_by(InsightRole.sort_no.asc(), InsightRole.id.asc()).limit(limit))).all())
+    return Result.success(
+        data=[
+            InsightSelectorOption(id=row.id or 0, label=row.role_name, value=str(row.id), type="role", subtitle=row.description or row.role_code, code=row.role_code)
+            for row in rows
+        ]
+    )
+
+
+@router.get("/selectors/companies", response_model=Result[list[InsightSelectorOption]])
+async def list_insight_companies(
+    *,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+    keyword: str | None = None,
+    limit: int = 200,
+) -> Result[list[InsightSelectorOption]]:
+    _ = current_user
+    limit = min(max(limit, 1), 500)
+    filters = [SysCompany.is_deleted == 0]
+    if keyword:
+        value = f"%{keyword.strip()}%"
+        filters.append(or_(SysCompany.name.ilike(value), SysCompany.code.ilike(value)))
+    rows = list(
+        (
+            await db.exec(
+                select(SysCompany).where(*filters).order_by(SysCompany.order.asc(), SysCompany.id.asc()).limit(limit)
+            )
+        ).all()
+    )
+    return Result.success(
+        data=[
+            InsightSelectorOption(
+                id=row.id or 0,
+                label=row.name,
+                value=str(row.id),
+                type="company",
+                subtitle=f"{row.code or ''}{' · ' if row.code and row.sync_id else ''}{row.sync_id or ''}" or None,
+                code=row.code,
+                parent_id=row.parent_id,
+            )
+            for row in rows
+        ]
+    )
+
+
+@router.get("/wecom/oauth/authorize")
+async def authorize_insight_wecom_oauth(target_path: str | None = None) -> RedirectResponse:
+    try:
+        return RedirectResponse(insight_wecom_oauth_service.build_authorize_url(target_path))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/wecom/oauth/callback")
+async def callback_insight_wecom_oauth(
+    *,
+    db: AsyncSession = Depends(get_db),
+    code: str,
+    state: str,
+) -> RedirectResponse:
+    try:
+        redirect_url = await insight_wecom_oauth_service.handle_callback(db, code=code, state=state)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return RedirectResponse(redirect_url)
 
 
 @router.get("/settings/channels", response_model=Result[Page[InsightChannelRead]])
@@ -315,6 +497,125 @@ async def list_adapter_runs(
             size=size,
         )
     )
+
+
+@router.get("/settings/roles", response_model=Result[Page[InsightRoleRead]])
+async def list_insight_setting_roles(
+    *,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+    page: int = 1,
+    size: int = 20,
+    keyword: str | None = None,
+    status: str | None = None,
+) -> Result[Page[InsightRoleRead]]:
+    _ensure_admin(current_user, "仅管理员可维护市场洞察角色")
+    result = await insight_role_service.list_roles(db, page=page, size=size, keyword=keyword, status=status)
+    return Result.success(data=result)
+
+
+@router.post("/settings/roles", response_model=Result[InsightRoleRead])
+async def create_insight_setting_role(
+    *,
+    payload: InsightRoleCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[InsightRoleRead]:
+    _ensure_admin(current_user, "仅管理员可维护市场洞察角色")
+    try:
+        result = await insight_role_service.create_role(db, payload, current_user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Result.success(data=result, msg="洞察角色已创建")
+
+
+@router.post("/settings/roles/seed-defaults", response_model=Result[None])
+async def seed_insight_setting_roles(
+    *,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[None]:
+    _ensure_admin(current_user, "仅管理员可维护市场洞察角色")
+    await insight_role_service.seed_defaults(db, current_user.id)
+    return Result.success(msg="默认洞察角色已补齐")
+
+
+@router.put("/settings/roles/{role_id}", response_model=Result[InsightRoleRead])
+async def update_insight_setting_role(
+    *,
+    role_id: int,
+    payload: InsightRoleUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[InsightRoleRead]:
+    _ensure_admin(current_user, "仅管理员可维护市场洞察角色")
+    try:
+        result = await insight_role_service.update_role(db, role_id, payload, current_user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Result.success(data=result, msg="洞察角色已更新")
+
+
+@router.delete("/settings/roles/{role_id}", response_model=Result[None])
+async def delete_insight_setting_role(
+    *,
+    role_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[None]:
+    _ensure_admin(current_user, "仅管理员可维护市场洞察角色")
+    try:
+        await insight_role_service.delete_role(db, role_id, current_user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return Result.success(msg="洞察角色已删除")
+
+
+@router.get("/settings/roles/{role_id}/members", response_model=Result[list[InsightRoleMemberRead]])
+async def list_insight_setting_role_members(
+    *,
+    role_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[list[InsightRoleMemberRead]]:
+    _ensure_admin(current_user, "仅管理员可维护市场洞察角色")
+    try:
+        result = await insight_role_service.list_members(db, role_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return Result.success(data=result)
+
+
+@router.post("/settings/roles/{role_id}/members", response_model=Result[list[InsightRoleMemberRead]])
+async def add_insight_setting_role_members(
+    *,
+    role_id: int,
+    payload: InsightRoleMemberUpsert,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[list[InsightRoleMemberRead]]:
+    _ensure_admin(current_user, "仅管理员可维护市场洞察角色")
+    try:
+        result = await insight_role_service.add_members(db, role_id, payload, current_user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Result.success(data=result, msg="角色成员已更新")
+
+
+@router.delete("/settings/roles/{role_id}/members/{member_id}", response_model=Result[None])
+async def remove_insight_setting_role_member(
+    *,
+    role_id: int,
+    member_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[None]:
+    _ensure_admin(current_user, "仅管理员可维护市场洞察角色")
+    try:
+        await insight_role_service.remove_member(db, role_id, member_id, current_user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return Result.success(msg="角色成员已移除")
 
 
 @router.get("/settings/monitor-configs", response_model=Result[Page[InsightMonitorConfigRead]])
@@ -1873,6 +2174,8 @@ async def list_intelligences(
     sys_company_id: int | None = None,
     project_name: str | None = None,
     sentiment: str | None = None,
+    category_code: str | None = None,
+    importance_level: str | None = None,
     tag: str | None = None,
     data_source_id: int | None = None,
     date_from: str | None = None,
@@ -1880,6 +2183,8 @@ async def list_intelligences(
 ) -> Result[Page[InsightIntelligenceListItem]]:
     parsed_date_from = _parse_datetime_param(date_from)
     parsed_date_to = _parse_datetime_param(date_to)
+    if parsed_date_to and date_to and len(date_to.strip()) == 10:
+        parsed_date_to = parsed_date_to.replace(hour=23, minute=59, second=59, microsecond=999999)
     result = await insight_intelligence_service.list_intelligences(
         db,
         page=page,
@@ -1892,6 +2197,8 @@ async def list_intelligences(
         sys_company_id=sys_company_id,
         project_name=project_name,
         sentiment=sentiment,
+        category_code=category_code,
+        importance_level=importance_level,
         tag=tag,
         data_source_id=data_source_id,
         date_from=parsed_date_from,
@@ -1919,6 +2226,44 @@ async def bulk_action_intelligence(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return Result.success(data=result, msg="批量情报操作完成")
+
+
+@router.post("/intelligence/import-preview", response_model=Result[InsightIntelligenceImportPreviewResponse])
+async def preview_intelligence_import(
+    *,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[InsightIntelligenceImportPreviewResponse]:
+    _ = current_user
+    try:
+        content = await file.read()
+        result = await insight_intelligence_import_service.preview(
+            db,
+            file_name=file.filename or "未命名文件",
+            content=content,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Result.success(data=result, msg="文件解析完成，请确认后导入")
+
+
+@router.post("/intelligence/import-confirm", response_model=Result[InsightIntelligenceImportConfirmResponse])
+async def confirm_intelligence_import(
+    *,
+    payload: InsightIntelligenceImportConfirmRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[InsightIntelligenceImportConfirmResponse]:
+    try:
+        result = await insight_intelligence_service.import_confirm(
+            db,
+            payload,
+            user_id=current_user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Result.success(data=result, msg="情报导入完成")
 
 
 @router.post("/assistant/chat", response_model=Result[InsightAssistantChatResponse])

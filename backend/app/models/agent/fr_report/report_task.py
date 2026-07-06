@@ -209,6 +209,74 @@ class FrReportVisibilityPreference(BaseDBModel, table=True):
     status: str = Field(default="active", index=True)
 
 
+class FrReportCaseSampleJob(BaseDBModel, table=True):
+    __tablename__ = "fr_report_case_sample_job"
+
+    job_id: str = Field(index=True, unique=True)
+    source_prefix: str = Field(index=True)
+    sample_min: int = Field(default=50)
+    sample_max: int = Field(default=100)
+    include_screenshot: bool = Field(default=True)
+    preview_success_only: bool = Field(default=False)
+    use_model_analysis: bool = Field(default=True)
+    status: str = Field(default="pending", index=True)
+    total_scanned: int = Field(default=0)
+    selected_count: int = Field(default=0)
+    analyzed_count: int = Field(default=0)
+    candidate_count: int = Field(default=0)
+    case_count: int = Field(default=0)
+    failed_count: int = Field(default=0)
+    current_object_path: str | None = Field(default=None)
+    summary: dict[str, Any] = Field(default_factory=dict, sa_type=JSONB)
+    selected_reports: list[dict[str, Any]] = Field(default_factory=list, sa_type=JSONB)
+    warnings: list[str] = Field(default_factory=list, sa_type=JSONB)
+    errors: list[str] = Field(default_factory=list, sa_type=JSONB)
+
+
+class FrReportCase(BaseDBModel, table=True):
+    __tablename__ = "fr_report_case"
+
+    case_id: str = Field(index=True, unique=True)
+    sample_job_id: str | None = Field(default=None, index=True)
+    source_object_path: str = Field(index=True)
+    report_path: str | None = Field(default=None, index=True)
+    report_name: str = Field(index=True)
+    title: str = Field(index=True)
+    scenario: str | None = Field(default=None, index=True)
+    reason: str | None = None
+    evidence: dict[str, Any] = Field(default_factory=dict, sa_type=JSONB)
+    structure_summary: dict[str, Any] = Field(default_factory=dict, sa_type=JSONB)
+    snippet_refs: list[dict[str, Any]] = Field(default_factory=list, sa_type=JSONB)
+    tags: list[str] = Field(default_factory=list, sa_type=JSONB)
+    keywords: list[str] = Field(default_factory=list, sa_type=JSONB)
+    search_text: str = Field(default="")
+    content_hash: str | None = Field(default=None, index=True)
+    quality_score: float = Field(default=0)
+    preview_url: str | None = None
+    preview_status: str | None = Field(default=None, index=True)
+    screenshot_object_path: str | None = None
+    status: str = Field(default="active", index=True)
+
+
+class FrReportCaseChunk(BaseDBModel, table=True):
+    __tablename__ = "fr_report_case_chunk"
+
+    chunk_id: str = Field(index=True, unique=True)
+    case_id: str = Field(index=True)
+    source_object_path: str = Field(index=True)
+    chunk_type: str = Field(index=True)
+    title: str
+    selector: str | None = None
+    content: str = Field(default="")
+    raw_xml: str | None = None
+    tags: list[str] = Field(default_factory=list, sa_type=JSONB)
+    search_text: str = Field(default="")
+    content_hash: str | None = Field(default=None, index=True)
+    vector: list[float] = Field(default_factory=list, sa_type=JSONB)
+    vector_metadata: dict[str, Any] = Field(default_factory=dict, sa_type=JSONB)
+    status: str = Field(default="active", index=True)
+
+
 class FrReportDatabaseConnection(BaseDBModel, table=True):
     __tablename__ = "fr_report_database_connection"
 

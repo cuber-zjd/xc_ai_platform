@@ -1,4 +1,4 @@
-import { type FormEvent, useMemo, useRef, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Building2, Database, Download, ExternalLink, FileSpreadsheet, FileText, Loader2, Plus, Search, ShieldCheck, Tags, Upload } from "lucide-react";
 import { Link } from "react-router-dom";
 import { toast } from "sonner";
@@ -38,6 +38,12 @@ const monitorLevelOptions = [
     { value: "watch", label: "观察名单" },
 ];
 
+const pageSizeOptions = [
+    { value: "20", label: "每页 20" },
+    { value: "50", label: "每页 50" },
+    { value: "100", label: "每页 100" },
+];
+
 export function CompanyArchivePage() {
     const isAdmin = useAuthStore((state) => state.user?.role === "admin");
     const [keywordInput, setKeywordInput] = useState("");
@@ -52,16 +58,19 @@ export function CompanyArchivePage() {
     const [bulkAccessOpen, setBulkAccessOpen] = useState(false);
     const [selectedCompanyIds, setSelectedCompanyIds] = useState<number[]>([]);
     const [companyPage, setCompanyPage] = useState(1);
+    const [companyPageSize, setCompanyPageSize] = useState(20);
     const importInputRef = useRef<HTMLInputElement | null>(null);
     const companiesQuery = useInsightCompanies({
         page: companyPage,
-        size: 20,
+        size: companyPageSize,
         keyword: keyword || undefined,
         sys_company_id: parseOptionalNumber(sysCompanyFilter) ?? undefined,
     });
     const companies = useMemo(() => companiesQuery.data?.items ?? [], [companiesQuery.data?.items]);
     const totalCompanies = companiesQuery.data?.total ?? 0;
-    const totalCompanyPages = Math.max(1, Math.ceil(totalCompanies / 20));
+    const totalCompanyPages = Math.max(1, Math.ceil(totalCompanies / companyPageSize));
+    const currentPageCompanyIds = useMemo(() => companies.map((company) => company.id), [companies]);
+    const currentPageAllSelected = currentPageCompanyIds.length > 0 && currentPageCompanyIds.every((id) => selectedCompanyIds.includes(id));
     const effectiveSelectedCompanyId = selectedCompanyId ?? companies[0]?.id ?? null;
     const selectedCompany = companies.find((company) => company.id === effectiveSelectedCompanyId) ?? null;
     const detailQuery = useInsightCompanyDetail(effectiveSelectedCompanyId);
@@ -81,6 +90,12 @@ export function CompanyArchivePage() {
         [systemCompaniesQuery.data],
     );
     const detail = detailQuery.data;
+
+    useEffect(() => {
+        if (companyPage > totalCompanyPages) {
+            setCompanyPage(totalCompanyPages);
+        }
+    }, [companyPage, totalCompanyPages]);
 
     const trendPoints = useMemo(() => buildTrendPoints(detail?.timeline ?? []), [detail?.timeline]);
 
@@ -120,6 +135,15 @@ export function CompanyArchivePage() {
         } catch {
             toast.error("模板下载失败，请稍后重试");
         }
+    };
+
+    const toggleCurrentPageCompanies = () => {
+        setSelectedCompanyIds((current) => {
+            if (currentPageAllSelected) {
+                return current.filter((id) => !currentPageCompanyIds.includes(id));
+            }
+            return Array.from(new Set([...current, ...currentPageCompanyIds]));
+        });
     };
 
     return (
@@ -171,13 +195,11 @@ export function CompanyArchivePage() {
                         <div className="flex flex-wrap items-center justify-between gap-3">
                             <div>
                                 <div className="text-base font-black text-slate-950">企业列表</div>
-                                <p className="mt-1 text-xs font-semibold text-slate-500">共 {totalCompanies} 家，点击切换档案</p>
+                                <p className="mt-1 text-xs font-semibold text-slate-500">共 {totalCompanies} 家，已选 {selectedCompanyIds.length} 家</p>
                             </div>
-                            {selectedCompanyIds.length ? (
-                                <Button type="button" variant="outline" className="h-8 rounded-xl bg-white text-xs" onClick={() => setBulkAccessOpen(true)}>
-                                    批量授权
-                                </Button>
-                            ) : null}
+                            <Button type="button" variant="outline" className="h-8 rounded-xl bg-white text-xs" disabled={selectedCompanyIds.length === 0} onClick={() => setBulkAccessOpen(true)}>
+                                批量授权{selectedCompanyIds.length ? ` ${selectedCompanyIds.length}` : ""}
+                            </Button>
                         </div>
                         <label className="mt-3 flex h-10 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-sm">
                             <Search className="size-4 text-slate-400" />
@@ -231,6 +253,21 @@ export function CompanyArchivePage() {
                                     重置
                                 </Button>
                             </div>
+                            <div className="grid grid-cols-[1fr_auto] items-center gap-2 rounded-xl bg-slate-50 p-2">
+                                <InsightSelect
+                                    value={String(companyPageSize)}
+                                    options={pageSizeOptions}
+                                    triggerClassName="h-9 rounded-lg text-xs"
+                                    onChange={(value) => {
+                                        setCompanyPageSize(Number(value) || 20);
+                                        setSelectedCompanyIds([]);
+                                        setCompanyPage(1);
+                                    }}
+                                />
+                                <Button type="button" variant="outline" className="h-9 rounded-lg bg-white px-3 text-xs" disabled={companies.length === 0} onClick={toggleCurrentPageCompanies}>
+                                    {currentPageAllSelected ? "取消本页" : "全选本页"}
+                                </Button>
+                            </div>
                         </div>
                     </div>
                     <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-3">
@@ -253,7 +290,7 @@ export function CompanyArchivePage() {
                     </div>
                     <div className="shrink-0 border-t border-slate-100 px-4 py-3">
                         <div className="flex items-center justify-between gap-3 text-xs font-semibold text-slate-500">
-                            <span>{companyPage} / {totalCompanyPages}</span>
+                            <span>{companyPage} / {totalCompanyPages} · 每页 {companyPageSize}</span>
                             <div className="flex items-center gap-2">
                                 <Button type="button" variant="outline" className="h-8 rounded-xl bg-white text-xs" disabled={companyPage <= 1} onClick={() => setCompanyPage((page) => Math.max(1, page - 1))}>
                                     上一页
@@ -453,6 +490,7 @@ export function CompanyArchivePage() {
                 selectedCompanyId={effectiveSelectedCompanyId}
                 selectedCompanyIds={selectedCompanyIds}
                 page={companyPage}
+                pageSize={companyPageSize}
                 total={totalCompanies}
                 totalPages={totalCompanyPages}
                 onOpenChange={setSelectorOpen}
@@ -497,6 +535,11 @@ export function CompanyArchivePage() {
                     setBulkAccessOpen(true);
                 }}
                 onPageChange={setCompanyPage}
+                onPageSizeChange={(value) => {
+                    setCompanyPageSize(value);
+                    setCompanyPage(1);
+                    setSelectedCompanyIds([]);
+                }}
             />
 
             <CreateCompanyDialog
@@ -594,6 +637,7 @@ function CompanySelectorDialog({
     selectedCompanyId,
     selectedCompanyIds,
     page,
+    pageSize,
     total,
     totalPages,
     onOpenChange,
@@ -606,6 +650,7 @@ function CompanySelectorDialog({
     onToggleCurrentPage,
     onBulkAccess,
     onPageChange,
+    onPageSizeChange,
 }: {
     open: boolean;
     companies: InsightCompanyListItem[];
@@ -617,6 +662,7 @@ function CompanySelectorDialog({
     selectedCompanyId: number | null;
     selectedCompanyIds: number[];
     page: number;
+    pageSize: number;
     total: number;
     totalPages: number;
     onOpenChange: (open: boolean) => void;
@@ -629,6 +675,7 @@ function CompanySelectorDialog({
     onToggleCurrentPage: () => void;
     onBulkAccess: () => void;
     onPageChange: (page: number) => void;
+    onPageSizeChange: (pageSize: number) => void;
 }) {
     const currentPageAllSelected = companies.length > 0 && companies.every((company) => selectedCompanyIds.includes(company.id));
     return (
@@ -660,21 +707,12 @@ function CompanySelectorDialog({
                                 />
                             </div>
                         </label>
-                        <label className="grid gap-2">
-                            <span className="text-sm font-bold text-slate-700">所属公司</span>
-                            <select
-                                value={sysCompanyFilter}
-                                onChange={(event) => onSysCompanyFilterChange(event.target.value)}
-                                className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 shadow-none outline-none transition hover:border-blue-200 hover:bg-blue-50/30 focus:border-blue-300 focus:ring-4 focus:ring-blue-100"
-                            >
-                                <option value="">全部所属公司</option>
-                                {systemCompanyOptions.map((option) => (
-                                    <option key={option.value} value={option.value}>
-                                        {option.label}
-                                    </option>
-                                ))}
-                            </select>
-                        </label>
+                        <InsightSelect
+                            label="所属公司"
+                            value={sysCompanyFilter}
+                            options={[{ value: "", label: "全部所属公司" }, ...systemCompanyOptions]}
+                            onChange={onSysCompanyFilterChange}
+                        />
                         <Button type="button" className="h-11 rounded-xl bg-primary px-5 text-primary-foreground" onClick={onSearch}>
                             搜索
                         </Button>
@@ -688,6 +726,12 @@ function CompanySelectorDialog({
                             {fetching ? "正在筛选企业..." : `共 ${total} 家企业 · 第 ${page} / ${totalPages} 页`}
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
+                            <InsightSelect
+                                value={String(pageSize)}
+                                options={pageSizeOptions}
+                                triggerClassName="h-9 rounded-lg text-xs"
+                                onChange={(value) => onPageSizeChange(Number(value) || 20)}
+                            />
                             <Button type="button" variant="ghost" className="h-9 rounded-lg text-blue-700" disabled={companies.length === 0} onClick={onToggleCurrentPage}>
                                 {currentPageAllSelected ? "取消全选本页" : "全选本页"}
                             </Button>

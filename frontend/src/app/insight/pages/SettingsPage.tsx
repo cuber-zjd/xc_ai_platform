@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, CheckCircle2, CircleSlash, Database, Loader2, Pencil, Plus, RefreshCw, Save, Settings, Sparkles, Tag, Trash2, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, CircleSlash, Database, Loader2, Pencil, Plus, RefreshCw, Save, Settings, Sparkles, Tag, Trash2, Users, XCircle } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 import { SectionCard } from "../components";
 import {
@@ -13,19 +14,28 @@ import {
     useInsightCreateChannel,
     useInsightCreateDataSource,
     useInsightCreateMonitorConfig,
+    useInsightCreateRole,
     useInsightCreateTag,
     useInsightDeleteChannel,
     useInsightDeleteDataSource,
     useInsightDeleteMonitorConfig,
+    useInsightDeleteRole,
     useInsightDictionaryOverview,
     useInsightDisableTag,
     useInsightDataSources,
     useInsightMonitorConfigs,
+    useInsightRoles,
+    useInsightRoleMembers,
+    useInsightAddRoleMembers,
+    useInsightRemoveRoleMember,
+    useInsightSeedDefaultRoles,
+    useInsightSelectorUsers,
     useInsightSeedDefaultChannels,
     useInsightSettingsStatus,
     useInsightSyncLegacyDataSources,
     useInsightUpdateDataSource,
     useInsightUpdateMonitorConfig,
+    useInsightUpdateRole,
     useInsightUpdateChannel,
     useInsightUpdateTag,
 } from "../hooks";
@@ -38,6 +48,9 @@ import type {
     InsightIntelligenceTypeRead,
     InsightMonitorConfigCreate,
     InsightMonitorConfigRead,
+    InsightRoleCreate,
+    InsightRoleMemberRead,
+    InsightRoleRead,
     InsightSettingsStatusItem,
     InsightTagRead,
 } from "../api";
@@ -145,12 +158,13 @@ const emptyChannelForm: ChannelFormState = {
     comment: "",
 };
 
-type SettingsTab = "status" | "channels" | "execution" | "monitoring" | "tags" | "types";
+type SettingsTab = "status" | "channels" | "execution" | "monitoring" | "roles" | "tags" | "types";
 
 const settingsTabs: { key: SettingsTab; label: string }[] = [
     { key: "status", label: "配置状态" },
     { key: "channels", label: "渠道库" },
     { key: "execution", label: "执行源" },
+    { key: "roles", label: "洞察角色" },
     { key: "tags", label: "标签字典" },
     { key: "types", label: "情报类型" },
 ];
@@ -158,6 +172,7 @@ const settingsTabs: { key: SettingsTab; label: string }[] = [
 const channelPageSize = 12;
 const executionPageSize = 12;
 const monitorPageSize = 12;
+const rolePageSize = 12;
 
 const executionRoleOptions = [
     { value: "", label: "全部执行角色" },
@@ -1079,6 +1094,8 @@ export function SettingsPage() {
                     </SectionCard>
                 ) : null}
 
+                {activeTab === "roles" ? <InsightRolesPanel /> : null}
+
                 {activeTab === "tags" ? (
                 <div className="insight-page-scroll">
                 <SectionCard
@@ -1152,6 +1169,349 @@ export function SettingsPage() {
                 </div>
             </div>
         </PageContainer>
+    );
+}
+
+type RoleFormState = {
+    role_code: string;
+    role_name: string;
+    description: string;
+    sort_no: string;
+    status: string;
+};
+
+const emptyRoleForm: RoleFormState = {
+    role_code: "",
+    role_name: "",
+    description: "",
+    sort_no: "0",
+    status: "active",
+};
+
+function FieldControl({
+    label,
+    value,
+    placeholder,
+    type = "text",
+    onChange,
+}: {
+    label: string;
+    value: string;
+    placeholder?: string;
+    type?: string;
+    onChange: (value: string) => void;
+}) {
+    return (
+        <label className="grid gap-1 text-sm font-black text-slate-700">
+            {label}
+            <Input value={value} type={type} placeholder={placeholder} onChange={(event) => onChange(event.target.value)} />
+        </label>
+    );
+}
+
+function InsightRolesPanel() {
+    const [keyword, setKeyword] = useState("");
+    const [page, setPage] = useState(1);
+    const [dialogOpen, setDialogOpen] = useState(false);
+    const [editingRole, setEditingRole] = useState<InsightRoleRead | null>(null);
+    const [form, setForm] = useState<RoleFormState>(emptyRoleForm);
+    const [memberRole, setMemberRole] = useState<InsightRoleRead | null>(null);
+    const [memberKeyword, setMemberKeyword] = useState("");
+    const [selectedUserIds, setSelectedUserIds] = useState<number[]>([]);
+
+    const rolesQuery = useInsightRoles({ page, size: rolePageSize, keyword: keyword || undefined });
+    const membersQuery = useInsightRoleMembers(memberRole?.id ?? null);
+    const usersQuery = useInsightSelectorUsers(memberKeyword);
+    const createRoleMutation = useInsightCreateRole();
+    const updateRoleMutation = useInsightUpdateRole();
+    const deleteRoleMutation = useInsightDeleteRole();
+    const seedRoleMutation = useInsightSeedDefaultRoles();
+    const addMembersMutation = useInsightAddRoleMembers();
+    const removeMemberMutation = useInsightRemoveRoleMember();
+    const isMutating =
+        createRoleMutation.isPending ||
+        updateRoleMutation.isPending ||
+        deleteRoleMutation.isPending ||
+        seedRoleMutation.isPending ||
+        addMembersMutation.isPending ||
+        removeMemberMutation.isPending;
+
+    const total = rolesQuery.data?.total ?? 0;
+    const totalPages = Math.max(1, Math.ceil(total / rolePageSize));
+    const currentPage = Math.min(page, totalPages);
+
+    const openCreate = () => {
+        setEditingRole(null);
+        setForm(emptyRoleForm);
+        setDialogOpen(true);
+    };
+
+    const openEdit = (role: InsightRoleRead) => {
+        setEditingRole(role);
+        setForm({
+            role_code: role.role_code,
+            role_name: role.role_name,
+            description: role.description ?? "",
+            sort_no: String(role.sort_no ?? 0),
+            status: role.status,
+        });
+        setDialogOpen(true);
+    };
+
+    const saveRole = () => {
+        const payload: InsightRoleCreate = {
+            role_code: form.role_code.trim(),
+            role_name: form.role_name.trim(),
+            description: form.description.trim() || null,
+            sort_no: Number(form.sort_no || 0),
+            status: form.status,
+        };
+        if (!payload.role_code || !payload.role_name) {
+            toast.warning("请填写角色编码和角色名称");
+            return;
+        }
+        if (editingRole) {
+            updateRoleMutation.mutate(
+                { roleId: editingRole.id, data: payload },
+                {
+                    onSuccess: () => {
+                        setDialogOpen(false);
+                        setEditingRole(null);
+                        setForm(emptyRoleForm);
+                    },
+                },
+            );
+            return;
+        }
+        createRoleMutation.mutate(payload, {
+            onSuccess: () => {
+                setDialogOpen(false);
+                setForm(emptyRoleForm);
+            },
+        });
+    };
+
+    const addSelectedMembers = () => {
+        if (!memberRole || selectedUserIds.length === 0) return;
+        addMembersMutation.mutate(
+            { roleId: memberRole.id, data: { user_ids: selectedUserIds } },
+            {
+                onSuccess: () => {
+                    setSelectedUserIds([]);
+                    setMemberKeyword("");
+                },
+            },
+        );
+    };
+
+    return (
+        <SectionCard className="flex h-full min-h-0 flex-col p-3">
+            <div className="grid gap-2 rounded-xl border border-slate-200 bg-slate-50 p-2 md:grid-cols-[minmax(0,1fr)_auto_auto]">
+                <Input
+                    value={keyword}
+                    onChange={(event) => {
+                        setKeyword(event.target.value);
+                        setPage(1);
+                    }}
+                    placeholder="搜索角色名称或编码"
+                />
+                <Button type="button" variant="outline" size="sm" className="h-11 rounded-2xl bg-white px-4" disabled={isMutating} onClick={() => seedRoleMutation.mutate()}>
+                    {seedRoleMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
+                    补齐默认角色
+                </Button>
+                <Button type="button" size="sm" className="h-11 rounded-2xl px-4" disabled={isMutating} onClick={openCreate}>
+                    <Plus className="size-4" />
+                    新增角色
+                </Button>
+            </div>
+
+            <div className="mt-3 min-h-0 flex-1 divide-y divide-slate-100 overflow-y-auto rounded-xl border border-slate-200 bg-white">
+                {rolesQuery.isLoading ? (
+                    <div className="flex min-h-[140px] items-center justify-center gap-2 text-sm font-semibold text-slate-500">
+                        <Loader2 className="size-4 animate-spin" />
+                        正在读取洞察角色
+                    </div>
+                ) : (rolesQuery.data?.items ?? []).length > 0 ? (
+                    rolesQuery.data?.items.map((role) => (
+                        <div key={role.id} className="grid gap-3 px-4 py-4 md:grid-cols-[minmax(0,1fr)_110px_220px] md:items-center">
+                            <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <h3 className="truncate text-sm font-black text-slate-950">{role.role_name}</h3>
+                                    <Badge variant={role.status === "active" ? "default" : "secondary"} className="rounded-full">
+                                        {role.status === "active" ? "启用" : "停用"}
+                                    </Badge>
+                                </div>
+                                <div className="mt-1 text-xs font-semibold text-slate-500">{role.role_code}</div>
+                                {role.description ? <p className="mt-2 line-clamp-2 text-sm leading-6 text-slate-600">{role.description}</p> : null}
+                            </div>
+                            <div className="text-sm font-black text-slate-700">{role.member_count} 名成员</div>
+                            <div className="flex flex-wrap justify-start gap-2 md:justify-end">
+                                <Button type="button" variant="outline" size="sm" className="rounded-xl bg-white" onClick={() => setMemberRole(role)}>
+                                    <Users className="size-4" />
+                                    成员
+                                </Button>
+                                <Button type="button" variant="outline" size="sm" className="rounded-xl bg-white" onClick={() => openEdit(role)}>
+                                    <Pencil className="size-4" />
+                                    编辑
+                                </Button>
+                                <Button type="button" variant="outline" size="sm" className="rounded-xl bg-white text-rose-600 hover:text-rose-700" disabled={isMutating} onClick={() => deleteRoleMutation.mutate(role.id)}>
+                                    <Trash2 className="size-4" />
+                                    删除
+                                </Button>
+                            </div>
+                        </div>
+                    ))
+                ) : (
+                    <div className="flex min-h-[140px] items-center justify-center gap-2 text-sm font-semibold text-slate-500">
+                        <Users className="size-4" />
+                        暂无洞察角色，可先补齐默认角色
+                    </div>
+                )}
+            </div>
+
+            <div className="mt-3 flex shrink-0 flex-col gap-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-500 sm:flex-row sm:items-center sm:justify-between">
+                <div>共 {total} 个角色，每页 {rolePageSize} 个，第 {currentPage} / {totalPages} 页</div>
+                <div className="flex gap-2">
+                    <Button type="button" variant="outline" size="sm" className="h-9 flex-1 rounded-lg bg-white sm:flex-none" disabled={page <= 1 || rolesQuery.isFetching} onClick={() => setPage((value) => Math.max(1, value - 1))}>
+                        上一页
+                    </Button>
+                    <Button type="button" variant="outline" size="sm" className="h-9 flex-1 rounded-lg bg-white sm:flex-none" disabled={page >= totalPages || rolesQuery.isFetching} onClick={() => setPage((value) => Math.min(totalPages, value + 1))}>
+                        下一页
+                    </Button>
+                </div>
+            </div>
+
+            <Dialog
+                open={dialogOpen}
+                onOpenChange={(open) => {
+                    setDialogOpen(open);
+                    if (!open) {
+                        setEditingRole(null);
+                        setForm(emptyRoleForm);
+                    }
+                }}
+            >
+                <DialogContent className="max-h-[88vh] gap-3 overflow-y-auto p-4 sm:max-w-2xl sm:p-5">
+                    <DialogHeader>
+                        <DialogTitle>{editingRole ? "编辑洞察角色" : "新增洞察角色"}</DialogTitle>
+                        <DialogDescription>洞察角色仅用于市场洞察内的企业、监测配置、情报和报告授权。</DialogDescription>
+                    </DialogHeader>
+                    <div className="grid gap-3 md:grid-cols-2">
+                        <FieldControl label="角色名称" value={form.role_name} placeholder="如 销售关注组" onChange={(value) => setForm((current) => ({ ...current, role_name: value }))} />
+                        <FieldControl label="角色编码" value={form.role_code} placeholder="如 sales_focus" onChange={(value) => setForm((current) => ({ ...current, role_code: value }))} />
+                        <FieldControl label="排序" value={form.sort_no} type="number" onChange={(value) => setForm((current) => ({ ...current, sort_no: value }))} />
+                        <label className="grid gap-1 text-sm font-black text-slate-700">
+                            状态
+                            <Select value={form.status} onValueChange={(value) => setForm((current) => ({ ...current, status: value }))}>
+                                <SelectTrigger className="h-11 rounded-2xl border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 shadow-none">
+                                    <SelectValue placeholder="选择状态" />
+                                </SelectTrigger>
+                                <SelectContent className="rounded-xl border-slate-200 bg-white p-1 shadow-xl">
+                                    <SelectItem value="active">启用</SelectItem>
+                                    <SelectItem value="disabled">停用</SelectItem>
+                                </SelectContent>
+                            </Select>
+                        </label>
+                        <label className="grid gap-1 text-sm font-black text-slate-700 md:col-span-2">
+                            说明
+                            <textarea
+                                value={form.description}
+                                onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))}
+                                className="min-h-24 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 outline-none focus:border-blue-300 focus:ring-2 focus:ring-blue-100"
+                                placeholder="说明该角色适合查看哪些企业、主题或报告"
+                            />
+                        </label>
+                    </div>
+                    <div className="flex justify-end gap-2">
+                        <Button type="button" variant="outline" className="rounded-xl bg-white" onClick={() => setDialogOpen(false)}>取消</Button>
+                        <Button type="button" className="rounded-xl" disabled={isMutating} onClick={saveRole}>
+                            {createRoleMutation.isPending || updateRoleMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
+                            保存
+                        </Button>
+                    </div>
+                </DialogContent>
+            </Dialog>
+
+            <Dialog
+                open={Boolean(memberRole)}
+                onOpenChange={(open) => {
+                    if (!open) {
+                        setMemberRole(null);
+                        setMemberKeyword("");
+                        setSelectedUserIds([]);
+                    }
+                }}
+            >
+                <DialogContent className="max-h-[88vh] gap-3 overflow-hidden p-4 sm:max-w-3xl sm:p-5">
+                    <DialogHeader>
+                        <DialogTitle>{memberRole ? `${memberRole.role_name}成员` : "角色成员"}</DialogTitle>
+                        <DialogDescription>把人员加入洞察角色后，可在企业档案、监测配置和报告权限中按角色授权。</DialogDescription>
+                    </DialogHeader>
+                    <div className="grid min-h-0 gap-3 md:grid-cols-2">
+                        <div className="min-h-0 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                            <Input value={memberKeyword} onChange={(event) => setMemberKeyword(event.target.value)} placeholder="搜索姓名、账号或工号" />
+                            <div className="mt-3 max-h-72 space-y-2 overflow-y-auto">
+                                {(usersQuery.data ?? []).map((user) => {
+                                    const checked = selectedUserIds.includes(user.id);
+                                    return (
+                                        <button
+                                            key={user.id}
+                                            type="button"
+                                            className={`flex w-full items-center justify-between rounded-xl border px-3 py-2 text-left text-sm font-semibold ${
+                                                checked ? "border-blue-200 bg-blue-50 text-blue-900" : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                                            }`}
+                                            onClick={() => setSelectedUserIds((current) => (checked ? current.filter((id) => id !== user.id) : [...current, user.id]))}
+                                        >
+                                            <span className="min-w-0">
+                                                <span className="block truncate font-black">{user.label}</span>
+                                                <span className="block truncate text-xs text-slate-500">{user.subtitle || user.employee_id || user.value}</span>
+                                            </span>
+                                            {checked ? <CheckCircle2 className="size-4 shrink-0 text-blue-600" /> : null}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                            <Button type="button" className="mt-3 w-full rounded-xl" disabled={!memberRole || selectedUserIds.length === 0 || addMembersMutation.isPending} onClick={addSelectedMembers}>
+                                {addMembersMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />}
+                                加入选中人员
+                            </Button>
+                        </div>
+                        <div className="min-h-0 rounded-2xl border border-slate-200 bg-white">
+                            <div className="border-b border-slate-100 px-3 py-2 text-sm font-black text-slate-700">已加入成员</div>
+                            <div className="max-h-80 divide-y divide-slate-100 overflow-y-auto">
+                                {membersQuery.isLoading ? (
+                                    <div className="flex min-h-28 items-center justify-center gap-2 text-sm font-semibold text-slate-500">
+                                        <Loader2 className="size-4 animate-spin" />
+                                        正在读取成员
+                                    </div>
+                                ) : (membersQuery.data ?? []).length > 0 ? (
+                                    (membersQuery.data ?? []).map((member: InsightRoleMemberRead) => (
+                                        <div key={member.id} className="flex items-center justify-between gap-3 px-3 py-3">
+                                            <div className="min-w-0">
+                                                <div className="truncate text-sm font-black text-slate-900">{member.user_name || member.username || member.user_id}</div>
+                                                <div className="truncate text-xs font-semibold text-slate-500">{member.employee_id || member.username || ""}</div>
+                                            </div>
+                                            <Button
+                                                type="button"
+                                                variant="ghost"
+                                                size="sm"
+                                                className="rounded-xl text-rose-600 hover:bg-rose-50 hover:text-rose-700"
+                                                disabled={!memberRole || removeMemberMutation.isPending}
+                                                onClick={() => memberRole && removeMemberMutation.mutate({ roleId: memberRole.id, memberId: member.id })}
+                                            >
+                                                移除
+                                            </Button>
+                                        </div>
+                                    ))
+                                ) : (
+                                    <div className="flex min-h-28 items-center justify-center text-sm font-semibold text-slate-500">暂无成员</div>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                </DialogContent>
+            </Dialog>
+        </SectionCard>
     );
 }
 

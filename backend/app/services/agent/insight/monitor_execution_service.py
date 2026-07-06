@@ -1,4 +1,5 @@
 import asyncio
+from collections import defaultdict
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any
@@ -14,6 +15,7 @@ from app.schemas.agent.insight.crawl import InsightSearchDiscoveryRequest
 from app.schemas.agent.insight.data_source import InsightDataSourceScheduleExecution, InsightDataSourceScheduleRunResponse
 from app.services.agent.insight.crawler.channel_adapter_service import insight_channel_adapter_service
 from app.services.agent.insight.crawler import insight_search_discovery_service
+from app.services.agent.insight.crawler.search_client import InsightSearchHit, bocha_search_client, doubao_web_search_client
 
 
 @dataclass(slots=True)
@@ -76,13 +78,26 @@ class MonitorCollectionPlan:
         }
 
 
+@dataclass(slots=True)
+class GroupedDiscoveryBatch:
+    group_key: str
+    group_name: str
+    rows: list[InsightMonitorConfig]
+    query: str
+
+
 class InsightMonitorExecutionService:
     """按监测配置执行采集，不再把旧数据源作为调度主表。"""
 
-    supported_search_channel_codes = {"baidu_news": "baidu_news", "bocha_search": "bocha"}
-    default_search_channel_order = ("baidu_news", "bocha_search")
+    supported_search_channel_codes = {
+        "baidu_news": "baidu_news",
+        "bocha_search": "bocha",
+        "doubao_web_search": "doubao_web_search",
+    }
+    default_search_channel_order = ("baidu_news", "bocha_search", "doubao_web_search")
     free_discovery_channel_codes = {"baidu_news"}
     paid_discovery_channel_codes = {"bocha_search"}
+    ai_discovery_channel_codes = {"doubao_web_search"}
     scenario_modules = (
         "企业新闻",
         "官网动态",
@@ -96,6 +111,10 @@ class InsightMonitorExecutionService:
     )
     api_concurrency = 8
     playwright_concurrency = 4
+    grouped_search_concurrency = 3
+    grouped_ai_search_concurrency = 2
+    grouped_batch_size = 8
+    grouped_daily_batch_limit = 20
     channel_timeout_seconds = 180
 
     async def run_due_monitor_configs(
@@ -133,6 +152,7 @@ class InsightMonitorExecutionService:
         )
 
         executions: list[InsightDataSourceScheduleExecution] = []
+        successful_row_ids: list[int] = []
         for row in rows:
             row.last_schedule_status = "running"
             row.last_schedule_message = "监测配置采集中"
@@ -141,7 +161,7 @@ class InsightMonitorExecutionService:
             await db.commit()
             try:
                 result = await asyncio.wait_for(
-                    self.execute_monitor_config(db, row, user_id=user_id),
+                    self.execute_monitor_config(db, row, user_id=user_id, include_conditional_discovery=False),
                     timeout=self._timeout_seconds(row),
                 )
                 found_count = sum(len(item.hits) for item in result.get("search_results", []))
@@ -150,11 +170,13 @@ class InsightMonitorExecutionService:
                 skipped_channel_count = int(result.get("skipped_channel_count") or 0)
                 planned_channel_count = int(result.get("planned_channel_count") or 0)
                 paid_channel_call_count = int(result.get("paid_channel_call_count") or 0)
+                ai_search_call_count = int(result.get("ai_search_call_count") or 0)
                 plan_summary = result.get("collection_plan")
                 row.last_schedule_status = "success"
                 row.last_schedule_message = (
                     f"计划 {planned_channel_count} 个渠道，执行 {executed_channel_count} 个，"
-                    f"付费补充 {paid_channel_call_count} 次，跳过/暂缓 {skipped_channel_count} 个；"
+                    f"博查补充 {paid_channel_call_count} 次，AI 联网补充 {ai_search_call_count} 次，"
+                    f"跳过/暂缓 {skipped_channel_count} 个；"
                     f"发现 {found_count} 条，候选 {candidate_count} 条"
                 )
                 row.next_run_time = self._calculate_next_run_time(row.fetch_frequency, row.config_json, datetime.now())
@@ -165,6 +187,8 @@ class InsightMonitorExecutionService:
                 row.update_by = str(user_id) if user_id else None
                 row.update_time = datetime.now()
                 await db.commit()
+                if row.id:
+                    successful_row_ids.append(row.id)
                 executions.append(
                     InsightDataSourceScheduleExecution(
                         monitor_config_id=row.id,
@@ -208,6 +232,18 @@ class InsightMonitorExecutionService:
                     )
                 )
 
+        grouped_summary = await self._execute_grouped_daily_discovery(db, successful_row_ids, user_id=user_id)
+        grouped_by_monitor = grouped_summary.get("by_monitor_config_id", {})
+        if grouped_by_monitor:
+            for execution in executions:
+                detail = grouped_by_monitor.get(str(execution.monitor_config_id)) or grouped_by_monitor.get(execution.monitor_config_id)
+                if not detail:
+                    continue
+                extra_message = (
+                    f"；分组搜索补充：发现 {detail.get('hits', 0)} 条，候选 {detail.get('candidates', 0)} 条"
+                )
+                execution.message = f"{execution.message or ''}{extra_message}"[:1000]
+
         failed_count = sum(1 for item in executions if item.status == "failed")
         return InsightDataSourceScheduleRunResponse(
             checked_count=checked_count,
@@ -223,6 +259,7 @@ class InsightMonitorExecutionService:
         row: InsightMonitorConfig,
         *,
         user_id: int | None,
+        include_conditional_discovery: bool = True,
     ) -> dict[str, Any]:
         channels = await self._active_channels(db)
         query = await self._build_query(db, row)
@@ -252,19 +289,34 @@ class InsightMonitorExecutionService:
                 search_results.append(result)
                 executed_channels.append(item.to_dict())
 
-        should_run_paid_search = self._should_run_paid_discovery(row, search_results, channel_errors)
+        should_run_paid_search = include_conditional_discovery and self._should_run_paid_discovery(row, search_results, channel_errors)
+        should_run_ai_search = self._should_run_ai_discovery(row, search_results, channel_errors)
         paid_budget = int(plan.budget.get("paid_search_calls_per_run") or 0)
+        ai_search_budget = int(plan.budget.get("ai_search_calls_per_run") or 0)
         conditional_to_run: list[MonitorChannelPlanItem] = []
-        for item in plan.conditional_items():
+        ai_search_call_count = 0
+        if not include_conditional_discovery:
+            for item in plan.conditional_items():
+                skipped_channels.append(item.to_dict() | {"reason": "周期调度中由每日分组搜索统一补充"})
+        conditional_items = plan.conditional_items() if include_conditional_discovery else []
+        for item in conditional_items:
             if item.channel.channel_code in self.paid_discovery_channel_codes and not should_run_paid_search:
-                skipped_channels.append(item.to_dict() | {"reason": "百度资讯结果已满足本轮入库需要，未调用付费补充源"})
+                skipped_channels.append(item.to_dict() | {"reason": "本轮策略判断可暂缓付费补充源"})
                 continue
             if item.channel.channel_code in self.paid_discovery_channel_codes and paid_channel_call_count >= paid_budget:
                 skipped_channels.append(item.to_dict() | {"reason": "本轮付费搜索预算已用完"})
                 continue
+            if item.channel.channel_code in self.ai_discovery_channel_codes and not should_run_ai_search:
+                skipped_channels.append(item.to_dict() | {"reason": "基础发现已有足够线索，本轮暂缓 AI 联网补充"})
+                continue
+            if item.channel.channel_code in self.ai_discovery_channel_codes and ai_search_call_count >= ai_search_budget:
+                skipped_channels.append(item.to_dict() | {"reason": "本轮 AI 联网搜索预算已用完"})
+                continue
             conditional_to_run.append(item)
             if item.channel.channel_code in self.paid_discovery_channel_codes:
                 paid_channel_call_count += 1
+            if item.channel.channel_code in self.ai_discovery_channel_codes:
+                ai_search_call_count += 1
 
         conditional_results = await self._execute_plan_items_concurrently(
             row_id=row.id or 0,
@@ -296,10 +348,286 @@ class InsightMonitorExecutionService:
             "executed_channel_count": len(search_results),
             "skipped_channel_count": len(skipped_channels),
             "paid_channel_call_count": paid_channel_call_count,
+            "ai_search_call_count": ai_search_call_count,
             "executed_channels": executed_channels,
             "skipped_channels": skipped_channels[:50],
             "channel_errors": channel_errors[:20],
         }
+
+    async def _execute_grouped_daily_discovery(
+        self,
+        db: AsyncSession,
+        row_ids: list[int],
+        *,
+        user_id: int | None,
+    ) -> dict[str, Any]:
+        if not row_ids:
+            return {"by_monitor_config_id": {}, "batches": []}
+        rows = list(
+            (
+                await db.exec(
+                    select(InsightMonitorConfig)
+                    .where(
+                        InsightMonitorConfig.id.in_(row_ids),
+                        InsightMonitorConfig.is_deleted == 0,
+                        InsightMonitorConfig.status == "active",
+                    )
+                    .order_by(InsightMonitorConfig.id.asc())
+                )
+            ).all()
+        )
+        if not rows:
+            return {"by_monitor_config_id": {}, "batches": []}
+
+        channels = {channel.channel_code: channel for channel in await self._active_channels(db)}
+        bocha_channel = channels.get("bocha_search")
+        doubao_channel = channels.get("doubao_web_search")
+        if not bocha_channel and not doubao_channel:
+            return {"by_monitor_config_id": {}, "batches": []}
+
+        batches = self._build_grouped_discovery_batches(rows)
+        by_monitor: dict[int, dict[str, int]] = defaultdict(lambda: {"hits": 0, "candidates": 0})
+        batch_logs: list[dict[str, Any]] = []
+        semaphore = asyncio.Semaphore(self.grouped_search_concurrency)
+        ai_semaphore = asyncio.Semaphore(self.grouped_ai_search_concurrency)
+
+        async def run_one(batch: GroupedDiscoveryBatch, channel: InsightChannel, handler_code: str) -> dict[str, Any]:
+            current_semaphore = ai_semaphore if handler_code == "doubao_web_search" else semaphore
+            async with current_semaphore:
+                try:
+                    raw_hits = await self._search_grouped_channel(batch, handler_code)
+                except Exception as exc:
+                    return {
+                        "group_key": batch.group_key,
+                        "channel_code": channel.channel_code,
+                        "query": batch.query,
+                        "status": "failed",
+                        "error": str(exc)[:500],
+                    }
+
+            assigned = self._assign_grouped_hits(batch.rows, raw_hits)
+            hit_count = 0
+            candidate_count = 0
+            for row, hits in assigned.values():
+                if not hits or not row.id:
+                    continue
+                request = InsightSearchDiscoveryRequest(
+                    query=batch.query,
+                    channels=[handler_code],
+                    freshness="halfMonth",
+                    max_results=min(max(len(hits), 1), self._frequency_max_results(row.fetch_frequency)),
+                    crawl_top_n=0,
+                    monitor_config_id=row.id,
+                    source_channel_id=channel.id,
+                    include_keywords=[],
+                    exclude_keywords=row.excluded_keywords or [],
+                    filter_prompt=self._filter_prompt(row, channel),
+                    enable_llm_filter=True,
+                    llm_min_score=0.45,
+                    create_candidate_from_hits=True,
+                    run_type=self._run_type(row),
+                )
+                async with async_session() as ingest_db:
+                    response = await insight_search_discovery_service.ingest_search_hits(
+                        ingest_db,
+                        request,
+                        hits,
+                        user_id=user_id,
+                        is_admin=True,
+                    )
+                row_hit_count = len(response.hits)
+                row_candidate_count = len(response.candidates)
+                hit_count += row_hit_count
+                candidate_count += row_candidate_count
+                by_monitor[row.id]["hits"] += row_hit_count
+                by_monitor[row.id]["candidates"] += row_candidate_count
+            return {
+                "group_key": batch.group_key,
+                "group_name": batch.group_name,
+                "channel_code": channel.channel_code,
+                "query": batch.query,
+                "status": "success",
+                "raw_hits": len(raw_hits),
+                "assigned_monitor_count": len(assigned),
+                "hits": hit_count,
+                "candidates": candidate_count,
+            }
+
+        tasks: list[asyncio.Task] = []
+        for batch in batches:
+            if bocha_channel:
+                tasks.append(asyncio.create_task(run_one(batch, bocha_channel, "bocha")))
+            if doubao_channel:
+                tasks.append(asyncio.create_task(run_one(batch, doubao_channel, "doubao_web_search")))
+        if tasks:
+            batch_logs = [await task for task in asyncio.as_completed(tasks)]
+
+        for row_id, counts in by_monitor.items():
+            row = await db.get(InsightMonitorConfig, row_id)
+            if not row:
+                continue
+            suffix = f"；分组搜索补充发现 {counts['hits']} 条，候选 {counts['candidates']} 条"
+            row.last_schedule_message = f"{row.last_schedule_message or ''}{suffix}"[:1000]
+            row.update_time = datetime.now()
+            db.add(row)
+        if by_monitor:
+            await db.commit()
+
+        return {
+            "by_monitor_config_id": {str(key): value for key, value in by_monitor.items()},
+            "batches": batch_logs,
+        }
+
+    async def _search_grouped_channel(self, batch: GroupedDiscoveryBatch, handler_code: str) -> list[InsightSearchHit]:
+        count = min(30, max(12, len(batch.rows) * 4))
+        if handler_code == "bocha":
+            hits = await bocha_search_client.search(batch.query, count, "halfMonth")
+        elif handler_code == "doubao_web_search":
+            hits = await doubao_web_search_client.search(batch.query, min(count, 15), "halfMonth")
+        else:
+            hits = []
+        return [
+            InsightSearchHit(
+                channel=hit.channel,
+                title=hit.title,
+                url=hit.url,
+                snippet=hit.snippet,
+                published_at=hit.published_at,
+                raw=(hit.raw or {})
+                | {
+                    "grouped_discovery": True,
+                    "group_key": batch.group_key,
+                    "group_name": batch.group_name,
+                    "group_query": batch.query,
+                },
+            )
+            for hit in hits
+        ]
+
+    def _build_grouped_discovery_batches(self, rows: list[InsightMonitorConfig]) -> list[GroupedDiscoveryBatch]:
+        grouped: dict[str, list[InsightMonitorConfig]] = defaultdict(list)
+        for row in rows:
+            if self._is_placeholder_monitor(row):
+                continue
+            grouped[self._group_key(row)].append(row)
+
+        batches: list[GroupedDiscoveryBatch] = []
+        for group_key, group_rows in sorted(grouped.items(), key=lambda item: item[0]):
+            ordered_rows = sorted(group_rows, key=lambda item: (item.monitor_strength != "deep", item.id or 0))
+            for index in range(0, len(ordered_rows), self.grouped_batch_size):
+                chunk = ordered_rows[index : index + self.grouped_batch_size]
+                query = self._build_group_query(chunk)
+                if not query:
+                    continue
+                batches.append(
+                    GroupedDiscoveryBatch(
+                        group_key=f"{group_key}:{index // self.grouped_batch_size + 1}",
+                        group_name=self._group_name(chunk),
+                        rows=chunk,
+                        query=query,
+                    )
+                )
+                if len(batches) >= self.grouped_daily_batch_limit:
+                    return batches
+        return batches
+
+    def _is_placeholder_monitor(self, row: InsightMonitorConfig) -> bool:
+        name = str(row.object_name or row.config_name or "").strip()
+        if not name:
+            return True
+        keywords = [str(item).strip() for item in row.keywords or [] if str(item).strip()]
+        if keywords:
+            return False
+        modules = {str(item).strip() for item in row.enabled_modules or [] if str(item).strip()}
+        generic_names = set(self.scenario_modules) | {"综合", "全部", "默认"}
+        return name in generic_names and (not modules or name in modules)
+
+    def _group_key(self, row: InsightMonitorConfig) -> str:
+        monitor_type = str(row.monitor_type or row.object_type or "topic").lower()
+        relation = str(row.relation_type or "default").strip().lower()
+        modules = [str(item).strip() for item in row.enabled_modules or [] if str(item).strip()]
+        primary_module = modules[0] if modules else "综合"
+        is_company_monitor = row.object_type == "company" or monitor_type in {"company", "enterprise", "企业监测"}
+        prefix = "company" if is_company_monitor else "topic"
+        return f"{prefix}:{relation}:{primary_module}"
+
+    def _group_name(self, rows: list[InsightMonitorConfig]) -> str:
+        names = [row.object_name or row.config_name for row in rows[:3]]
+        suffix = "等" if len(rows) > 3 else ""
+        return "、".join(names) + suffix
+
+    def _build_group_query(self, rows: list[InsightMonitorConfig]) -> str:
+        object_names: list[str] = []
+        keywords: list[str] = []
+        modules: list[str] = []
+        for row in rows:
+            object_name = str(row.object_name or row.config_name or "").strip()
+            if object_name:
+                object_names.append(object_name)
+            keywords.extend(str(item).strip() for item in row.keywords or [] if str(item).strip())
+            modules.extend(str(item).strip() for item in row.enabled_modules or [] if str(item).strip())
+        default_terms = [
+            "新品",
+            "扩产",
+            "供应链",
+            "价格",
+            "政策",
+            "专利",
+            "低糖",
+            "配料",
+            "植物蛋白",
+            "功能糖",
+        ]
+        object_part = " OR ".join(self._unique_items(object_names)[:8])
+        topic_part = " ".join(self._unique_items([*keywords, *modules, *default_terms])[:12])
+        if object_part:
+            return f"({object_part}) {topic_part}"[:500]
+        return topic_part[:500]
+
+    def _assign_grouped_hits(
+        self,
+        rows: list[InsightMonitorConfig],
+        hits: list[InsightSearchHit],
+    ) -> dict[int, tuple[InsightMonitorConfig, list[InsightSearchHit]]]:
+        assigned: dict[int, tuple[InsightMonitorConfig, list[InsightSearchHit]]] = {}
+        topic_rows = [row for row in rows if row.object_type != "company"]
+        for hit in hits:
+            text = f"{hit.title}\n{hit.snippet or ''}\n{hit.url}".lower()
+            matched_rows: list[InsightMonitorConfig] = []
+            for row in rows:
+                terms = self._monitor_match_terms(row)
+                if terms and any(term.lower() in text for term in terms):
+                    matched_rows.append(row)
+            if not matched_rows and topic_rows:
+                matched_rows = topic_rows[:3]
+            for row in matched_rows[:4]:
+                if not row.id:
+                    continue
+                if row.id not in assigned:
+                    assigned[row.id] = (row, [])
+                assigned[row.id][1].append(hit)
+        return assigned
+
+    def _monitor_match_terms(self, row: InsightMonitorConfig) -> list[str]:
+        terms = [
+            str(row.object_name or "").strip(),
+            str(row.config_name or "").strip(),
+            *(str(item).strip() for item in row.keywords or []),
+        ]
+        if row.object_type != "company":
+            terms.extend(str(item).strip() for item in row.enabled_modules or [])
+        return [item for item in self._unique_items(terms) if len(item) >= 2][:12]
+
+    def _unique_items(self, values: list[str]) -> list[str]:
+        result: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            text = str(value or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            result.append(text)
+        return result
 
     async def _execute_plan_items_concurrently(
         self,
@@ -406,7 +734,7 @@ class InsightMonitorExecutionService:
             exclude_keywords=row.excluded_keywords or [],
             filter_prompt=self._filter_prompt(row, channel),
             enable_llm_filter=True,
-            llm_min_score=0.55,
+            llm_min_score=0.45,
             create_candidate_from_hits=True,
             run_type=self._run_type(row),
         )
@@ -481,7 +809,10 @@ class InsightMonitorExecutionService:
             reason = "低成本发现源，先合并关键词执行"
         elif channel.channel_code in self.paid_discovery_channel_codes:
             action = "conditional"
-            reason = "付费补充源，仅在低成本发现不足或质量不足时调用"
+            reason = "付费补充源，默认按监测对象合并关键词执行并受预算控制"
+        elif channel.channel_code in self.ai_discovery_channel_codes:
+            action = "conditional"
+            reason = "AI 联网补充源，仅在基础发现不足、主题/深度监测或前置渠道失败时调用"
         else:
             action = "execute"
             reason = "独立适配器源，按频率和预算执行"
@@ -508,9 +839,14 @@ class InsightMonitorExecutionService:
             return True
         scenarios = {str(item).strip() for item in channel.applicable_scenarios or [] if str(item).strip()}
         modules = {str(item).strip() for item in row.enabled_modules or [] if str(item).strip()}
+        collection_mode = self._channel_collection_mode(channel)
+        is_company_monitor = row.object_type == "company" or row.monitor_type in {"company", "enterprise", "企业监测"}
+        if collection_mode in {"feed_latest", "site_search", "topic_scan"} and is_company_monitor:
+            return False
+        if collection_mode in {"entity_lookup", "official_watch"} and not is_company_monitor:
+            return False
         if scenarios and modules and scenarios.intersection(modules):
             return True
-        is_company_monitor = row.object_type == "company" or row.monitor_type in {"company", "enterprise", "企业监测"}
         if is_company_monitor and scenarios.intersection({"企业新闻", "官网动态", "经营财经", "专利技术", "电商新品"}):
             return True
         if not is_company_monitor and scenarios.intersection({"行业资讯", "政策监管", "技术专利", "综合舆情"}):
@@ -535,6 +871,21 @@ class InsightMonitorExecutionService:
             return "specialized"
         return "custom"
 
+    def _channel_collection_mode(self, channel: InsightChannel) -> str:
+        policy = self._channel_policy(channel)
+        mode = str(policy.get("collection_mode") or "").strip()
+        if mode:
+            return mode
+        if channel.channel_code in self.default_search_channel_order:
+            return "search_discovery"
+        if channel.channel_type == "enterprise_official":
+            return "official_watch"
+        if channel.channel_type in {"patent_technology", "database"}:
+            return "entity_lookup"
+        if channel.channel_type in {"industry_media", "finance_news", "general_news", "policy_regulation"}:
+            return "feed_latest"
+        return "site_search"
+
     def _channel_cost_level(self, channel: InsightChannel) -> str:
         policy = self._channel_policy(channel)
         cost_level = str(policy.get("cost_level") or "").strip()
@@ -542,6 +893,8 @@ class InsightMonitorExecutionService:
             return cost_level
         if channel.channel_code in self.paid_discovery_channel_codes:
             return "paid"
+        if channel.channel_code in self.ai_discovery_channel_codes:
+            return "ai_paid"
         if channel.channel_code in self.free_discovery_channel_codes:
             return "low"
         return "medium"
@@ -552,9 +905,14 @@ class InsightMonitorExecutionService:
         if trigger_mode:
             return trigger_mode
         if channel.channel_code in self.paid_discovery_channel_codes:
-            return "quality_gap"
+            return "always_with_budget"
+        if channel.channel_code in self.ai_discovery_channel_codes:
+            return "always_with_ai_budget"
         if channel.channel_code in self.free_discovery_channel_codes:
             return "always"
+        collection_mode = self._channel_collection_mode(channel)
+        if collection_mode in {"feed_latest", "topic_scan"}:
+            return collection_mode
         if self._channel_tier(channel) == "vertical":
             return "channel_schedule"
         return "low_frequency"
@@ -576,7 +934,10 @@ class InsightMonitorExecutionService:
         budget = raw_budget if isinstance(raw_budget, dict) else {}
         paid_search_calls = budget.get("paid_search_calls_per_run")
         if paid_search_calls is None:
-            paid_search_calls = 1 if row.monitor_strength in {"standard", "deep", "structured"} else 0
+            paid_search_calls = 1
+        ai_search_calls = budget.get("ai_search_calls_per_run")
+        if ai_search_calls is None:
+            ai_search_calls = 1
         max_executed_channels = budget.get("max_executed_channels_per_run")
         if max_executed_channels is None:
             frequency = (row.fetch_frequency or "daily").strip().lower()
@@ -590,8 +951,9 @@ class InsightMonitorExecutionService:
                 max_executed_channels = 6
         return {
             "paid_search_calls_per_run": max(0, int(paid_search_calls)),
+            "ai_search_calls_per_run": max(0, int(ai_search_calls)),
             "max_executed_channels_per_run": max(1, int(max_executed_channels)),
-            "strategy": "百度资讯优先；结果不足或质量不足时再调用博查；垂直渠道按自身频率和适配器状态执行",
+            "strategy": "百度资讯先跑；博查按监测对象合并关键词默认补充 1 次；豆包联网搜索只在基础发现不足、主题/深度监测或前置渠道失败时补充；垂直渠道按自身频率和适配器状态执行",
         }
 
     def _apply_channel_budget(
@@ -619,15 +981,30 @@ class InsightMonitorExecutionService:
         search_results: list[Any],
         channel_errors: list[dict[str, Any]],
     ) -> bool:
-        if not search_results:
+        _ = row, search_results, channel_errors
+        return True
+
+    def _should_run_ai_discovery(
+        self,
+        row: InsightMonitorConfig,
+        search_results: list[Any],
+        channel_errors: list[dict[str, Any]],
+    ) -> bool:
+        config = row.config_json or {}
+        budget = config.get("collection_budget") if isinstance(config, dict) else None
+        if isinstance(budget, dict) and budget.get("force_ai_search"):
             return True
-        hit_count = sum(len(item.hits) for item in search_results)
-        candidate_count = sum(len(item.candidates) for item in search_results)
-        if channel_errors and hit_count < 3:
+        if channel_errors:
+            return True
+        monitor_type = str(row.monitor_type or row.object_type or "").lower()
+        is_company_monitor = row.object_type == "company" or monitor_type in {"company", "enterprise", "企业监测"}
+        if not is_company_monitor:
             return True
         if row.monitor_strength in {"deep", "structured"}:
-            return hit_count < 8 or candidate_count < 3
-        return hit_count < 5 or candidate_count < 2
+            return True
+        hit_count = sum(len(getattr(item, "hits", []) or []) for item in search_results)
+        candidate_count = sum(len(getattr(item, "candidates", []) or []) for item in search_results)
+        return hit_count < 3 or candidate_count < 1
 
     async def _build_query(self, db: AsyncSession, row: InsightMonitorConfig) -> str:
         parts: list[str] = []

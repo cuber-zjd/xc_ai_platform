@@ -6,7 +6,34 @@ export const insightApiPrefix = "/insight";
 export const insightApi = {
     getHealth: () => apiClient.get<InsightHealth, InsightHealth>(`${insightApiPrefix}/health`),
     getDashboard: () => apiClient.get<InsightDashboardSummary, InsightDashboardSummary>(`${insightApiPrefix}/dashboard`),
+    getOperationOverview: () => apiClient.get<InsightOperationOverview, InsightOperationOverview>(`${insightApiPrefix}/operation/overview`),
+    getOperationCustomerLifecycle: () =>
+        apiClient.get<InsightOperationCustomerLifecycle, InsightOperationCustomerLifecycle>(`${insightApiPrefix}/operation/customer-lifecycle`),
     getSettingsStatus: () => apiClient.get<InsightSettingsStatusRead, InsightSettingsStatusRead>(`${insightApiPrefix}/settings/status`),
+    searchSelectorUsers: (params?: InsightSelectorParams) =>
+        apiClient.get<InsightSelectorOption[], InsightSelectorOption[]>(`${insightApiPrefix}/selectors/users`, { params }),
+    listSelectorDepts: (params?: InsightSelectorParams) =>
+        apiClient.get<InsightSelectorOption[], InsightSelectorOption[]>(`${insightApiPrefix}/selectors/depts`, { params }),
+    listSelectorRoles: (params?: InsightSelectorParams) =>
+        apiClient.get<InsightSelectorOption[], InsightSelectorOption[]>(`${insightApiPrefix}/selectors/roles`, { params }),
+    listSelectorCompanies: (params?: InsightSelectorParams) =>
+        apiClient.get<InsightSelectorOption[], InsightSelectorOption[]>(`${insightApiPrefix}/selectors/companies`, { params }),
+    listInsightRoles: (params: InsightRoleListParams) =>
+        apiClient.get<InsightPage<InsightRoleRead>, InsightPage<InsightRoleRead>>(`${insightApiPrefix}/settings/roles`, { params }),
+    createInsightRole: (payload: InsightRoleCreate) =>
+        apiClient.post<InsightRoleRead, InsightRoleRead>(`${insightApiPrefix}/settings/roles`, payload),
+    updateInsightRole: (roleId: number, payload: InsightRoleUpdate) =>
+        apiClient.put<InsightRoleRead, InsightRoleRead>(`${insightApiPrefix}/settings/roles/${roleId}`, payload),
+    deleteInsightRole: (roleId: number) =>
+        apiClient.delete<void, void>(`${insightApiPrefix}/settings/roles/${roleId}`),
+    seedDefaultInsightRoles: () =>
+        apiClient.post<void, void>(`${insightApiPrefix}/settings/roles/seed-defaults`),
+    listInsightRoleMembers: (roleId: number) =>
+        apiClient.get<InsightRoleMemberRead[], InsightRoleMemberRead[]>(`${insightApiPrefix}/settings/roles/${roleId}/members`),
+    addInsightRoleMembers: (roleId: number, payload: InsightRoleMemberUpsert) =>
+        apiClient.post<InsightRoleMemberRead[], InsightRoleMemberRead[]>(`${insightApiPrefix}/settings/roles/${roleId}/members`, payload),
+    removeInsightRoleMember: (roleId: number, memberId: number) =>
+        apiClient.delete<void, void>(`${insightApiPrefix}/settings/roles/${roleId}/members/${memberId}`),
     listChannels: (params: InsightChannelListParams) =>
         apiClient.get<InsightPage<InsightChannelRead>, InsightPage<InsightChannelRead>>(`${insightApiPrefix}/settings/channels`, { params }),
     createChannel: (payload: InsightChannelCreate) =>
@@ -212,6 +239,18 @@ export const insightApi = {
         apiClient.get<InsightIntelligenceDetail, InsightIntelligenceDetail>(`${insightApiPrefix}/intelligence/${intelligenceId}`),
     createIntelligence: (payload: InsightIntelligenceCreate) =>
         apiClient.post<InsightIntelligenceDetail, InsightIntelligenceDetail>(`${insightApiPrefix}/intelligence`, payload),
+    previewImportIntelligence: (payload: FormData) =>
+        apiClient.post<InsightIntelligenceImportPreviewResponse, InsightIntelligenceImportPreviewResponse>(
+            `${insightApiPrefix}/intelligence/import-preview`,
+            payload,
+            { headers: { "Content-Type": "multipart/form-data" }, timeout: 180000 },
+        ),
+    confirmImportIntelligence: (payload: InsightIntelligenceImportConfirmRequest) =>
+        apiClient.post<InsightIntelligenceImportConfirmResponse, InsightIntelligenceImportConfirmResponse>(
+            `${insightApiPrefix}/intelligence/import-confirm`,
+            payload,
+            { timeout: 180000 },
+        ),
     updateIntelligence: (intelligenceId: number, payload: InsightIntelligenceUpdate) =>
         apiClient.put<InsightIntelligenceDetail, InsightIntelligenceDetail>(`${insightApiPrefix}/intelligence/${intelligenceId}`, payload),
     addIntelligenceSource: (intelligenceId: number, payload: InsightIntelligenceSourceCreate) =>
@@ -317,6 +356,70 @@ export interface InsightHealth {
     enabled_capabilities: string[];
 }
 
+export interface InsightSelectorParams {
+    keyword?: string;
+    dept_id?: string;
+    limit?: number;
+}
+
+export interface InsightSelectorOption {
+    id: number;
+    label: string;
+    value: string;
+    type: "user" | "dept" | "role" | "company" | string;
+    subtitle?: string | null;
+    employee_id?: string | null;
+    code?: string | null;
+    parent_id?: string | null;
+}
+
+export interface InsightRoleRead {
+    id: number;
+    role_code: string;
+    role_name: string;
+    description?: string | null;
+    sort_no: number;
+    status: string;
+    member_count: number;
+    create_time: string;
+    update_time: string;
+}
+
+export interface InsightRoleCreate {
+    role_code: string;
+    role_name: string;
+    description?: string | null;
+    sort_no?: number;
+    status?: string;
+}
+
+export type InsightRoleUpdate = Partial<InsightRoleCreate>;
+
+export interface InsightRoleListParams {
+    page?: number;
+    size?: number;
+    keyword?: string;
+    status?: string;
+}
+
+export interface InsightRoleMemberRead {
+    id: number;
+    role_id: number;
+    user_id: number;
+    user_name?: string | null;
+    username?: string | null;
+    employee_id?: string | null;
+    dept_id?: string | null;
+    job_title?: string | null;
+    status: string;
+    create_time: string;
+    update_time: string;
+}
+
+export interface InsightRoleMemberUpsert {
+    user_ids: number[];
+}
+
 export interface InsightDashboardMetric {
     key: string;
     label: string;
@@ -346,6 +449,7 @@ export interface InsightDashboardFocusItem {
     importance_level: string;
     publish_time?: string | null;
     score: number;
+    reason?: string | null;
 }
 
 export interface InsightDashboardSummary {
@@ -354,6 +458,95 @@ export interface InsightDashboardSummary {
     source_distribution: InsightDashboardSourceSlice[];
     focus_items: InsightDashboardFocusItem[];
     latest_items: InsightIntelligenceListItem[];
+}
+
+export interface InsightOperationMetric {
+    key: string;
+    label: string;
+    value?: number | string | null;
+    unit?: string | null;
+    trend?: string | null;
+    description?: string | null;
+    severity: "normal" | "warning" | "danger" | string;
+}
+
+export interface InsightOperationEvidence {
+    title: string;
+    reportPath: string;
+    tables: string[];
+    metrics: string[];
+    note?: string | null;
+}
+
+export interface InsightOperationSignal {
+    title: string;
+    level: "normal" | "warning" | "danger" | string;
+    domain: string;
+    summary: string;
+    evidence: string[];
+    suggestion: string;
+}
+
+export interface InsightOperationSeriesPoint {
+    label: string;
+    value: number;
+    extra: Record<string, number | string | null | undefined>;
+}
+
+export interface InsightOperationTableRow {
+    name: string;
+    values: Record<string, number | string | null | undefined>;
+}
+
+export interface InsightOperationDomain {
+    key: string;
+    title: string;
+    subtitle?: string | null;
+    score?: number | null;
+    scoreLabel?: string | null;
+    metrics: InsightOperationMetric[];
+    series: InsightOperationSeriesPoint[];
+    rows: InsightOperationTableRow[];
+    findings: string[];
+    evidenceReports: string[];
+}
+
+export interface InsightOperationLifecycleSection {
+    key: string;
+    title: string;
+    subtitle?: string | null;
+    metrics: InsightOperationMetric[];
+    rows: InsightOperationTableRow[];
+    findings: string[];
+}
+
+export interface InsightOperationCustomerLifecycle {
+    generatedAt: string;
+    companyName: string;
+    analysisDate?: string | null;
+    analysisPeriod?: string | null;
+    headline: string;
+    summary: string[];
+    metrics: InsightOperationMetric[];
+    sections: InsightOperationLifecycleSection[];
+    signals: InsightOperationSignal[];
+    evidence: InsightOperationEvidence[];
+    warnings: string[];
+}
+
+export interface InsightOperationOverview {
+    generatedAt: string;
+    companyName: string;
+    analysisDate?: string | null;
+    analysisPeriod?: string | null;
+    dataFreshness: string[];
+    headline: string;
+    executiveSummary: string[];
+    kpis: InsightOperationMetric[];
+    signals: InsightOperationSignal[];
+    domains: InsightOperationDomain[];
+    evidence: InsightOperationEvidence[];
+    warnings: string[];
 }
 
 export interface InsightQualityMetric {
@@ -734,6 +927,8 @@ export interface InsightAccessRuleRead {
     target_id: number;
     principal_type: string;
     principal_id?: number | null;
+    principal_name?: string | null;
+    principal_code?: string | null;
     permission: string;
     grant_type: string;
     effective_from?: string | null;
@@ -1605,6 +1800,12 @@ export interface InsightIntelligenceRead {
     status: string;
     create_time: string;
     update_time: string;
+    category_code?: string | null;
+    category_name?: string | null;
+    tag_codes?: string[];
+    tag_names?: string[];
+    selection_reason?: string | null;
+    business_insight?: string | null;
 }
 
 export interface InsightIntelligenceSourceRead {
@@ -1662,6 +1863,8 @@ export interface InsightIntelligenceListParams {
     sys_company_id?: number;
     project_name?: string;
     sentiment?: string;
+    category_code?: string;
+    importance_level?: string;
     tag?: string;
     data_source_id?: number;
     date_from?: string;
@@ -1684,11 +1887,61 @@ export interface InsightIntelligenceCreate {
     publish_time?: string | null;
     visibility_scope?: string;
     suggested_tags?: Array<{ name?: string; source?: string } & Record<string, unknown>> | null;
+    category_code?: string | null;
+    tag_codes?: string[] | null;
+    selection_reason?: string | null;
+    business_insight?: string | null;
     source?: InsightIntelligenceSourceCreate | null;
 }
 
 export interface InsightIntelligenceUpdate extends Partial<Omit<InsightIntelligenceCreate, "source">> {
     status?: string;
+}
+
+export interface InsightIntelligenceImportItem {
+    temp_id: string;
+    title: string;
+    summary?: string | null;
+    content?: string | null;
+    publish_time?: string | null;
+    subject_type?: string | null;
+    subject_name?: string | null;
+    intelligence_type?: string | null;
+    importance_level?: string | null;
+    sentiment?: string | null;
+    category_code?: string | null;
+    category_name?: string | null;
+    tag_codes: string[];
+    tag_names: string[];
+    suggested_new_tags: string[];
+    selection_reason?: string | null;
+    business_insight?: string | null;
+    source_title?: string | null;
+    source_url?: string | null;
+    confidence: number;
+    raw?: Record<string, unknown> | null;
+}
+
+export interface InsightIntelligenceImportPreviewResponse {
+    file_name: string;
+    item_count: number;
+    items: InsightIntelligenceImportItem[];
+    warnings: string[];
+}
+
+export interface InsightIntelligenceImportConfirmRequest {
+    file_name?: string | null;
+    items: InsightIntelligenceImportItem[];
+    visibility_scope?: string;
+}
+
+export interface InsightIntelligenceImportConfirmResponse {
+    created_count: number;
+    intelligence_ids: number[];
+    asset_created_count: number;
+    vectorized_count: number;
+    failed_count: number;
+    errors: string[];
 }
 
 export interface InsightVisibilityRuleCreate {

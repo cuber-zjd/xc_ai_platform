@@ -29,8 +29,9 @@ import type {
     SystemCompanyOption,
 } from "../api";
 import { insightApi } from "../api";
-import { AccessRuleDialog, ChartCard, InsightSelect, SectionCard, WecomPushDialog } from "../components";
+import { AccessRuleDialog, ChartCard, InsightSelect, RecipientPickerDialog, SectionCard, WecomPushDialog } from "../components";
 import { PageContainer } from "../layout/PageContainer";
+import { formatInsightDate } from "../utils/display";
 import {
     useInsightCompanies,
     useInsightCloneReportTemplate,
@@ -54,6 +55,7 @@ import {
     useInsightExportReport,
     useInsightUploadReportTemplate,
     useInsightDataSources,
+    useInsightIntelligences,
 } from "../hooks";
 
 type ReportDetail = NonNullable<ReturnType<typeof useInsightReportDetail>["data"]>;
@@ -87,6 +89,14 @@ export function ReportCenterPage() {
     const [companyId, setCompanyId] = useState("");
     const [customSubject, setCustomSubject] = useState("");
     const [selectedDataSourceIds, setSelectedDataSourceIds] = useState<number[]>([]);
+    const [selectedIntelligenceIds, setSelectedIntelligenceIds] = useState<number[]>(() => parseNumberList(searchParams.get("intelligence_ids")));
+    const [materialPickerOpen, setMaterialPickerOpen] = useState(false);
+    const [materialPreset, setMaterialPreset] = useState("7");
+    const [materialStart, setMaterialStart] = useState(() => daysAgoInputValue(7));
+    const [materialEnd, setMaterialEnd] = useState(() => todayInputValue());
+    const [materialKeyword, setMaterialKeyword] = useState("");
+    const [materialPage, setMaterialPage] = useState(1);
+    const [materialPageSize, setMaterialPageSize] = useState(20);
     const [dataSourcePickerOpen, setDataSourcePickerOpen] = useState(false);
     const [advancedOpen, setAdvancedOpen] = useState(false);
     const [folderName, setFolderName] = useState("");
@@ -119,6 +129,14 @@ export function ReportCenterPage() {
     const companiesQuery = useInsightCompanies({ page: 1, size: 500 });
     const systemCompaniesQuery = useInsightSystemCompanies();
     const dataSourcesQuery = useInsightDataSources({ page: 1, size: 500, status: "enabled" });
+    const materialIntelligenceQuery = useInsightIntelligences({
+        page: materialPage,
+        size: materialPageSize,
+        keyword: materialKeyword.trim() || undefined,
+        company_id: reportScope === "company" ? parseOptionalNumber(companyId) ?? undefined : undefined,
+        date_from: materialStart || undefined,
+        date_to: materialEnd || undefined,
+    });
     const subscriptionsQuery = useInsightReportSubscriptions({ page: 1, size: 20 });
     const updateMutation = useInsightUpdateReport();
     const exportMutation = useInsightExportReport();
@@ -158,6 +176,15 @@ export function ReportCenterPage() {
         setSearchParams(nextParams, { replace: true });
     };
 
+    const toggleMaterialCurrentPage = () => {
+        setSelectedIntelligenceIds((current) => {
+            if (materialPageAllSelected) {
+                return current.filter((id) => !materialPageIds.includes(id));
+            }
+            return Array.from(new Set([...current, ...materialPageIds]));
+        });
+    };
+
     const companyOptions = useMemo(
         () => [
             { value: "", label: "全部企业" },
@@ -169,6 +196,33 @@ export function ReportCenterPage() {
         [companiesQuery.data?.items],
     );
     const dataSources = useMemo(() => dataSourcesQuery.data?.items ?? [], [dataSourcesQuery.data?.items]);
+    const materialItems = useMemo(() => materialIntelligenceQuery.data?.items ?? [], [materialIntelligenceQuery.data?.items]);
+    const materialTotal = materialIntelligenceQuery.data?.total ?? 0;
+    const materialTotalPages = Math.max(1, Math.ceil(materialTotal / materialPageSize));
+    const materialPageIds = useMemo(() => materialItems.map((item) => item.id), [materialItems]);
+    const materialPageAllSelected = materialPageIds.length > 0 && materialPageIds.every((id) => selectedIntelligenceIds.includes(id));
+    const selectedMaterialTitles = useMemo(
+        () => materialItems.filter((item) => selectedIntelligenceIds.includes(item.id)).slice(0, 4),
+        [materialItems, selectedIntelligenceIds],
+    );
+
+    useEffect(() => {
+        const ids = parseNumberList(searchParams.get("intelligence_ids"));
+        if (ids.length > 0) {
+            setSelectedIntelligenceIds(ids);
+            setGenerateDialogOpen(true);
+        }
+    }, [searchParams]);
+
+    useEffect(() => {
+        if (materialPage > materialTotalPages) {
+            setMaterialPage(materialTotalPages);
+        }
+    }, [materialPage, materialTotalPages]);
+
+    useEffect(() => {
+        setMaterialPage(1);
+    }, [materialKeyword, materialStart, materialEnd, reportScope, companyId, materialPageSize]);
     const reportTypeOptions = useMemo(() => buildReportTypeOptions(templates, rawReports), [rawReports, templates]);
     const selectedTemplate = useMemo(() => templates.find((item) => item.template_code === templateCode) ?? templates[0] ?? null, [templateCode, templates]);
 
@@ -217,6 +271,9 @@ export function ReportCenterPage() {
                     title: buildReportTitle(reportType, reportScope, customSubject, companyOptions.find((item) => item.value === companyId)?.label),
                     company_ids: reportScope === "company" && companyId ? [Number(companyId)] : [],
                     data_source_ids: selectedDataSourceIds,
+                    intelligence_ids: selectedIntelligenceIds,
+                    period_start: materialStart || null,
+                    period_end: materialEnd || null,
                     folder_name: folderName || null,
                     max_materials: Number(maxMaterials) || 100,
                     generation_prompt: generationPrompt,
@@ -272,12 +329,13 @@ export function ReportCenterPage() {
             </div>
 
             <Dialog open={generateDialogOpen} onOpenChange={setGenerateDialogOpen}>
-                <DialogContent className="max-h-[88dvh] overflow-y-auto sm:max-w-[920px]">
-                    <DialogHeader>
+                <DialogContent className="flex max-h-[88dvh] flex-col overflow-hidden rounded-2xl border-slate-200 bg-white p-0 sm:max-w-[1040px]">
+                    <DialogHeader className="shrink-0 border-b border-slate-100 px-5 py-4">
                         <DialogTitle>新建报告</DialogTitle>
                         <DialogDescription>告诉小驰你想研究什么，选择报告样式和范围，系统会整理素材并生成正式报告。</DialogDescription>
                     </DialogHeader>
-                    <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
+                    <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+                    <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_300px]">
                         <div className="space-y-4">
                             <div className="grid gap-4 md:grid-cols-2">
                                 <InsightSelect label="报告类型" value={reportType} options={REPORT_TYPE_OPTIONS} onChange={setReportType} />
@@ -323,11 +381,132 @@ export function ReportCenterPage() {
                                 <textarea
                                     value={prompt}
                                     onChange={(event) => setPrompt(event.target.value)}
-                                    rows={6}
+                                    rows={4}
                                     placeholder="例如：最近半个月食品饮料客户有哪些新品机会？哪些竞对动作需要销售关注？"
                                     className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm leading-6 outline-none transition focus:border-primary"
                                 />
                             </label>
+                            <div className="rounded-2xl border border-slate-100 bg-white p-4">
+                                <div className="flex flex-wrap items-center justify-between gap-3">
+                                    <div>
+                                        <div className="text-sm font-black text-slate-900">报告素材</div>
+                                        <p className="mt-1 text-xs font-semibold text-slate-500">可直接选择情报中心文章；不选时按范围自动匹配。</p>
+                                    </div>
+                                    <Button type="button" variant="outline" className="h-9 rounded-xl border-slate-200 bg-white" onClick={() => setMaterialPickerOpen((open) => !open)}>
+                                        {materialPickerOpen ? "收起" : "选择素材"}
+                                    </Button>
+                                </div>
+                                <div className="mt-3 grid gap-2 md:grid-cols-[150px_1fr_1fr]">
+                                    <InsightSelect
+                                        label="发布时间"
+                                        value={materialPreset}
+                                        options={[
+                                            { value: "7", label: "近 7 天" },
+                                            { value: "15", label: "近 15 天" },
+                                            { value: "30", label: "近 30 天" },
+                                            { value: "custom", label: "自定义" },
+                                        ]}
+                                        onChange={(value) => {
+                                            setMaterialPreset(value);
+                                            if (value !== "custom") {
+                                                setMaterialStart(daysAgoInputValue(Number(value) || 7));
+                                                setMaterialEnd(todayInputValue());
+                                            }
+                                        }}
+                                    />
+                                    <TemplateField label="开始日期" value={materialStart} onChange={(value) => { setMaterialPreset("custom"); setMaterialStart(value); }} />
+                                    <TemplateField label="结束日期" value={materialEnd} onChange={(value) => { setMaterialPreset("custom"); setMaterialEnd(value); }} />
+                                </div>
+                                {materialPickerOpen ? (
+                                    <div className="mt-3 grid gap-2 lg:grid-cols-[minmax(0,1fr)_120px_auto] lg:items-end">
+                                        <label className="grid gap-2 text-sm font-bold text-slate-700">
+                                            素材搜索
+                                            <div className="relative">
+                                                <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+                                                <input
+                                                    value={materialKeyword}
+                                                    onChange={(event) => setMaterialKeyword(event.target.value)}
+                                                    placeholder="按标题、摘要或企业搜索"
+                                                    className="h-10 w-full rounded-xl border border-slate-200 bg-white pl-10 pr-3 text-sm outline-none transition focus:border-primary"
+                                                />
+                                            </div>
+                                        </label>
+                                        <InsightSelect
+                                            label="每页"
+                                            value={String(materialPageSize)}
+                                            options={[
+                                                { value: "10", label: "10 篇" },
+                                                { value: "20", label: "20 篇" },
+                                                { value: "50", label: "50 篇" },
+                                                { value: "100", label: "100 篇" },
+                                            ]}
+                                            onChange={(value) => setMaterialPageSize(Number(value) || 20)}
+                                        />
+                                        <Button type="button" variant="outline" className="h-10 rounded-xl border-slate-200 bg-white" disabled={materialItems.length === 0} onClick={toggleMaterialCurrentPage}>
+                                            {materialPageAllSelected ? "取消本页" : "全选本页"}
+                                        </Button>
+                                    </div>
+                                ) : null}
+                                <div className="mt-3 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2">
+                                    {selectedIntelligenceIds.length > 0 ? (
+                                        <div className="flex flex-wrap items-center gap-2">
+                                            <span className="text-xs font-black text-slate-700">已选 {selectedIntelligenceIds.length} 篇素材</span>
+                                            {selectedMaterialTitles.map((item) => (
+                                                <span key={item.id} className="max-w-52 truncate rounded-full border border-blue-100 bg-white px-2.5 py-1 text-xs font-bold text-blue-700">
+                                                    {item.title}
+                                                </span>
+                                            ))}
+                                            {selectedIntelligenceIds.length > selectedMaterialTitles.length ? (
+                                                <span className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-bold text-slate-500">
+                                                    另 {selectedIntelligenceIds.length - selectedMaterialTitles.length} 篇
+                                                </span>
+                                            ) : null}
+                                            <button type="button" className="ml-auto text-xs font-black text-primary hover:underline" onClick={() => setSelectedIntelligenceIds([])}>
+                                                清空
+                                            </button>
+                                        </div>
+                                    ) : (
+                                        <div className="text-xs font-semibold text-slate-500">未手动选择素材，将按报告范围自动匹配。</div>
+                                    )}
+                                </div>
+                                {materialPickerOpen ? (
+                                    <div className="mt-3 overflow-hidden rounded-xl border border-slate-200">
+                                        <div className="max-h-56 overflow-y-auto">
+                                        {materialItems.map((item) => {
+                                            const checked = selectedIntelligenceIds.includes(item.id);
+                                            return (
+                                                <button
+                                                    key={item.id}
+                                                    type="button"
+                                                    className="flex w-full items-start gap-3 border-b border-slate-100 px-4 py-3 text-left transition hover:bg-blue-50/50"
+                                                    onClick={() => setSelectedIntelligenceIds(toggleNumber(selectedIntelligenceIds, item.id))}
+                                                >
+                                                    <input className="mt-1 size-4 accent-blue-600" readOnly checked={checked} type="checkbox" />
+                                                    <span className="min-w-0 flex-1">
+                                                        <span className="line-clamp-1 text-sm font-black text-slate-900">{item.title}</span>
+                                                        <span className="mt-1 block text-xs font-semibold text-slate-500">{formatInsightDate(item.publish_time, item.create_time)} · {item.category_name || item.intelligence_type}</span>
+                                                    </span>
+                                                </button>
+                                            );
+                                        })}
+                                        {!materialIntelligenceQuery.isLoading && materialItems.length === 0 ? (
+                                            <div className="px-4 py-8 text-center text-sm font-semibold text-slate-500">当前筛选条件下暂无可选情报，请清空素材搜索或扩大时间范围。</div>
+                                        ) : null}
+                                        </div>
+                                        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-500">
+                                            <span>共 {materialTotal} 篇 · 第 {materialPage} / {materialTotalPages} 页</span>
+                                            <div className="flex items-center gap-2">
+                                                <Button type="button" variant="outline" className="h-8 rounded-lg bg-white px-3 text-xs" disabled={materialPage <= 1 || materialIntelligenceQuery.isFetching} onClick={() => setMaterialPage((value) => Math.max(1, value - 1))}>
+                                                    上一页
+                                                </Button>
+                                                <Button type="button" variant="outline" className="h-8 rounded-lg bg-white px-3 text-xs" disabled={materialPage >= materialTotalPages || materialIntelligenceQuery.isFetching} onClick={() => setMaterialPage((value) => Math.min(materialTotalPages, value + 1))}>
+                                                    下一页
+                                                </Button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ) : null}
+                            </div>
                             <div className="rounded-2xl border border-slate-100 bg-white">
                                 <button
                                     type="button"
@@ -393,9 +572,10 @@ export function ReportCenterPage() {
                                 ) : null}
                             </div>
                         </div>
-                        <TemplatePreviewPanel template={selectedTemplate} reportType={reportType} />
+                        <TemplatePreviewPanel className="hidden xl:block" template={selectedTemplate} reportType={reportType} />
                     </div>
-                    <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-4">
+                    </div>
+                    <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-slate-100 bg-white px-5 py-3">
                         <div className="insight-actions">
                             <Button type="button" variant="outline" className="h-10 rounded-xl border-slate-200 bg-white" onClick={() => setTemplateDialogOpen(true)}>
                                 <Settings2 className="size-4" />
@@ -406,7 +586,7 @@ export function ReportCenterPage() {
                                 生成偏好
                             </Button>
                         </div>
-                        <Button type="button" className="h-10 rounded-xl bg-primary px-5 text-primary-foreground" onClick={() => void handleGenerate()} disabled={streamGenerating}>
+                        <Button type="button" className="h-10 rounded-xl bg-blue-600 px-5 text-white hover:bg-blue-700" onClick={() => void handleGenerate()} disabled={streamGenerating}>
                             {streamGenerating ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
                             开始研究
                         </Button>
@@ -824,6 +1004,7 @@ function ReportSubscriptionDialog({
     const [timeOfDay, setTimeOfDay] = useState("09:00");
     const [recipientScope, setRecipientScope] = useState("selected");
     const [recipientText, setRecipientText] = useState("");
+    const [recipientPickerOpen, setRecipientPickerOpen] = useState(false);
 
     useEffect(() => {
         if (open) {
@@ -881,11 +1062,12 @@ function ReportSubscriptionDialog({
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="max-h-[88vh] overflow-y-auto rounded-2xl border-slate-200 bg-white sm:max-w-4xl">
-                <DialogHeader>
+            <DialogContent className="flex max-h-[88dvh] flex-col overflow-hidden rounded-2xl border-slate-200 bg-white p-0 sm:max-w-4xl">
+                <DialogHeader className="shrink-0 border-b border-slate-100 px-5 py-4">
                     <DialogTitle className="text-xl font-black text-slate-950">新建定时报告计划</DialogTitle>
                     <DialogDescription>选择报告模板、素材范围、企业微信接收人和生成时间，系统会按权限自动生成并推送。</DialogDescription>
                 </DialogHeader>
+                <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
                 <div className="grid gap-4 md:grid-cols-2">
                     <TemplateField label="计划名称" value={name} onChange={setName} />
                     <InsightSelect label="报告模板" value={templateCode} options={templateOptions} onChange={setTemplateCode} />
@@ -956,18 +1138,40 @@ function ReportSubscriptionDialog({
                     <InsightSelect label="接收范围" value={recipientScope} options={[{ value: "selected", label: "指定人员" }, { value: "all", label: "全员" }]} onChange={setRecipientScope} />
                 </div>
                 {recipientScope === "selected" ? (
-                    <TemplateTextarea label="接收人员（工号 / 企业微信 UserID / 姓名，每行一个）" value={recipientText} onChange={setRecipientText} rows={4} />
+                    <div className="mt-4">
+                        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                            <div className="text-sm font-bold text-slate-700">接收人员</div>
+                            <Button type="button" variant="outline" className="h-9 rounded-xl border-slate-200 bg-white text-xs" onClick={() => setRecipientPickerOpen(true)}>
+                                选择人员/部门
+                            </Button>
+                        </div>
+                        <TemplateTextarea label="" value={recipientText} onChange={setRecipientText} rows={4} />
+                        <p className="mt-2 text-xs font-semibold text-slate-500">可通过选择器添加，也可手动输入工号、企业微信 UserID 或姓名，每行一个。</p>
+                    </div>
                 ) : null}
                 <TemplateTextarea label="生成要求" value={prompt} onChange={setPrompt} rows={4} />
-                <div className="mt-6 flex justify-end gap-3">
+                </div>
+                <div className="flex shrink-0 justify-end gap-3 border-t border-slate-100 bg-white px-5 py-3">
                     <Button type="button" variant="outline" className="h-10 rounded-xl border-slate-200 bg-white" onClick={() => onOpenChange(false)}>
                         取消
                     </Button>
-                    <Button type="button" className="h-10 rounded-xl bg-primary text-primary-foreground" onClick={submit} disabled={saving}>
+                    <Button type="button" className="h-10 rounded-xl bg-blue-600 text-white hover:bg-blue-700" onClick={submit} disabled={saving}>
                         {saving ? <Loader2 className="size-4 animate-spin" /> : <CalendarClock className="size-4" />}
                         保存计划
                     </Button>
                 </div>
+                <RecipientPickerDialog
+                    open={recipientPickerOpen}
+                    onOpenChange={setRecipientPickerOpen}
+                    onConfirm={(items) => {
+                        const values = items
+                            .map((item) => item.wecom_userid || item.recipient_name || "")
+                            .filter(Boolean);
+                        if (values.length) {
+                            setRecipientText((current) => [current.trim(), ...values].filter(Boolean).join("\n"));
+                        }
+                    }}
+                />
             </DialogContent>
         </Dialog>
     );
@@ -1052,16 +1256,16 @@ function ReportHistoryPanel({
     );
 }
 
-function TemplatePreviewPanel({ template, reportType }: { template?: InsightReportTemplateRead | null; reportType: string }) {
+function TemplatePreviewPanel({ template, reportType, className }: { template?: InsightReportTemplateRead | null; reportType: string; className?: string }) {
     if (!template) {
         return (
-            <aside className="rounded-2xl border border-slate-100 bg-slate-50/80 p-4 text-sm text-slate-500">
+            <aside className={cn("rounded-2xl border border-slate-100 bg-slate-50/80 p-4 text-sm text-slate-500", className)}>
                 暂无可预览模板。
             </aside>
         );
     }
     return (
-        <aside className="rounded-2xl border border-slate-100 bg-slate-50/80 p-4">
+        <aside className={cn("rounded-2xl border border-slate-100 bg-slate-50/80 p-4", className)}>
             <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                     <div className="text-xs font-bold text-primary">模板预览</div>
@@ -1278,17 +1482,17 @@ function TemplateDialog({
     return (
         <>
             <Dialog open={open} onOpenChange={onOpenChange}>
-                <DialogContent className="max-h-[86vh] overflow-hidden rounded-2xl border-slate-200 bg-white p-0 sm:max-w-5xl">
-                <DialogHeader className="border-b border-slate-100 px-6 py-5">
+                <DialogContent className="max-h-[88dvh] overflow-hidden rounded-2xl border-slate-200 bg-white p-0 sm:max-w-5xl">
+                <DialogHeader className="border-b border-slate-100 px-5 py-4">
                         <DialogTitle className="text-xl font-black text-slate-950">报告模板市场</DialogTitle>
                         <DialogDescription>从市场模板复制为自己的模板，或把个人模板发布给团队复用。</DialogDescription>
-                    <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-dashed border-slate-200 bg-slate-50/80 p-4">
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-dashed border-slate-200 bg-slate-50/80 p-3">
                         <div>
                             <div className="text-sm font-black text-slate-800">上传 Word / Excel 模板</div>
-                            <p className="mt-1 text-xs leading-5 text-slate-500">系统会解析标题、段落、表格、Sheet 和字段结构，保存成可复用报告生成模板。</p>
+                            <p className="mt-1 text-xs leading-5 text-slate-500">解析标题、段落和表格结构，保存成可复用模板。</p>
                             <p className="mt-1 flex items-center gap-1.5 text-xs leading-5 text-amber-700">
                                 <Info className="size-3.5 shrink-0" />
-                                当前真实可导出格式为 HTML / PDF / DOCX；XLSX 套版导出尚未接入。
+                                当前可导出 HTML / PDF / DOCX。
                             </p>
                         </div>
                         <input ref={uploadInputRef} type="file" accept=".docx,.xlsx" className="hidden" onChange={(event) => handleUpload(event.target.files?.[0] ?? null)} />
@@ -1299,7 +1503,7 @@ function TemplateDialog({
                     </div>
                     </DialogHeader>
                 <div className="grid min-h-0 gap-0 md:grid-cols-[280px_minmax(0,1fr)]">
-                    <div className="max-h-[68vh] overflow-y-auto border-r border-slate-100 p-4">
+                    <div className="max-h-[calc(88dvh-180px)] overflow-y-auto border-r border-slate-100 p-4">
                         <div className="mb-3 grid grid-cols-2 gap-2 rounded-2xl bg-slate-100 p-1">
                             <button
                                 type="button"
@@ -1352,7 +1556,7 @@ function TemplateDialog({
                             ) : null}
                         </div>
                     </div>
-                    <div className="max-h-[68vh] overflow-y-auto p-5">
+                    <div className="max-h-[calc(88dvh-180px)] overflow-y-auto p-5">
                         <div className="mb-4 grid gap-3 rounded-2xl border border-slate-200 bg-slate-50/80 p-4 md:grid-cols-3">
                             <TemplateMeta label="模板归属" value={currentIsMarket ? "模板市场" : selectedTemplate?.editable ? "我的模板" : "系统模板"} />
                             <TemplateMeta label="模板类型" value={templateKindLabel(selectedTemplate?.template_kind)} />
@@ -1489,12 +1693,12 @@ function TemplateDialog({
                             </div>
                             <div className="insight-action-cluster">
                                 {selectedTemplate?.editable && selectedTemplate.id ? (
-                                    <Button type="button" className="h-10 rounded-xl bg-primary text-primary-foreground" onClick={() => onUpdate(selectedTemplate.id ?? 0, payload())} disabled={saving}>
+                                    <Button type="button" className="h-10 rounded-xl bg-blue-600 text-white hover:bg-blue-700" onClick={() => onUpdate(selectedTemplate.id ?? 0, payload())} disabled={saving}>
                                         {saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
                                         更新模板
                                     </Button>
                                 ) : null}
-                                <Button type="button" className="h-10 rounded-xl bg-primary text-primary-foreground" onClick={() => onCreate(payload())} disabled={saving}>
+                                <Button type="button" className="h-10 rounded-xl bg-blue-600 text-white hover:bg-blue-700" onClick={() => onCreate(payload())} disabled={saving}>
                                     {saving ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />}
                                     另存为自定义模板
                                 </Button>
@@ -1778,11 +1982,12 @@ function PreferenceDialog({
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="max-h-[86vh] overflow-y-auto rounded-2xl border-slate-200 bg-white sm:max-w-3xl">
-                <DialogHeader>
+            <DialogContent className="flex max-h-[86dvh] flex-col overflow-hidden rounded-2xl border-slate-200 bg-white p-0 sm:max-w-3xl">
+                <DialogHeader className="shrink-0 border-b border-slate-100 px-5 py-4">
                     <DialogTitle className="text-xl font-black text-slate-950">报告生成偏好</DialogTitle>
                     <DialogDescription>保存常用生成默认值，下次做报告时不用反复调整。</DialogDescription>
                 </DialogHeader>
+                <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
                 <div className="grid gap-4 md:grid-cols-2">
                     <InsightSelect label="默认模板" value={defaultTemplateCode} options={templateOptions} onChange={setDefaultTemplateCode} />
                     <TemplateField label="默认报告类型" value={defaultReportType} onChange={setDefaultReportType} />
@@ -1815,11 +2020,12 @@ function PreferenceDialog({
                     </Button>
                 </div>
                 <TemplateTextarea label="" value={customPromptSuffix} onChange={setCustomPromptSuffix} rows={5} />
-                <div className="mt-6 flex flex-wrap justify-between gap-3">
+                </div>
+                <div className="flex shrink-0 flex-wrap justify-between gap-3 border-t border-slate-100 bg-white px-5 py-3">
                     <Button type="button" variant="outline" className="h-10 rounded-xl border-slate-200 bg-white" onClick={applyDraft}>
                         应用到生成栏
                     </Button>
-                    <Button type="button" className="h-10 rounded-xl bg-primary text-primary-foreground" onClick={() => onSave(payload())} disabled={saving}>
+                    <Button type="button" className="h-10 rounded-xl bg-blue-600 text-white hover:bg-blue-700" onClick={() => onSave(payload())} disabled={saving}>
                         {saving ? <Loader2 className="size-4 animate-spin" /> : <Save className="size-4" />}
                         保存偏好
                     </Button>
@@ -2496,4 +2702,28 @@ function parseOptionalNumber(value: string) {
     if (!value) return undefined;
     const numberValue = Number(value);
     return Number.isFinite(numberValue) ? numberValue : undefined;
+}
+
+function parseNumberList(value: string | null) {
+    return (value || "")
+        .split(",")
+        .map((item) => Number(item.trim()))
+        .filter((item) => Number.isFinite(item) && item > 0);
+}
+
+function todayInputValue() {
+    return toInputDate(new Date());
+}
+
+function daysAgoInputValue(days: number) {
+    const date = new Date();
+    date.setDate(date.getDate() - Math.max(days, 0));
+    return toInputDate(date);
+}
+
+function toInputDate(date: Date) {
+    const year = date.getFullYear();
+    const month = `${date.getMonth() + 1}`.padStart(2, "0");
+    const day = `${date.getDate()}`.padStart(2, "0");
+    return `${year}-${month}-${day}`;
 }

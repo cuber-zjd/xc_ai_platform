@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { ReactNode } from 'react';
+import type { ClipboardEvent, DragEvent, ReactNode } from 'react';
 import { useLocation } from 'react-router-dom';
 import {
     Bot,
@@ -42,7 +42,7 @@ import {
     useApplyFrReportAiOperationDraft,
     useCreateEmptyFrReport,
     useFrAiReportAgentCapabilities,
-    useFrAiReportAgentChat,
+    useFrAiReportAgentStream,
     useFrAiReportFileStructure,
     useFrAiReportFiles,
     useGenerateFrReportAiSnapshotCpt,
@@ -64,12 +64,10 @@ import type {
     FrReportAiOperationDraftResponse,
     FrReportAiSnapshotCptResponse,
     FrAiReportAgentEvent,
+    FrAiReportAgentStreamEvent,
     FrAiReportAgentContext,
-    FrAiReportAgentChatResponse,
     FrAiReportAgentCapabilitiesResponse,
     GenerateCptStepResponse,
-    GenerateDslStepResponse,
-    GenerateSqlStepResponse,
     FrReportCellRead,
     FrReportDatasetRead,
     FrReportFileRead,
@@ -85,11 +83,18 @@ const FR_AGENT_SKILL_IDS_STORAGE_KEY = 'fr-ai-report-agent-active-skills';
 const FR_AGENT_SKILL_INSTRUCTION_STORAGE_KEY = 'fr-ai-report-agent-skill-instruction';
 const FR_AGENT_CHAT_STORAGE_KEY_PREFIX = 'fr-ai-report-agent-chat-v3';
 const FR_AGENT_CONTEXT_STORAGE_KEY_PREFIX = 'fr-ai-report-agent-context-v2';
+const FR_AGENT_CONVERSATION_STORAGE_KEY_PREFIX = 'fr-ai-report-agent-conversation-v1';
 const FR_AGENT_LEGACY_SESSION_STORAGE_PREFIXES = ['fr-ai-report-agent-chat-v2:', 'fr-ai-report-agent-context-v1:'];
 const FR_APPLICABLE_OPERATION_TYPES = new Set([
-    'xml_patch',
+    'file_edit',
+    'write_cpt_full',
 ]);
 const FR_AGENT_DRAFT_CONTEXT_KEYS = new Set(['operationDraft', 'aiDraft', 'draft', 'pendingDraft', 'pendingOperations', 'lastDraft', 'appliedOperations']);
+
+const createFrAgentConversationId = () =>
+    typeof crypto !== 'undefined' && 'randomUUID' in crypto
+        ? `fr-report-${crypto.randomUUID()}`
+        : `fr-report-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
 type AiPreviewCellPatch = {
     style?: Partial<FrReportCellRead['style']>;
@@ -106,6 +111,7 @@ type AssistantMessage = {
     role: 'user' | 'assistant' | 'system';
     content: string;
     status?: 'pending' | 'success' | 'error';
+    phase?: 'idle' | 'running' | 'completed' | 'failed';
     events?: FrAiReportAgentEvent[];
     artifacts?: AssistantArtifact[];
 };
@@ -122,7 +128,7 @@ type AssistantArtifact = {
 
 const getWelcomeContent = (hasReport: boolean) =>
     hasReport
-        ? '可以直接描述要调整的内容。我会结合当前报表结构生成待应用修改项，确认后再写入版本。'
+        ? '直接说想改成什么样。我会读当前 CPT、查案例和数据，再写入带版本的修改。'
         : '请选择一张报表，或先描述你要创建的报表内容。';
 
 const createWelcomeMessage = (hasReport: boolean): AssistantMessage => ({
@@ -185,27 +191,6 @@ const sanitizeAgentContext = (context: FrAiReportAgentContext | Record<string, u
     return cleaned as FrAiReportAgentContext;
 };
 
-const summarizeSqlStep = (step: GenerateSqlStepResponse) => {
-    const columns = step.sqlValidation?.columns ?? [];
-    const rowCount = step.sqlValidation?.rowCount;
-    return [
-        `状态：${step.status}`,
-        step.sourceTableName ? `数据来源：${step.sourceTableName}` : null,
-        columns.length ? `字段：${columns.slice(0, 8).join('、')}${columns.length > 8 ? ` 等 ${columns.length} 个` : ''}` : null,
-        rowCount != null ? `预览行数：${rowCount}` : null,
-    ]
-        .filter(Boolean)
-        .join('；');
-};
-
-const summarizeDslStep = (step: GenerateDslStepResponse) => {
-    const dsl = step.reportDsl;
-    const parameterCount = dsl?.parameters?.length ?? 0;
-    const columnCount = dsl?.layout?.columns?.length ?? 0;
-    const writeBackEnabled = Boolean(dsl?.writeBack?.enabled);
-    return [`状态：${step.status}`, `列数：${columnCount}`, `参数：${parameterCount}`, writeBackEnabled ? '填报：启用' : '填报：未启用'].join('；');
-};
-
 const getRecordString = (value: unknown, key: string) => {
     if (!value || typeof value !== 'object') {
         return null;
@@ -215,8 +200,8 @@ const getRecordString = (value: unknown, key: string) => {
 };
 
 const toUserFacingErrorMessage = (message: string) => {
-    if (/没有找到目标 XML 节点|不支持的 XML patch selector|Unsupported XML patch selector/i.test(message)) {
-        return '这次修改没有定位到对应的报表文件节点，尚未写入 CPT。请重新生成待应用修改项，或把要修改的位置描述得更具体一些。';
+    if (/没有返回完整 CPT WorkBook XML|没有返回可写入的完整 CPT|没有生成可写入的完整 CPT/i.test(message)) {
+        return '这次没有生成可写入的完整 CPT，尚未写入文件。请重新生成，或把要修改的位置描述得更具体一些。';
     }
     if (/Request failed with status code 400/i.test(message)) {
         return '请求没有通过校验，尚未写入 CPT。请重新生成待应用修改项后再试。';
@@ -252,8 +237,8 @@ const maxDraftRisk = (draft: FrReportAiOperationDraftResponse | null | undefined
 
 const riskLabel = (risk: 'low' | 'medium' | 'high') => (risk === 'high' ? '高风险' : risk === 'medium' ? '中风险' : '低风险');
 
-const isXmlPatchDraft = (draft: FrReportAiOperationDraftResponse | null | undefined) =>
-    Boolean(draft && draft.status === 'draft' && draft.operations.length > 0 && draft.operations.every((item) => item.operationType === 'xml_patch'));
+const isWritableFullCptDraft = (draft: FrReportAiOperationDraftResponse | null | undefined) =>
+    Boolean(draft && draft.status === 'draft' && draft.operations.length > 0 && draft.operations.every((item) => FR_APPLICABLE_OPERATION_TYPES.has(item.operationType)));
 
 const draftTargetLabel = (target: string | null | undefined) => {
     const text = String(target || '').trim();
@@ -279,7 +264,7 @@ const draftTargetLabel = (target: string | null | undefined) => {
 };
 
 const formatDraftDetails = (draft: FrReportAiOperationDraftResponse) => {
-    const invalidOperations = draft.operations.filter((item) => item.operationType !== 'xml_patch');
+    const invalidOperations = draft.operations.filter((item) => !FR_APPLICABLE_OPERATION_TYPES.has(item.operationType));
     if (draft.status === 'blocked' || draft.operations.length === 0 || invalidOperations.length) {
         return [
             '未形成可确认的待应用修改项。',
@@ -321,7 +306,7 @@ const normalizeArtifactForDisplay = (artifact: AssistantArtifact): AssistantArti
             draftId: artifact.id,
             baseVersion: '',
             targetVersion: '',
-            status: parsed.operations.length && parsed.operations.every((item) => item.operationType === 'xml_patch') ? 'draft' : 'blocked',
+            status: parsed.operations.length && parsed.operations.every((item) => FR_APPLICABLE_OPERATION_TYPES.has(item.operationType)) ? 'draft' : 'blocked',
             assistantMessage: parsed.assistantMessage ?? '',
             operations: parsed.operations,
             previewPatch: parsed.previewPatch ?? {},
@@ -339,85 +324,303 @@ const normalizeArtifactForDisplay = (artifact: AssistantArtifact): AssistantArti
     }
 };
 
-const buildResponseArtifacts = (response: FrAiReportAgentChatResponse): AssistantArtifact[] => {
+const streamEventToAgentEvent = (event: FrAiReportAgentStreamEvent): FrAiReportAgentEvent => ({
+    type: event.type,
+    content: event.content ?? event.summary ?? event.assistantMessage ?? null,
+    toolName: event.toolName ?? null,
+    payload: { ...event },
+});
+
+const repairWarningToAgentEvent = (warning: string, index: number): FrAiReportAgentEvent => ({
+    type: 'repair_started',
+    content: warning,
+    toolName: 'auto_repair',
+    payload: { warning, index, synthesized: true },
+});
+
+const streamEventToLiveLine = (event: FrAiReportAgentStreamEvent) => {
+    if (event.type === 'message_delta') {
+        return event.content ?? event.assistantMessage ?? '';
+    }
+    if (event.type === 'repair_started') {
+        return event.summary ?? '这一步没过，我换个方式再试。';
+    }
+    if (event.type === 'preview_result') {
+        return event.errors?.length ? '预览没通过，正在保留错误信息。' : '预览通过了。';
+    }
+    if (event.type === 'cpt_written') {
+        return '已经写入版本，正在核对预览。';
+    }
+    if (event.type === 'tool_started') {
+        return event.summary ?? (event.toolName ? `正在执行 ${event.toolName}` : '正在处理这一步。');
+    }
+    if (event.type === 'tool_result') {
+        return event.summary ?? (event.toolName ? `${event.toolName} 完成。` : '这一步完成了。');
+    }
+    return '';
+};
+
+const compactAssistantLine = (line: string) => {
+    const value = line.trim();
+    if (!value) {
+        return '';
+    }
+    return value.length > 56 ? `${value.slice(0, 56)}...` : value;
+};
+
+const compactReportPath = (path?: string | null) => {
+    const value = (path ?? '').replace(/\\/g, '/').trim();
+    if (!value) {
+        return '';
+    }
+    const withoutPrefix = value.replace(/^webroot\/APP\/reportlets\//i, '');
+    const parts = withoutPrefix.split('/').filter(Boolean);
+    if (parts.length <= 3) {
+        return withoutPrefix;
+    }
+    return `${parts.slice(0, 2).join('/')} / ... / ${parts[parts.length - 1]}`;
+};
+
+const agentEventDisplay = (event: FrAiReportAgentEvent) => {
+    const payload = event.payload ?? {};
+    const rawType = String(payload.type ?? event.type ?? '');
+    const toolName = event.toolName || (typeof payload.toolName === 'string' ? payload.toolName : '');
+    const content = event.content ?? '';
+    const fallbackTitle = toolName || rawType;
+    const contentWithTool = toolName && content && !content.includes(toolName) ? `${toolName} ${content}` : content || toolName;
+    const doneLikeTypes = new Set(['tool_result', 'file_read', 'db_query', 'cpt_written', 'preview_result', 'final_result']);
+    const doneLikeContent = /^(已|完成|通过|写入|返回)/.test(content) || /(已读取|已解析|已拿到|已写入|校验通过|预览校验通过)/.test(content);
+    const runningLikeContent = /^(正在|开始|准备|生成|读取|解析|查询)/.test(content);
+    const hasErrors = Array.isArray(payload.errors) && payload.errors.length > 0;
+    const status = typeof payload.status === 'string' ? payload.status : '';
+
+    if (rawType === 'repair_started' || /自动修复|自修复|继续修复/.test(content)) {
+        return { title: doneLikeContent ? '修复记录' : '自修复', content: content || '这一步没过，换个方式再试。', tone: 'repair' as const };
+    }
+    if ((rawType === 'final_result' || rawType === 'preview_result') && (hasErrors || ['failed', 'blocked', 'preview_failed'].includes(status))) {
+        return { title: rawType === 'preview_result' ? '预览异常' : '未完成', content: contentWithTool || fallbackTitle, tone: 'repair' as const };
+    }
+    if (doneLikeTypes.has(rawType) || doneLikeContent) {
+        const doneTitle =
+            rawType === 'cpt_written'
+                ? '写入完成'
+                : rawType === 'preview_result'
+                  ? '预览通过'
+                  : rawType === 'final_result'
+                    ? '任务完成'
+                    : toolName
+                      ? '工具完成'
+                      : '完成';
+        return { title: doneTitle, content: contentWithTool || fallbackTitle, tone: 'done' as const };
+    }
+    if (rawType === 'tool_started' || runningLikeContent) {
+        return { title: '开始', content: contentWithTool || fallbackTitle, tone: 'running' as const };
+    }
+    if (rawType === 'message_delta') {
+        return { title: '说明', content, tone: 'normal' as const };
+    }
+    return { title: fallbackTitle, content, tone: 'normal' as const };
+};
+
+const timelineToneRank = (tone: ReturnType<typeof agentEventDisplay>['tone']) => {
+    if (tone === 'done') {
+        return 0;
+    }
+    if (tone === 'running') {
+        return 1;
+    }
+    if (tone === 'repair') {
+        return 2;
+    }
+    return 3;
+};
+
+const sortedTimelineEvents = (events?: FrAiReportAgentEvent[]) =>
+    (events ?? [])
+        .filter((event) => event.type !== 'message_delta')
+        .map((event, index) => ({ event, index, display: agentEventDisplay(event) }))
+        .sort((left, right) => {
+            const toneDiff = timelineToneRank(left.display.tone) - timelineToneRank(right.display.tone);
+            if (toneDiff) {
+                return toneDiff;
+            }
+            return right.index - left.index;
+        })
+        .map((item) => item.event);
+
+const visibleTimelineEvents = (events?: FrAiReportAgentEvent[]) => sortedTimelineEvents(events).slice(0, 5);
+
+const parseArtifactPayload = (artifact?: AssistantArtifact) => {
+    if (!artifact?.content) {
+        return null;
+    }
+    try {
+        return JSON.parse(artifact.content) as Partial<FrAiReportAgentStreamEvent>;
+    } catch {
+        return null;
+    }
+};
+
+const getMessageHeadline = (message: AssistantMessage) => message.content.split('\n').map((line) => line.trim()).find(Boolean) ?? '';
+
+const extractChangeLines = (message: AssistantMessage) => {
+    const fromContent = message.content
+        .split('\n')
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .filter((line, index) => index > 0 && !/^(目标|路径|FineReport|预览|文件版本|版本)/.test(line));
+    const fromEvents = (message.events ?? [])
+        .map((event) => event.content ?? '')
+        .map((line) => line.replace(/^正在(修改|处理)：?/, '').replace(/^已处理：?/, '').trim())
+        .filter((line) => /(改为|修改|新增|删除|隐藏|调整|格式|取整|下拉|数据集|表头|单位|列宽|样式)/.test(line))
+        .filter((line) => !/(写入路径|预览校验|读取完整|read_cpt|validate_finereport_preview)/i.test(line));
+    return Array.from(new Set([...fromContent, ...fromEvents])).slice(0, 4);
+};
+
+const AssistantCompletionCard = ({
+    message,
+    timelineEvents,
+    onOpenArtifact,
+}: {
+    message: AssistantMessage;
+    timelineEvents: FrAiReportAgentEvent[];
+    onOpenArtifact: (artifact: AssistantArtifact) => void;
+}) => {
+    const cptArtifact = message.artifacts?.find((artifact) => artifact.type === 'cpt');
+    const warningArtifact = message.artifacts?.find((artifact) => artifact.type === 'warning');
+    const payload = parseArtifactPayload(cptArtifact);
+    const version = payload?.versionNo ? `v${String(payload.versionNo).padStart(4, '0')}` : message.content.match(/v\d{3,}/)?.[0] ?? '新版本';
+    const targetPath = compactReportPath(cptArtifact?.path ?? payload?.objectPath);
+    const previewUrl = cptArtifact?.previewUrl ?? payload?.previewUrl ?? null;
+    const changeLines = extractChangeLines(message);
+    const doneCount = timelineEvents.filter((event) => agentEventDisplay(event).tone === 'done').length;
+    const warningCount = payload?.warnings?.length ?? (warningArtifact?.summary?.match(/(\d+) 条提示/) ? Number(warningArtifact.summary.match(/(\d+) 条提示/)?.[1]) : 0);
+    const errorCount = payload?.errors?.length ?? (warningArtifact?.summary?.match(/(\d+) 条错误/) ? Number(warningArtifact.summary.match(/(\d+) 条错误/)?.[1]) : 0);
+
+    return (
+        <div className="space-y-3">
+            <div className="flex items-start gap-2">
+                <span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-[#e8f7f3] text-[#0b7c6b]">
+                    <Check className="size-3" />
+                </span>
+                <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-semibold text-[#183c35]">已写入 {version}</span>
+                        {previewUrl ? <span className="rounded-full bg-[#eef8f6] px-2 py-0.5 text-[11px] text-[#0b7c6b]">预览可核对</span> : null}
+                    </div>
+                    <div className="mt-1 text-[12px] leading-5 text-[#60736f]">
+                        {targetPath ? `目标：${targetPath}` : getMessageHeadline(message)}
+                    </div>
+                </div>
+            </div>
+
+            {changeLines.length ? (
+                <div className="rounded-xl bg-[#f8fbfa] px-3 py-2 text-[12px] leading-5 text-[#344541]">
+                    <div className="mb-1 font-medium text-[#203b35]">这次改动</div>
+                    <div className="space-y-1">
+                        {changeLines.map((line, index) => (
+                            <div key={`${line}-${index}`} className="flex gap-2">
+                                <span className="mt-[7px] size-1.5 shrink-0 rounded-full bg-[#0f8f7b]" />
+                                <span>{line}</span>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            ) : (
+                <div className="rounded-xl bg-[#f8fbfa] px-3 py-2 text-[12px] leading-5 text-[#60736f]">
+                    修改已进入当前 CPT，详细写入内容可以在“写入详情”和执行轨迹里查看。
+                </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-2">
+                {previewUrl ? (
+                    <Button
+                        type="button"
+                        className="h-8 rounded-xl bg-[#0f8f7b] text-xs text-white hover:bg-[#0b7c6b]"
+                        onClick={() => window.open(previewUrl, '_blank', 'noopener,noreferrer')}
+                    >
+                        <ExternalLink className="size-3.5" />
+                        打开预览
+                    </Button>
+                ) : null}
+                {cptArtifact ? (
+                    <Button
+                        type="button"
+                        variant="outline"
+                        className="h-8 rounded-xl border-[#dfe9e7] bg-white text-xs text-[#49615c] hover:bg-[#f6fbfa] hover:text-[#0b7c6b]"
+                        onClick={() => onOpenArtifact(normalizeArtifactForDisplay(cptArtifact))}
+                    >
+                        写入详情
+                    </Button>
+                ) : null}
+            </div>
+
+            {timelineEvents.length ? (
+                <details className="rounded-xl bg-[#f8faf9] px-3 py-2 text-[11px] leading-5 text-[#60736f] open:bg-white open:ring-1 open:ring-[#e6eeee]">
+                    <summary className="cursor-pointer select-none text-[#0b7c6b]">
+                        执行轨迹 {doneCount ? `已完成 ${doneCount} 步` : `${timelineEvents.length} 步`}
+                    </summary>
+                    <div className="mt-2 space-y-1.5">
+                        {timelineEvents.map((event, index) => {
+                            const display = agentEventDisplay(event);
+                            return (
+                                <div key={`${message.id}-completion-trace-${event.type}-${index}`} className="rounded-lg border border-[#e6eeee] bg-white px-2 py-1">
+                                    <span className="font-medium text-[#203b35]">{display.title}</span>
+                                    {display.content ? <span>：{display.content}</span> : null}
+                                </div>
+                            );
+                        })}
+                    </div>
+                </details>
+            ) : null}
+
+            {warningArtifact ? (
+                <details
+                    className={cn(
+                        'rounded-xl px-3 py-2 text-[11px] leading-5 open:ring-1',
+                        errorCount ? 'bg-[#fff7f7] text-[#8f2f2f] open:ring-[#ffd6d6]' : 'bg-[#fafaf8] text-[#6b6250] open:ring-[#e9e2d5]',
+                    )}
+                >
+                    <summary className={cn('cursor-pointer select-none font-medium', errorCount ? 'text-[#9b3a3a]' : 'text-[#6b6250]')}>
+                        {errorCount ? `校验异常 ${errorCount} 条` : `校验说明 ${warningCount} 条`}
+                    </summary>
+                    <div className="mt-2 whitespace-pre-wrap">{warningArtifact.content}</div>
+                </details>
+            ) : null}
+        </div>
+    );
+};
+
+const buildStreamFinalArtifacts = (event: FrAiReportAgentStreamEvent): AssistantArtifact[] => {
     const artifacts: AssistantArtifact[] = [];
-    if (response.sqlStep) {
+    if (event.fileVersionId || event.previewUrl) {
         artifacts.push({
-            id: `${response.sqlStep.taskId}-sql`,
-            title: '查看 SQL 和数据预览',
-            type: 'sql',
-            summary: summarizeSqlStep(response.sqlStep),
-            content: safeStringify({
-                querySql: response.sqlStep.querySql,
-                createTableSql: response.sqlStep.createTableSql,
-                sqlValidation: response.sqlStep.sqlValidation,
-                requirementSummary: response.sqlStep.requirementSummary,
-                warnings: response.sqlStep.warnings,
-                errors: response.sqlStep.errors,
-            }),
-        });
-    }
-    if (response.dslStep) {
-        artifacts.push({
-            id: `${response.dslStep.taskId}-dsl`,
-            title: '查看 ReportDSL',
-            type: 'dsl',
-            summary: summarizeDslStep(response.dslStep),
-            content: safeStringify(response.dslStep.reportDsl ?? response.dslStep),
-        });
-    }
-    if (response.operationDraft) {
-        const unsupported = response.operationDraft.operations.filter((item) => !FR_APPLICABLE_OPERATION_TYPES.has(item.operationType));
-        const risk = maxDraftRisk(response.operationDraft);
-        artifacts.push({
-            id: response.operationDraft.draftId,
-            title: '查看待应用修改项',
-            type: 'draft',
-            summary: response.operationDraft.status === 'blocked' || response.operationDraft.operations.length === 0
-                ? '没有形成可确认的待应用修改项。'
-                : unsupported.length
-                  ? `返回了 ${unsupported.length} 个不可应用操作，已作废。`
-                  : `共 ${response.operationDraft.operations.length} 个待应用修改项；最高风险：${riskLabel(risk)}。`,
-            content: formatDraftDetails(response.operationDraft),
-        });
-    }
-    if (response.cptStep) {
-        artifacts.push({
-            id: `${response.cptStep.taskId}-cpt`,
+            id: event.fileVersionId ?? event.snapshotId ?? `${Date.now()}-cpt`,
             title: '查看 CPT 写入结果',
             type: 'cpt',
             summary: [
-                `状态：${response.cptStep.status}`,
-                response.cptStep.cptObjectPath ? `路径：${response.cptStep.cptObjectPath}` : null,
-                response.cptStep.fileVersionId ? `文件版本：${response.cptStep.fileVersionId}` : null,
+                event.status ? `状态：${event.status}` : null,
+                event.objectPath ? `路径：${compactReportPath(event.objectPath)}` : null,
+                event.versionNo ? `版本：v${String(event.versionNo).padStart(4, '0')}` : null,
             ]
                 .filter(Boolean)
                 .join('；'),
-            content: safeStringify({
-                cptObjectPath: response.cptStep.cptObjectPath,
-                dslObjectPath: response.cptStep.dslObjectPath,
-                sqlObjectPath: response.cptStep.sqlObjectPath,
-                previewUrl: response.cptStep.previewUrl,
-                fileVersionId: response.cptStep.fileVersionId,
-                structureVersionId: response.cptStep.structureVersionId,
-                warnings: response.cptStep.warnings,
-                errors: response.cptStep.errors,
-            }),
-            path: response.cptStep.cptObjectPath,
-            previewUrl: response.cptStep.previewUrl,
+            content: safeStringify(event),
+            path: event.objectPath,
+            previewUrl: event.previewUrl,
         });
     }
-    if (response.warnings.length || response.errors.length) {
+    if ((event.warnings?.length ?? 0) || (event.errors?.length ?? 0)) {
         artifacts.push({
-            id: `${response.taskId ?? Date.now()}-warnings`,
-            title: response.errors.length ? '查看错误和风险' : '查看风险提示',
+            id: `${event.fileVersionId ?? Date.now()}-stream-warnings`,
+            title: (event.errors?.length ?? 0) ? '查看错误和风险' : '查看风险提示',
             type: 'warning',
-            summary: `${response.warnings.length} 条提示，${response.errors.length} 条错误。`,
+            summary: `${event.warnings?.length ?? 0} 条提示，${event.errors?.length ?? 0} 条错误。`,
             content: [
-                response.warnings.length ? '风险提示：' : null,
-                ...response.warnings.map((item) => `- ${item}`),
-                response.errors.length ? '错误：' : null,
-                ...response.errors.map((item) => `- ${item}`),
+                event.warnings?.length ? '风险提示：' : null,
+                ...(event.warnings ?? []).map((item) => `- ${item}`),
+                event.errors?.length ? '错误：' : null,
+                ...(event.errors ?? []).map((item) => `- ${item}`),
             ]
                 .filter(Boolean)
                 .join('\n'),
@@ -426,42 +629,54 @@ const buildResponseArtifacts = (response: FrAiReportAgentChatResponse): Assistan
     return artifacts;
 };
 
-const buildAssistantContent = (response: FrAiReportAgentChatResponse) => {
-    if (response.operationDraft) {
-        if (response.operationDraft.status === 'blocked' || response.operationDraft.operations.length === 0) {
-            return `${response.operationDraft.assistantMessage || '本轮没有形成可确认的待应用修改项。'}\n\n可以补充目标效果，或重新生成待应用修改项。`;
-        }
-        const unsupported = response.operationDraft.operations.filter((item) => !FR_APPLICABLE_OPERATION_TYPES.has(item.operationType));
-        const risk = maxDraftRisk(response.operationDraft);
-        const riskText = risk === 'high'
-            ? '\n\n这次包含高风险 CPT 修改，可能触及样式、填报、脚本、数据集或整份文件。应用前请确认，生成 CPT 时会保留版本并做冲突检测。'
-            : risk === 'medium'
-              ? '\n\n这次包含中风险 CPT 修改，应用前请确认；生成 CPT 前仍会走版本归档、冲突检测和真实预览校验。'
-              : '';
-        return unsupported.length
-            ? `返回内容不是可应用修改项，已作废，没有进入待应用列表。请重新发送需求生成待应用修改项。`
-            : `${response.operationDraft.assistantMessage}\n\n待应用修改项已生成，确认后会进入快照；生成 CPT 前仍会走版本和冲突检测。${riskText}`;
+const isProgressLikeFinalMessage = (message?: string) => {
+    const value = (message ?? '').trim();
+    if (!value) {
+        return false;
     }
-    if (response.cptStep) {
-        const statusText = response.cptStep.status === 'conflict' ? '保存被阻止：检测到设计器外部修改。' : response.cptStep.errors.length ? 'CPT 已生成版本，但预览校验有错误。' : 'CPT 已生成并进入版本库。';
-        return `${statusText}\n路径：${response.cptStep.cptObjectPath ?? '未返回'}\n${response.cptStep.previewUrl ? '可以打开 FineReport 预览核对真实效果。' : '本次没有返回可用预览地址。'}`;
+    return /^(正在|准备|我先|我会|下面我会|已确认|收到，准备|这次我会)/.test(value);
+};
+
+const buildStreamFinalContent = (event: FrAiReportAgentStreamEvent) => {
+    if (event.status === 'draft_ready') {
+        return [
+            event.assistantMessage || '我先把这次修改放到待确认里了。',
+            event.operationDraft?.operations?.length ? `待确认修改项：${event.operationDraft.operations.length} 个` : null,
+            '你确认前不会写 CPT，也不会新占一个文件版本。',
+        ]
+            .filter(Boolean)
+            .join('\n');
     }
-    if (response.dslStep) {
-        const parameterCount = response.dslStep.reportDsl?.parameters?.length ?? 0;
-        return `已生成 SQL 和 ReportDSL，前端现在可以直接查看中间产物。\n参数数量：${parameterCount}；报表列数：${response.dslStep.reportDsl?.layout?.columns?.length ?? 0}。\n下一步你可以继续让小驰调整，也可以保存成 CPT 后到 FineReport 预览核对。`;
+    if (event.status === 'success') {
+        const versionText = event.versionNo ? `v${String(event.versionNo).padStart(4, '0')}` : '新版本';
+        const assistantMessage = isProgressLikeFinalMessage(event.assistantMessage) ? '' : event.assistantMessage;
+        const hasVerboseWriteText = /写入路径|路径：|文件版本|FineReport 预览|预览校验/.test(assistantMessage || '');
+        return [
+            hasVerboseWriteText ? `改好了，已经写入 ${versionText}。` : assistantMessage || `改好了，已经写入 ${versionText}。`,
+            event.objectPath ? `目标：${compactReportPath(event.objectPath)}` : null,
+            event.previewUrl ? 'FineReport 预览校验已返回，可以打开核对真实效果。' : '这次没有拿到预览地址，可以用右上角预览再核一下。',
+        ]
+            .filter(Boolean)
+            .join('\n');
     }
-    if (response.assistantMessage?.trim()) {
-        return response.assistantMessage.trim();
+    if (event.status === 'preview_failed') {
+        return [
+            event.assistantMessage || 'CPT 已写入版本库，但预览校验仍有问题。',
+            event.objectPath ? `目标：${compactReportPath(event.objectPath)}` : null,
+            event.errors?.length ? `预览错误：${event.errors.join('；')}` : null,
+            '可以继续把错误发给我，我会基于当前版本继续修复。',
+        ]
+            .filter(Boolean)
+            .join('\n');
     }
-    if (response.status === 'need_input') {
-        return `我现在还不能可靠继续：\n${response.questions.map((item) => `- ${item}`).join('\n') || '缺少必要上下文。'}`;
-    }
-    const planEvent = response.events.find((event) => event.type === 'plan_draft' && event.content);
-    if (planEvent?.content) {
-        return planEvent.content;
-    }
-    const latest = response.events.filter((event) => event.content).at(-1);
-    return latest?.content ?? '小驰已完成本轮处理。';
+    const repairWarningCount = (event.warnings ?? []).filter((warning) => /自动修复|校验失败|第 \d+ 轮/.test(warning)).length;
+    return [
+        event.assistantMessage || (repairWarningCount ? `我已经自动修过 ${repairWarningCount} 轮，但候选 CPT 还没过校验。` : '这次还没写进去，我已经把错误留在下面了。'),
+        event.errors?.length ? `主要卡在：${compactAssistantLine(event.errors[0])}` : null,
+        event.errors?.length ? (repairWarningCount ? '错误和修复记录都保留在下面，可以继续让我接着处理。' : '可以直接继续发“继续修”，我会基于这次错误接着处理。') : null,
+    ]
+        .filter(Boolean)
+        .join('\n');
 };
 
 interface ReportTreeFolder {
@@ -2774,6 +2989,7 @@ function CopilotPanel({
 }) {
     const chatStorageKey = `${FR_AGENT_CHAT_STORAGE_KEY_PREFIX}:${selectedReport?.objectPath ?? 'global'}`;
     const contextStorageKey = `${FR_AGENT_CONTEXT_STORAGE_KEY_PREFIX}:${selectedReport?.objectPath ?? 'global'}`;
+    const conversationStorageKey = `${FR_AGENT_CONVERSATION_STORAGE_KEY_PREFIX}:${selectedReport?.objectPath ?? 'global'}`;
     const [prompt, setPrompt] = useState('');
     const [draftPrompt, setDraftPrompt] = useState('');
     const [targetObjectPath, setTargetObjectPath] = useState('');
@@ -2782,6 +2998,17 @@ function CopilotPanel({
     const [activeTool, setActiveTool] = useState<'structure' | 'draft' | 'commands' | 'versions' | 'capabilities' | 'skills' | null>(null);
     const [activeArtifact, setActiveArtifact] = useState<AssistantArtifact | null>(null);
     const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+    const [isAttachmentDragging, setIsAttachmentDragging] = useState(false);
+    const [conversationOverrideId, setConversationOverrideId] = useState<string | null>(null);
+    const conversationId = useMemo(() => {
+        if (conversationOverrideId) {
+            return conversationOverrideId;
+        }
+        if (typeof window === 'undefined') {
+            return createFrAgentConversationId();
+        }
+        return window.localStorage.getItem(conversationStorageKey) || createFrAgentConversationId();
+    }, [conversationOverrideId, conversationStorageKey]);
     const [agentContext, setAgentContext] = useState<FrAiReportAgentContext>(() => {
         if (typeof window === 'undefined') {
             return {};
@@ -2828,7 +3055,9 @@ function CopilotPanel({
             return [createWelcomeMessage(Boolean(selectedReport))];
         }
     });
-    const agentChat = useFrAiReportAgentChat();
+    const agentStream = useFrAiReportAgentStream();
+    const [agentStreaming, setAgentStreaming] = useState(false);
+    const [agentStreamError, setAgentStreamError] = useState<string | null>(null);
     const capabilitiesQuery = useFrAiReportAgentCapabilities();
     const applyDraft = useApplyFrReportAiOperationDraft();
     const generateSnapshotCpt = useGenerateFrReportAiSnapshotCpt();
@@ -2846,6 +3075,11 @@ function CopilotPanel({
     useEffect(() => {
         window.localStorage.setItem(FR_AGENT_SKILL_INSTRUCTION_STORAGE_KEY, skillInstruction);
     }, [skillInstruction]);
+    useEffect(() => {
+        if (typeof window !== 'undefined') {
+            window.localStorage.setItem(conversationStorageKey, conversationId);
+        }
+    }, [conversationId, conversationStorageKey]);
     useEffect(() => {
         if (typeof window === 'undefined') {
             return;
@@ -2879,7 +3113,51 @@ function CopilotPanel({
         previewRows: [],
         activeSkillIds,
         skillInstruction: skillInstruction.trim() || null,
+        conversationId,
     });
+
+    const appendSelectedFiles = (files: File[]) => {
+        const validFiles = files.filter((file) => file.size > 0).slice(0, 12);
+        if (!validFiles.length) {
+            return;
+        }
+        setSelectedFiles((current) => {
+            const merged = [...current];
+            const seen = new Set(current.map((file) => `${file.name}:${file.size}:${file.lastModified}`));
+            for (const file of validFiles) {
+                const key = `${file.name}:${file.size}:${file.lastModified}`;
+                if (seen.has(key)) {
+                    continue;
+                }
+                seen.add(key);
+                merged.push(file);
+            }
+            return merged.slice(0, 12);
+        });
+    };
+
+    const handleAttachmentPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+        const files = Array.from(event.clipboardData.files ?? []);
+        if (!files.length) {
+            return;
+        }
+        appendSelectedFiles(files);
+    };
+
+    const handleAttachmentDrop = (event: DragEvent<HTMLDivElement>) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setIsAttachmentDragging(false);
+        appendSelectedFiles(Array.from(event.dataTransfer.files ?? []));
+    };
+
+    const handleAttachmentDragOver = (event: DragEvent<HTMLDivElement>) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!isAttachmentDragging) {
+            setIsAttachmentDragging(true);
+        }
+    };
 
     const clearTypingTimer = () => {
         if (typingTimerRef.current !== null) {
@@ -2890,53 +3168,27 @@ function CopilotPanel({
 
     useEffect(() => clearTypingTimer, []);
 
-    const streamAssistantMessage = (
-        messageId: string,
-        content: string,
-        options: Pick<AssistantMessage, 'events' | 'artifacts'> & { status: AssistantMessage['status'] },
-    ) => {
-        clearTypingTimer();
-        const fullText = content || '已处理完成。';
-        let cursor = 0;
-        setMessages((current) =>
-            current.map((message) =>
-                message.id === messageId
-                    ? {
-                          ...message,
-                          status: 'pending',
-                          content: '',
-                          events: options.events,
-                          artifacts: options.artifacts,
-                      }
-                    : message,
-            ),
-        );
-        typingTimerRef.current = window.setInterval(() => {
-            cursor = Math.min(cursor + 8, fullText.length);
-            setMessages((current) =>
-                current.map((message) =>
-                    message.id === messageId
-                        ? {
-                              ...message,
-                              content: fullText.slice(0, cursor),
-                              status: cursor >= fullText.length ? options.status : 'pending',
-                          }
-                        : message,
-                ),
-            );
-            if (cursor >= fullText.length) {
-                clearTypingTimer();
-            }
-        }, 18);
-    };
-
     const handleSubmit = (action: 'chat' | 'start_generate' | 'save_cpt' = 'chat', overrideText?: string) => {
         const requestText = (overrideText ?? prompt).trim();
-        if (!requestText && action === 'chat') {
+        if (!requestText && action === 'chat' && !selectedFiles.length) {
             return;
         }
-        const finalText = requestText || (action === 'start_generate' ? '开始生成报表' : '保存成 CPT');
+        const finalText = requestText || (selectedFiles.length ? '请结合我上传的附件调整当前报表' : action === 'start_generate' ? '开始生成报表' : '保存成 CPT');
         const pendingMessageId = `assistant-${Date.now()}`;
+        const targetObjectPathForRun = selectedReport?.objectPath;
+        if (!targetObjectPathForRun) {
+            setMessages((current) => [
+                ...current,
+                { id: `user-${Date.now()}`, role: 'user', content: finalText },
+                {
+                    id: pendingMessageId,
+                    role: 'assistant',
+                    status: 'error',
+                    content: '请先选择一张 CPT 报表，再让我修改。',
+                },
+            ]);
+            return;
+        }
         setMessages((current) => [
             ...current,
             { id: `user-${Date.now()}`, role: 'user', content: finalText },
@@ -2944,67 +3196,111 @@ function CopilotPanel({
                 id: pendingMessageId,
                 role: 'assistant',
                 status: 'pending',
-                content: '正在读取当前报表、整理上下文并选择工具...',
+                phase: 'running',
+                content: '我在看当前报表和相关上下文。',
             },
         ]);
         setPrompt('');
-        agentChat.mutate(
+        setAgentStreaming(true);
+        setAgentStreamError(null);
+        onClearDraft();
+        const streamEvents: FrAiReportAgentEvent[] = [];
+        let latestLine = '我在看当前报表和相关上下文。';
+        void agentStream.run(
             {
+                objectPath: targetObjectPathForRun,
                 message: finalText,
-                action,
+                selectedCell,
+                selectedDataset: selectedDatasetName,
+                autonomyMode: 'high',
                 context: buildAgentContext(),
                 files: selectedFiles,
             },
             {
-                onSuccess: (response) => {
-                    setAgentContext(sanitizeAgentContext(response.context ?? {}));
-                    if (response.operationDraft) {
-                        if (isXmlPatchDraft(response.operationDraft)) {
-                            setDraftPrompt(finalText);
-                            onDraftReady(response.operationDraft);
-                        } else {
-                            setDraftPrompt('');
-                            onClearDraft();
-                        }
+                onEvent: (event) => {
+                    if (event.type === 'final_result') {
+                        return;
                     }
-                    if (response.cptStep) {
-                        onSnapshotCptGenerated({
-                            status: response.cptStep.status === 'conflict' ? 'conflict' : response.cptStep.errors.length ? 'preview_failed' : 'generated',
-                            snapshotId: '',
-                            cptObjectPath: response.cptStep.cptObjectPath ?? '',
-                            previewUrl: response.cptStep.previewUrl ?? '',
-                            reportId: response.cptStep.reportId,
-                            fileVersionId: response.cptStep.fileVersionId,
-                            structureVersionId: response.cptStep.structureVersionId,
-                            conflict: response.cptStep.conflict ?? null,
-                            warnings: response.cptStep.warnings,
-                            errors: response.cptStep.errors,
-                            operationsObjectPath: null,
-                        });
+                    const agentEvent = streamEventToAgentEvent(event);
+                    streamEvents.push(agentEvent);
+                    const line = streamEventToLiveLine(event);
+                    if (line) {
+                        latestLine = compactAssistantLine(line);
                     }
-                    setSelectedFiles([]);
-                    streamAssistantMessage(pendingMessageId, buildAssistantContent(response), {
-                        status: response.errors.length ? 'error' : 'success',
-                        events: response.events,
-                        artifacts: buildResponseArtifacts(response),
-                    });
-                },
-                onError: (error) => {
-                    clearTypingTimer();
                     setMessages((current) =>
                         current.map((message) =>
                             message.id === pendingMessageId
                                 ? {
                                       ...message,
-                                      status: 'error',
-                                      content: error instanceof Error ? `生成失败：${error.message}` : '生成失败：模型或接口暂时没有返回有效结果。',
+                                      content: latestLine || '我还在看，马上给你结果。',
+                                      events: [...streamEvents],
+                                      status: 'pending',
+                                      phase: 'running',
                                   }
                                 : message,
                         ),
                     );
                 },
+                onFinal: (event) => {
+                    setSelectedFiles([]);
+                    setAgentContext(sanitizeAgentContext({ ...buildAgentContext(), currentObjectPath: event.objectPath ?? targetObjectPathForRun }));
+                    if (event.status === 'draft_ready' && event.operationDraft) {
+                        onDraftReady(event.operationDraft);
+                    }
+                    if (event.objectPath && event.fileVersionId) {
+                        onSnapshotCptGenerated({
+                            status: event.status === 'preview_failed' ? 'preview_failed' : event.status === 'conflict' ? 'conflict' : event.errors?.length ? 'preview_failed' : 'generated',
+                            snapshotId: event.snapshotId ?? '',
+                            cptObjectPath: event.objectPath,
+                            previewUrl: event.previewUrl ?? '',
+                            reportId: event.reportId,
+                            fileVersionId: event.fileVersionId,
+                            structureVersionId: event.structureVersionId,
+                            conflict: event.conflict ?? null,
+                            warnings: event.warnings ?? [],
+                            errors: event.errors ?? [],
+                            operationsObjectPath: null,
+                        });
+                    }
+                    setMessages((current) =>
+                        current.map((message) =>
+                            message.id === pendingMessageId
+                                ? (() => {
+                                      const repairEvents = (event.warnings ?? [])
+                                          .filter((warning) => /自动修复|校验失败|第 \d+ 轮/.test(warning))
+                                          .map(repairWarningToAgentEvent);
+                                      return {
+                                          ...message,
+                                          status: event.errors?.length ? 'error' : 'success',
+                                          phase: event.errors?.length ? 'failed' : 'completed',
+                                          content: buildStreamFinalContent(event),
+                                          events: [...streamEvents, ...repairEvents, streamEventToAgentEvent(event)],
+                                          artifacts: buildStreamFinalArtifacts(event),
+                                      };
+                                  })()
+                                : message,
+                        ),
+                    );
+                    setAgentStreaming(false);
+                },
             },
-        );
+        ).catch((error) => {
+            const message = error instanceof Error ? error.message : '模型或接口暂时没有返回有效结果。';
+            setAgentStreamError(message);
+            setAgentStreaming(false);
+            clearTypingTimer();
+            setMessages((current) =>
+                current.map((item) =>
+                    item.id === pendingMessageId
+                        ? {
+                              ...item,
+                              status: 'error',
+                              content: `生成失败：${message}`,
+                          }
+                        : item,
+                ),
+            );
+        });
     };
     const handleApplyDraft = () => {
         if (!selectedReport || !aiDraft) {
@@ -3047,6 +3343,11 @@ function CopilotPanel({
         setDraftPrompt('');
         setSelectedFiles([]);
         setAgentContext({});
+        const nextConversationId = createFrAgentConversationId();
+        if (typeof window !== 'undefined') {
+            window.localStorage.setItem(conversationStorageKey, nextConversationId);
+        }
+        setConversationOverrideId(nextConversationId);
         setActiveArtifact(null);
         setActiveTool(null);
         applyDraft.reset();
@@ -3127,7 +3428,7 @@ function CopilotPanel({
             },
         );
     };
-    const errorMessage = getMutationErrorMessage(agentChat.error);
+    const errorMessage = agentStreamError;
     const applyErrorMessage = getMutationErrorMessage(applyDraft.error);
     const cptErrorMessage = getMutationErrorMessage(generateSnapshotCpt.error);
     const hasSnapshotConflict = snapshotCpt?.status === 'conflict';
@@ -3154,7 +3455,7 @@ function CopilotPanel({
                         </div>
                     </div>
                 </div>
-                {agentChat.isPending ? (
+                {agentStreaming ? (
                     <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-[#eef8f5] px-2 py-0.5 text-[11px] text-[#0c7a68]">
                         <RefreshCw className="size-3 animate-spin" />
                         处理中
@@ -3164,55 +3465,127 @@ function CopilotPanel({
 
             <div className="min-h-0 overflow-y-auto overflow-x-hidden px-1 py-3 pr-2">
                 <div className="space-y-3">
-                    {displayMessages.map((message) => (
-                        <div
-                            key={message.id}
-                            className={cn(
-                                'max-w-[92%] rounded-2xl px-3 py-2 text-sm leading-6',
-                                message.role === 'user'
-                                    ? 'ml-auto bg-[#0f8f7b] text-white'
-                                    : 'mr-auto border border-[#e8eeee] bg-[#f8faf9] text-[#344541]',
-                                message.status === 'pending' && 'border-[#bfe3dc] bg-[#f6fbfa] text-[#0b7c6b]',
-                                message.status === 'error' && 'border-[#ffd6d6] bg-[#fff1f1] text-[#9b3a3a]',
-                            )}
-                        >
-                            <div className="whitespace-pre-wrap">
-                                {message.content}
-                                {message.status === 'pending' ? <span className="ml-0.5 animate-pulse text-[#0f8f7b]">▍</span> : null}
-                            </div>
-                            {message.events?.length ? (
-                                <details className="mt-2 rounded-lg bg-white/55 px-2 py-1 text-[11px] leading-5 text-[#60736f] open:bg-white/80">
-                                    <summary className="cursor-pointer select-none text-[#0b7c6b]">查看执行轨迹</summary>
-                                    <div className="mt-1 space-y-1">
-                                        {message.events.map((event, index) => (
-                                            <div key={`${message.id}-${event.type}-${index}`} className="rounded-md border border-[#e6eeee] bg-white px-2 py-1">
-                                                <span className="font-medium text-[#203b35]">{event.toolName || event.type}</span>
-                                                {event.content ? <span>：{event.content}</span> : null}
-                                            </div>
-                                        ))}
+                    {displayMessages.map((message) => {
+                        const timelineEvents = visibleTimelineEvents(message.events);
+                        const allTimelineEvents = sortedTimelineEvents(message.events);
+                        const isUser = message.role === 'user';
+                        const isRunning = message.status === 'pending' || message.phase === 'running';
+                        const hasRepairTrace = (message.events ?? []).some((event) => event.type === 'repair_started' || /自动修复|自修复|校验失败/.test(event.content ?? ''));
+                        const hasCompletionCard = !isUser && message.status === 'success' && Boolean(message.artifacts?.some((artifact) => artifact.type === 'cpt'));
+                        return (
+                            <div
+                                key={message.id}
+                                className={cn(
+                                    'max-w-[92%] rounded-2xl px-3 py-2 text-sm leading-6',
+                                    isUser
+                                        ? 'ml-auto bg-[#0f8f7b] text-white'
+                                        : 'mr-auto border border-[#e8eeee] bg-white text-[#344541] shadow-[0_1px_8px_rgba(15,143,123,0.04)]',
+                                    isRunning && 'border-[#bfe3dc] bg-[#f7fcfb]',
+                                    message.status === 'error' && 'border-[#ffd6d6] bg-[#fff7f7] text-[#8f2f2f]',
+                                )}
+                            >
+                                {!isUser && isRunning ? (
+                                    <div className="mb-2 flex items-center gap-2 text-[11px] font-medium text-[#0b7c6b]">
+                                        <RefreshCw className="size-3 animate-spin" />
+                                        正在处理
                                     </div>
-                                </details>
-                            ) : null}
-                            {message.artifacts?.length ? (
-                                <div className="mt-2 grid gap-1">
-                                    {message.artifacts.map((artifact) => (
-                                        <button
-                                            key={artifact.id}
-                                            type="button"
-                                            className={cn(
-                                                'rounded-xl border bg-white/80 px-2.5 py-2 text-left text-[11px] leading-5 transition hover:border-[#9bd8cf] hover:bg-white',
-                                                artifact.type === 'warning' ? 'border-[#f3d39b] text-[#7a5608]' : 'border-[#dfe9e7] text-[#49615c]',
-                                            )}
-                                            onClick={() => setActiveArtifact(normalizeArtifactForDisplay(artifact))}
-                                        >
-                                            <div className="font-medium text-[#203b35]">{artifact.title}</div>
-                                            {artifact.summary ? <div className="mt-0.5 line-clamp-2">{artifact.summary}</div> : null}
-                                        </button>
-                                    ))}
-                                </div>
-                            ) : null}
-                        </div>
-                    ))}
+                                ) : null}
+                                {!isUser && message.status === 'success' ? (
+                                    <div className="mb-2 flex items-center gap-2 text-[11px] font-medium text-[#0b7c6b]">
+                                        <Check className="size-3.5" />
+                                        已完成
+                                    </div>
+                                ) : null}
+                                {!isUser && message.status === 'error' ? (
+                                    <div className="mb-2 flex items-center gap-2 text-[11px] font-medium text-[#9b3a3a]">
+                                        <ChevronRight className="size-3.5" />
+                                        {hasRepairTrace ? '已尝试自修复' : '需要继续修复'}
+                                    </div>
+                                ) : null}
+                                {hasCompletionCard ? (
+                                    <AssistantCompletionCard
+                                        message={message}
+                                        timelineEvents={allTimelineEvents}
+                                        onOpenArtifact={setActiveArtifact}
+                                    />
+                                ) : (
+                                    <div
+                                        className={cn(
+                                            'whitespace-pre-wrap',
+                                            !isUser && 'text-[#2f4641]',
+                                            isRunning && 'font-medium text-[#123f37]',
+                                        )}
+                                    >
+                                        {message.content}
+                                        {isRunning ? <span className="ml-0.5 animate-pulse text-[#0f8f7b]">▍</span> : null}
+                                    </div>
+                                )}
+                                {!hasCompletionCard && !isUser && timelineEvents.length ? (
+                                    <div className="mt-2 space-y-1.5">
+                                        {timelineEvents.slice(0, 3).map((event, index) => {
+                                            const display = agentEventDisplay(event);
+                                            return (
+                                                <div key={`${message.id}-mini-${event.type}-${index}`} className="flex items-start gap-2 rounded-xl border border-[#e6eeee] bg-white/80 px-2 py-1.5 text-[11px] leading-4 text-[#60736f]">
+                                                    <span
+                                                        className={cn(
+                                                            'mt-0.5 grid size-4 shrink-0 place-items-center rounded-full',
+                                                            display.tone === 'done' && 'bg-[#edf8f5] text-[#0b7c6b]',
+                                                            display.tone === 'running' && 'bg-[#eef6ff] text-[#3570a3]',
+                                                            display.tone === 'repair' && 'bg-[#fff6e6] text-[#9a6200]',
+                                                            display.tone === 'normal' && 'bg-[#f3f5f5] text-[#60736f]',
+                                                        )}
+                                                    >
+                                                        {display.tone === 'done' ? <Check className="size-2.5" /> : display.tone === 'repair' ? <RefreshCw className="size-2.5" /> : <Play className="size-2.5" />}
+                                                    </span>
+                                                    <span className="min-w-0">
+                                                        <span className="font-medium text-[#203b35]">{display.title}</span>
+                                                        {display.content ? <span className="ml-1">{compactAssistantLine(display.content)}</span> : null}
+                                                    </span>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                ) : null}
+                                {!hasCompletionCard && allTimelineEvents.length ? (
+                                    <details className="mt-2 rounded-lg bg-[#f8faf9] px-2 py-1 text-[11px] leading-5 text-[#60736f] open:bg-white/80">
+                                        <summary className="cursor-pointer select-none text-[#0b7c6b]">查看完整执行轨迹</summary>
+                                        <div className="mt-1 space-y-1">
+                                            {allTimelineEvents.map((event, index) => {
+                                                const display = agentEventDisplay(event);
+                                                return (
+                                                    <div key={`${message.id}-${event.type}-${index}`} className="rounded-md border border-[#e6eeee] bg-white px-2 py-1">
+                                                        <span className="font-medium text-[#203b35]">{display.title}</span>
+                                                        {display.content ? <span>：{display.content}</span> : null}
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    </details>
+                                ) : null}
+                                {!hasCompletionCard && message.artifacts?.length ? (
+                                    <div className="mt-2 grid gap-1">
+                                        {message.artifacts.map((artifact) => {
+                                            const artifactHasErrors = artifact.type === 'warning' && /[1-9]\s*条错误|错误：/.test(`${artifact.summary ?? ''}\n${artifact.content ?? ''}`);
+                                            return (
+                                                <button
+                                                    key={artifact.id}
+                                                    type="button"
+                                                    className={cn(
+                                                        'rounded-xl border bg-white px-2.5 py-2 text-left text-[11px] leading-5 transition hover:border-[#9bd8cf] hover:bg-[#fbfefd]',
+                                                        artifactHasErrors ? 'border-[#ffd6d6] text-[#8f2f2f]' : 'border-[#dfe9e7] text-[#49615c]',
+                                                    )}
+                                                    onClick={() => setActiveArtifact(normalizeArtifactForDisplay(artifact))}
+                                                >
+                                                    <div className="font-medium text-[#203b35]">{artifact.title}</div>
+                                                    {artifact.summary ? <div className="mt-0.5 line-clamp-2">{artifact.summary}</div> : null}
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                ) : null}
+                            </div>
+                        );
+                    })}
                     {selectedDatasetName ? (
                         <div className="mr-auto max-w-[92%] rounded-2xl border border-[#e8eeee] bg-white px-3 py-2 text-xs leading-5 text-[#60736f]">
                             当前数据集：{selectedDatasetName}，已预览字段 {previewColumns.length} 个。
@@ -3225,7 +3598,7 @@ function CopilotPanel({
                 <div className="flex flex-wrap items-center gap-1">
                     {[
                         { key: 'structure' as const, label: '上下文', icon: Database },
-                        { key: 'draft' as const, label: aiDraft ? (isXmlPatchDraft(aiDraft) ? `待应用 ${aiDraft.operations.length}` : '待应用已作废') : '待应用', icon: WandSparkles },
+                        { key: 'draft' as const, label: aiDraft ? (isWritableFullCptDraft(aiDraft) ? `待应用 ${aiDraft.operations.length}` : '待应用已作废') : '待应用', icon: WandSparkles },
                         { key: 'versions' as const, label: '版本', icon: History },
                         { key: 'capabilities' as const, label: '工具', icon: Settings2 },
                         { key: 'skills' as const, label: '技能', icon: Sparkles },
@@ -3311,7 +3684,7 @@ function CopilotPanel({
                                 variant="outline"
                                 className="h-8 border-[#dedede] bg-white/80 text-xs text-[#49615c] hover:bg-white"
                                 onClick={unsupportedDraftOperations.length ? handleRegenerateDirectXmlDraft : onClearDraft}
-                                disabled={agentChat.isPending}
+                                disabled={agentStreaming}
                             >
                                 {unsupportedDraftOperations.length ? '重新生成' : '暂不应用'}
                             </Button>
@@ -3327,13 +3700,25 @@ function CopilotPanel({
                     </div>
                 ) : snapshotCpt && snapshotCpt.status !== 'conflict' ? (
                     <div className="rounded-2xl bg-[#f6fbfa] p-3 text-xs leading-5 text-[#315c55] ring-1 ring-[#dbe9e6]">
-                        <div className="font-semibold text-[#0b7c6b]">
-                            {snapshotCpt.status === 'generated' ? 'CPT 已生成' : 'CPT 已生成，预览需要检查'}
+                        <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                                <div className="font-semibold text-[#0b7c6b]">
+                                    {snapshotCpt.status === 'generated' ? 'CPT 已生成' : 'CPT 已生成，预览需要检查'}
+                                </div>
+                                <div className="mt-0.5 truncate text-[11px] text-[#60736f]">已写入：{compactReportPath(snapshotCpt.cptObjectPath)}</div>
+                            </div>
+                            <Check className="mt-0.5 size-4 shrink-0 text-[#0b7c6b]" />
                         </div>
-                        <div className="mt-0.5 break-all text-[11px] text-[#60736f]">已写入：{snapshotCpt.cptObjectPath}</div>
-                        {snapshotCpt.warnings.map((warning) => (
-                            <div key={warning} className="mt-2 rounded-lg bg-[#fff8eb] px-2 py-1 text-[11px] text-[#8a5a00] ring-1 ring-[#f5d79b]">{warning}</div>
-                        ))}
+                        {snapshotCpt.warnings.length ? (
+                            <details className="mt-2 rounded-xl bg-white/70 px-2 py-1.5 text-[11px] text-[#6b6250] ring-1 ring-[#e7efed] open:bg-white">
+                                <summary className="cursor-pointer select-none font-medium text-[#49615c]">校验说明 {snapshotCpt.warnings.length} 条</summary>
+                                <div className="mt-1 space-y-1">
+                                    {snapshotCpt.warnings.map((warning) => (
+                                        <div key={warning}>{warning}</div>
+                                    ))}
+                                </div>
+                            </details>
+                        ) : null}
                         {snapshotCpt.errors.map((error) => (
                             <div key={error} className="mt-2 rounded-lg bg-[#fff1f1] px-2 py-1 text-[11px] text-[#9b3a3a] ring-1 ring-[#ffd6d6]">{error}</div>
                         ))}
@@ -3376,25 +3761,54 @@ function CopilotPanel({
                 ) : null}
                 {selectedFiles.length ? (
                     <div className="flex flex-wrap gap-1 px-1">
-                        {selectedFiles.map((file) => (
-                            <span key={`${file.name}-${file.size}`} className="rounded-full bg-[#f2f7f6] px-2 py-1 text-[11px] text-[#49615c]">
+                        {selectedFiles.map((file, index) => (
+                            <span key={`${file.name}-${file.size}-${file.lastModified}`} className="inline-flex max-w-full items-center gap-1 rounded-full bg-[#f2f7f6] px-2 py-1 text-[11px] text-[#49615c]">
+                                <span className="truncate">
                                 {file.name}
+                                </span>
+                                <button
+                                    type="button"
+                                    className="rounded-full p-0.5 text-[#7b8a87] hover:bg-white hover:text-[#9b3a3a]"
+                                    onClick={() => setSelectedFiles((current) => current.filter((_, fileIndex) => fileIndex !== index))}
+                                    aria-label={`移除 ${file.name}`}
+                                >
+                                    <Trash2 className="size-3" />
+                                </button>
                             </span>
                         ))}
                     </div>
                 ) : null}
-                <div className="rounded-2xl border border-[#dedede] bg-white p-2 shadow-[0_-8px_20px_rgba(255,255,255,0.92)]">
+                <div
+                    className={cn(
+                        'relative rounded-2xl border bg-white p-2 shadow-[0_-8px_20px_rgba(255,255,255,0.92)] transition-colors',
+                        isAttachmentDragging ? 'border-[#0f8f7b] bg-[#f6fbfa]' : 'border-[#dedede]',
+                    )}
+                    onDrop={handleAttachmentDrop}
+                    onDragOver={handleAttachmentDragOver}
+                    onDragEnter={handleAttachmentDragOver}
+                    onDragLeave={(event) => {
+                        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                            setIsAttachmentDragging(false);
+                        }
+                    }}
+                >
+                    {isAttachmentDragging ? (
+                        <div className="pointer-events-none absolute inset-1 z-10 flex items-center justify-center rounded-xl border border-dashed border-[#0f8f7b] bg-[#f6fbfa]/90 text-xs font-medium text-[#0b7c6b]">
+                            松开后添加附件
+                        </div>
+                    ) : null}
                     <textarea
                         className="max-h-28 min-h-14 w-full resize-none bg-transparent px-1 text-sm leading-6 text-[#333333] outline-none placeholder:text-[#8a8a8a]"
                         value={prompt}
                         onChange={(event) => setPrompt(event.target.value)}
+                        onPaste={handleAttachmentPaste}
                         onKeyDown={(event) => {
                             if (event.key === 'Enter' && !event.shiftKey) {
                                 event.preventDefault();
                                 handleSubmit();
                             }
                         }}
-                        disabled={agentChat.isPending}
+                        disabled={agentStreaming}
                         placeholder={selectedReport ? '直接告诉小驰要做什么；Shift+Enter 换行' : '先选择或新建一张报表，也可以先描述你要做什么'}
                     />
                     <div className="flex flex-wrap items-center justify-between gap-2">
@@ -3405,7 +3819,7 @@ function CopilotPanel({
                                 multiple
                                 className="hidden"
                                 onChange={(event) => {
-                                    setSelectedFiles(Array.from(event.target.files ?? []));
+                                    appendSelectedFiles(Array.from(event.target.files ?? []));
                                     event.target.value = '';
                                 }}
                             />
@@ -3423,7 +3837,7 @@ function CopilotPanel({
                             size="icon"
                             className="size-8 rounded-full bg-[#0f8f7b] text-white hover:bg-[#0b7c6b]"
                             onClick={() => handleSubmit()}
-                            disabled={!prompt.trim() || agentChat.isPending}
+                            disabled={(!prompt.trim() && !selectedFiles.length) || agentStreaming}
                         >
                             <SendHorizonal className="size-4" />
                         </Button>
@@ -3557,7 +3971,7 @@ function CopilotPanel({
                         ) : null}
                         {unsupportedDraftOperations.length ? (
                             <div className="rounded-lg bg-[#fff8eb] px-3 py-3 text-xs leading-5 text-[#8a5a00] ring-1 ring-[#f5d79b]">
-                                当前内容已作废：包含 {unsupportedDraftOperations.length} 个不可应用操作，不能写入 CPT。
+                                当前旧草稿不适合直接确认。可以重新发送需求，走高权限流式链路直接生成版本。
                             </div>
                         ) : null}
                         {aiDraft?.warnings.map((warning) => (
@@ -3574,8 +3988,8 @@ function CopilotPanel({
                             清空
                         </Button>
                         {unsupportedDraftOperations.length ? (
-                            <Button className="h-9 bg-[#0f8f7b] text-white hover:bg-[#0b7c6b]" onClick={handleRegenerateDirectXmlDraft} disabled={agentChat.isPending}>
-                                {agentChat.isPending ? '生成中...' : '重新生成修改项'}
+                            <Button className="h-9 bg-[#0f8f7b] text-white hover:bg-[#0b7c6b]" onClick={handleRegenerateDirectXmlDraft} disabled={agentStreaming}>
+                                {agentStreaming ? '生成中...' : '重新生成修改项'}
                             </Button>
                         ) : (
                             <Button className="h-9 bg-[#0f8f7b] text-white hover:bg-[#0b7c6b]" onClick={handleApplyDraft} disabled={!canApplyDraft || applyDraft.isPending}>

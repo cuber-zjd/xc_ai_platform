@@ -37,7 +37,12 @@ from app.schemas.agent.insight.crawl import (
 from app.services.agent.insight.crawler.crawl_service import insight_crawl_service
 from app.services.agent.insight.crawler.channel_adapter_service import AdapterRunContext, insight_channel_adapter_service
 from app.services.agent.insight.crawler.content_cleaner import insight_content_cleaner
-from app.services.agent.insight.crawler.search_client import InsightSearchHit, baidu_search_client, bocha_search_client
+from app.services.agent.insight.crawler.search_client import (
+    InsightSearchHit,
+    baidu_search_client,
+    bocha_search_client,
+    doubao_web_search_client,
+)
 from app.services.agent.insight.permission_service import insight_permission_service
 
 
@@ -200,6 +205,106 @@ class InsightSearchDiscoveryService:
             await db.commit()
             raise
 
+    async def ingest_search_hits(
+        self,
+        db: AsyncSession,
+        request: InsightSearchDiscoveryRequest,
+        hits: list[InsightSearchHit],
+        user_id: int | None,
+        *,
+        is_admin: bool = False,
+    ) -> InsightSearchDiscoveryResponse:
+        """复用已获取的搜索命中入库。
+
+        聚合搜索场景下，博查/豆包只调用一次，再按监测对象反向归属到这里入库。
+        """
+
+        await self._ensure_data_source_editable(db, request.data_source_id, user_id=user_id, is_admin=is_admin)
+        await self._ensure_monitor_config_editable(db, request.monitor_config_id, user_id=user_id, is_admin=is_admin)
+        task = InsightTask(
+            task_uid=f"search_ingest_{uuid4().hex}",
+            task_type="keyword_search_discovery",
+            data_source_id=request.data_source_id,
+            monitor_config_id=request.monitor_config_id,
+            source_channel_id=request.source_channel_id,
+            status=InsightTaskStatus.RUNNING,
+            progress=10,
+            started_at=datetime.now(),
+            input_payload=request.model_dump() | {"user_id": user_id, "external_hits": True},
+            create_by=str(user_id) if user_id else None,
+            update_by=str(user_id) if user_id else None,
+        )
+        db.add(task)
+        await db.commit()
+        await db.refresh(task)
+
+        try:
+            trace = await self._filter_hits(db, hits, request, errors=[])
+            final_hits = trace.hits
+            discovered_results = [self._to_discovered_result(task.id or 0, request, hit, user_id) for hit in final_hits]
+            db.add_all(discovered_results)
+            await db.commit()
+            for result in discovered_results:
+                await db.refresh(result)
+
+            candidates: list[InsightIntelligenceCandidate] = []
+            if request.create_candidate_from_hits:
+                candidates = await self._create_candidates_from_hits(db, discovered_results, request, user_id)
+
+            task.status = InsightTaskStatus.SUCCESS
+            task.progress = 100
+            task.finished_at = datetime.now()
+            task.output_payload = {
+                "hit_count": len(final_hits),
+                "discovered_result_ids": [item.id for item in discovered_results],
+                "crawled_result_ids": [],
+                "candidate_ids": [item.id for item in candidates],
+                "rule_filter_enabled": bool(request.include_keywords or request.exclude_keywords),
+                "llm_filter_configured": bool(request.enable_llm_filter and request.filter_prompt),
+                "llm_filter_applied": trace.llm_filter_applied,
+                "llm_filter_message": trace.llm_filter_message,
+                "hit_ai_analysis_applied": bool(candidates),
+                "filter_summary": {
+                    "source_hit_count": trace.collected_count,
+                    "time_window_kept_count": trace.time_window_kept_count,
+                    "rule_kept_count": trace.rule_kept_count,
+                    "dedupe_kept_count": trace.dedupe_kept_count,
+                    "history_dedupe_kept_count": trace.history_dedupe_kept_count,
+                    "llm_kept_count": trace.llm_kept_count,
+                    "final_hit_count": len(final_hits),
+                    "rule_filter_enabled": bool(request.include_keywords or request.exclude_keywords),
+                    "llm_filter_configured": bool(request.enable_llm_filter and request.filter_prompt),
+                    "llm_filter_applied": trace.llm_filter_applied,
+                    "llm_filter_message": trace.llm_filter_message,
+                    "ingest_from_external_hits": True,
+                },
+                "kept_items": trace.kept_items,
+                "rejected_items": trace.rejected_items[:80],
+                "channel_errors": trace.channel_errors,
+                "hit_items": [self._kept_item(hit) for hit in final_hits],
+                "crawled_items": [],
+                "candidate_items": [self._candidate_item(item) for item in candidates],
+                "crawl_errors": [],
+            }
+            await self._update_adapter_run_counts(db, final_hits, trace, candidates)
+            await db.commit()
+            await db.refresh(task)
+
+            return InsightSearchDiscoveryResponse(
+                task=task,
+                hits=[self._to_hit_read(hit) for hit in final_hits],
+                discovered_results=discovered_results,
+                crawled_results=[],
+                candidates=candidates,
+            )
+        except Exception as exc:
+            task.status = InsightTaskStatus.FAILED
+            task.progress = 100
+            task.finished_at = datetime.now()
+            task.error_message = str(exc)
+            await db.commit()
+            raise
+
     async def _update_adapter_run_counts(
         self,
         db: AsyncSession,
@@ -334,7 +439,13 @@ class InsightSearchDiscoveryService:
             except Exception as exc:
                 errors.append(f"博查资讯搜索失败: {exc}")
 
-        built_in_channels = {"baidu", "baidu_news", "bocha", "bocha_news"}
+        if "doubao_web_search" in channels:
+            try:
+                hits.extend(await doubao_web_search_client.search(request.query, per_channel_count, request.freshness))
+            except Exception as exc:
+                errors.append(f"豆包联网搜索失败: {exc}")
+
+        built_in_channels = {"baidu", "baidu_news", "bocha", "bocha_news", "doubao_web_search"}
         for channel_code in sorted(channels - built_in_channels):
             try:
                 hits.extend(
@@ -354,10 +465,19 @@ class InsightSearchDiscoveryService:
             except Exception as exc:
                 errors.append(f"{channel_code} 适配器失败: {exc}")
 
+        return await self._filter_hits(db, hits, request, errors)
+
+    async def _filter_hits(
+        self,
+        db: AsyncSession,
+        hits: list[InsightSearchHit],
+        request: InsightSearchDiscoveryRequest,
+        errors: list[str],
+    ) -> SearchFilterTrace:
         time_filtered_hits, time_rejected = self._apply_time_window_filter(hits, request)
         filtered_hits, rule_rejected = self._apply_rule_filter(time_filtered_hits, request)
         deduped, dedupe_rejected = self._dedupe_hits(filtered_hits)
-        new_hits, history_dedupe_rejected = await self._dedupe_existing_hits(db, deduped)
+        new_hits, history_dedupe_rejected = await self._dedupe_existing_hits(db, deduped, request.monitor_config_id)
         llm_hits, llm_rejected, llm_applied, llm_message = await self._apply_llm_filter(new_hits, request)
         final_hits = llm_hits[: request.max_results]
         limit_rejected = [
@@ -517,6 +637,7 @@ class InsightSearchDiscoveryService:
         self,
         db: AsyncSession,
         hits: list[InsightSearchHit],
+        monitor_config_id: int | None,
     ) -> tuple[list[InsightSearchHit], list[dict[str, Any]]]:
         if not hits:
             return hits, []
@@ -524,10 +645,10 @@ class InsightSearchDiscoveryService:
         if not current_keys:
             return [], [self._rejection_item(hit, "history_dedupe", "缺少 URL，无法执行历史去重") for hit in hits]
 
-        existing_urls = list(
+        existing_rows = list(
             (
                 await db.exec(
-                    select(InsightCrawlResult.source_url).where(
+                    select(InsightCrawlResult.source_url, InsightCrawlResult.monitor_config_id).where(
                         InsightCrawlResult.is_deleted == 0,
                         InsightCrawlResult.source_url != "",
                     )
@@ -535,8 +656,8 @@ class InsightSearchDiscoveryService:
             ).all()
         )
         existing_keys = {
-            normalized
-            for url in existing_urls
+            (normalized, monitor_config_id)
+            for url, monitor_config_id in existing_rows
             if (normalized := self._normalize_url_key(url))
         }
 
@@ -547,7 +668,7 @@ class InsightSearchDiscoveryService:
             if not key:
                 rejected.append(self._rejection_item(hit, "history_dedupe", "缺少 URL，无法执行历史去重"))
                 continue
-            if key in existing_keys:
+            if (key, monitor_config_id) in existing_keys:
                 rejected.append(self._rejection_item(hit, "history_dedupe", "历史已采集过相同链接，跳过 AI 筛选和入库"))
                 continue
             kept.append(hit)

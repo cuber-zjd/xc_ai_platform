@@ -5,8 +5,10 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
+import type { InsightNotificationRecipient } from "../api";
 import { useInsightCreateNotification, useInsightNotifications, useInsightRetryNotification } from "../hooks";
 import { InsightSelect } from "./InsightSelect";
+import { RecipientPickerDialog } from "./RecipientPickerDialog";
 
 const recipientTypeOptions = [
     { value: "user", label: "用户" },
@@ -39,6 +41,8 @@ export function WecomPushDialog({
     const [content, setContent] = useState(defaultContent);
     const [recipientType, setRecipientType] = useState("user");
     const [recipientIds, setRecipientIds] = useState("");
+    const [pickedRecipients, setPickedRecipients] = useState<InsightNotificationRecipient[]>([]);
+    const [pickerOpen, setPickerOpen] = useState(false);
     const [sendNow, setSendNow] = useState(true);
     const createMutation = useInsightCreateNotification();
     const retryMutation = useInsightRetryNotification();
@@ -53,17 +57,20 @@ export function WecomPushDialog({
         () =>
             recipientType === "all"
                 ? [{ recipient_type: "all", recipient_id: null }]
-                : recipientIds
-                      .split(/[\n,\s，]+/)
-                      .map((item) => item.trim())
-                      .filter(Boolean)
-                      .map((item) => ({
-                          recipient_type: recipientType,
-                          recipient_id: recipientType === "user" ? null : /^\d+$/.test(item) ? Number(item) : null,
-                          recipient_name: item,
-                          wecom_userid: recipientType === "user" ? item : undefined,
-                      })),
-        [recipientIds, recipientType],
+                : [
+                      ...pickedRecipients,
+                      ...recipientIds
+                          .split(/[\n,\s，]+/)
+                          .map((item) => item.trim())
+                          .filter(Boolean)
+                          .map((item) => ({
+                              recipient_type: recipientType,
+                              recipient_id: recipientType === "user" ? null : /^\d+$/.test(item) ? Number(item) : null,
+                              recipient_name: item,
+                              wecom_userid: recipientType === "user" ? item : undefined,
+                          })),
+                  ],
+        [pickedRecipients, recipientIds, recipientType],
     );
 
     const handleSubmit = () => {
@@ -141,7 +148,13 @@ export function WecomPushDialog({
                     <div className="grid gap-3 md:grid-cols-[140px_minmax(0,1fr)]">
                         <InsightSelect label="接收对象" value={recipientType} options={recipientTypeOptions} onChange={setRecipientType} />
                         <label className="block space-y-2 text-sm font-bold text-slate-700">
-                            接收对象 ID / 工号 / 名称
+                            接收对象
+                            <div className="flex flex-wrap items-center gap-2">
+                                <Button type="button" variant="outline" className="h-10 rounded-xl border-slate-200 bg-white" disabled={recipientType === "all"} onClick={() => setPickerOpen(true)}>
+                                    选择人员/部门
+                                </Button>
+                                <span className="text-xs font-semibold text-slate-500">已选 {pickedRecipients.length} 个，可继续手动补充</span>
+                            </div>
                             <textarea
                                 value={recipientIds}
                                 onChange={(event) => setRecipientIds(event.target.value)}
@@ -157,7 +170,7 @@ export function WecomPushDialog({
                         <input type="checkbox" checked={sendNow} onChange={(event) => setSendNow(event.target.checked)} className="size-4 accent-primary" />
                     </label>
                     <div className="rounded-xl border border-blue-100 bg-blue-50/70 px-4 py-3 text-xs font-semibold leading-5 text-blue-700">
-                        接收对象可填写企业微信 UserID、工号或姓名；系统会先按平台用户匹配，匹配不到时按企业微信 UserID 发送。
+                        优先从组织人员中选择；手动补充时可填写企业微信 UserID、工号或姓名。
                     </div>
                     <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
                         <div className="mb-3 flex items-center justify-between gap-3">
@@ -203,6 +216,16 @@ export function WecomPushDialog({
                         创建推送
                     </Button>
                 </div>
+                <RecipientPickerDialog
+                    open={pickerOpen}
+                    onOpenChange={setPickerOpen}
+                    onConfirm={(items) => {
+                        setPickedRecipients((current) => [...current, ...items]);
+                        if (items[0]) {
+                            setRecipientType(items[0].recipient_type);
+                        }
+                    }}
+                />
             </DialogContent>
         </Dialog>
     );

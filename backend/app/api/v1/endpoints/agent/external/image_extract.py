@@ -151,11 +151,13 @@ async def extract_data_with_image(
             ),
         ]
 
-        # 获取模型
-        llm = await LLMFactory.get_model_by_name(
-            "doubao-seed-2-0-lite",
+        # 获取可用多模态模型
+        llm = await LLMFactory.get_multimodal_model_by_level(
+            level=3,
+            capability="general",
             temperature=0.0,
             max_tokens=4096,
+            streaming=False,
         )
         
         response = await llm.ainvoke(messages)

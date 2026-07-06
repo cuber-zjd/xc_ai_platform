@@ -318,12 +318,20 @@ class InsightAssetService:
             )
         if not is_admin:
             filters.append(
-                await insight_permission_service.visibility_filter_for_user(
-                    db,
-                    InsightIntelligenceAsset,
-                    target_type="asset",
-                    user_id=user_id,
-                    is_admin=is_admin,
+                or_(
+                    await insight_permission_service.visibility_filter_for_user(
+                        db,
+                        InsightIntelligenceAsset,
+                        target_type="asset",
+                        user_id=user_id,
+                        is_admin=is_admin,
+                    ),
+                    await insight_permission_service.inherited_asset_filter_for_user(
+                        db,
+                        InsightIntelligenceAsset,
+                        user_id=user_id,
+                        is_admin=is_admin,
+                    ),
                 )
             )
         assets = list((await db.exec(select(InsightIntelligenceAsset).where(*filters).limit(300))).all())
@@ -369,12 +377,20 @@ class InsightAssetService:
             asset_filters.append(InsightIntelligenceAsset.id == asset_id)
         if not is_admin:
             asset_filters.append(
-                await insight_permission_service.visibility_filter_for_user(
-                    db,
-                    InsightIntelligenceAsset,
-                    target_type="asset",
-                    user_id=user_id,
-                    is_admin=is_admin,
+                or_(
+                    await insight_permission_service.visibility_filter_for_user(
+                        db,
+                        InsightIntelligenceAsset,
+                        target_type="asset",
+                        user_id=user_id,
+                        is_admin=is_admin,
+                    ),
+                    await insight_permission_service.inherited_asset_filter_for_user(
+                        db,
+                        InsightIntelligenceAsset,
+                        user_id=user_id,
+                        is_admin=is_admin,
+                    ),
                 )
             )
         visible_asset_ids = list((await db.exec(select(InsightIntelligenceAsset.id).where(*asset_filters).limit(500))).all())

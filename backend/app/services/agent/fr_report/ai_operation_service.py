@@ -15,7 +15,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from app.core.config import settings
 from app.core.llm_factory import LLMFactory
 from app.core.logger import logger
-from app.models.agent.fr_report import FrReportOperationDraft, FrReportSnapshot
+from app.models.agent.fr_report import FrReportDatabaseConnection, FrReportOperationDraft, FrReportSnapshot
 from app.schemas.agent.fr_report.report_ai_operation import (
     FrReportAiApplyDraftRequest,
     FrReportAiApplyDraftResponse,
@@ -65,6 +65,8 @@ class FrReportAiOperationService:
             prompt=payload.prompt,
             structure=structure,
             source_xml=source_xml,
+            db=db,
+            user_id=user_id,
         )
         experience_context = await self._build_operation_experience_context(
             db=db,
@@ -87,8 +89,8 @@ class FrReportAiOperationService:
             "previewRows": payload.previewRows[:8],
             "allowedOperationTypes": sorted(ALLOWED_OPERATION_TYPES),
             "safetyRules": [
-                "AI 只允许通过 operationType=xml_patch 返回 CPT XML 修改。",
-                "禁止返回 update_sql、set_form_property、set_data_column_filter、set_cell_style 等旧语义操作；这些只能作为理解意图的中间想法，最终必须落实为 xml_patch。",
+                "兼容草稿接口只能承接 CPT XML 文件修改；不要返回参数栏、SQL、样式、填报等中间语义操作名。",
+                "如果需要更高权限或整份 WorkBook 重写，应改走 agent/run/stream 高权限链路。",
                 "优先基于 cptSourceContext 中的原始 XML 片段做最小修改，不要凭空编造未读取过的大段 XML。",
                 "涉及数据库字段、日期字段或样例值时，必须优先使用 databaseSourceContext 中真实表结构和样例数据；如果没有查到，不得编造字段名。",
                 "涉及把数据填入报表时，必须优先使用 reportLayoutContext 的单元格矩阵和表头语义定位，不能只按用户口语顺序猜单元格。",
@@ -449,6 +451,9 @@ class FrReportAiOperationService:
         system_prompt: str,
         payload: dict[str, Any],
         agent_name: str,
+        langfuse_trace_context: dict[str, str] | None = None,
+        langfuse_run_name: str | None = None,
+        langfuse_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         try:
             response = await LLMFactory.safe_invoke(
@@ -461,6 +466,10 @@ class FrReportAiOperationService:
                 json_mode=True,
                 enable_reasoning=False,
                 max_retries=3,
+                langfuse_trace_context=langfuse_trace_context,
+                langfuse_run_name=langfuse_run_name or agent_name,
+                langfuse_metadata=langfuse_metadata,
+                langfuse_tags=["fr-report-agent", agent_name],
             )
         except Exception as exc:
             message = LLMFactory.describe_invocation_error(exc)
@@ -502,7 +511,7 @@ class FrReportAiOperationService:
             "你是 FineReport CPT 文件补丁修复代理。"
             "你只能返回严格 JSON，不输出 Markdown。"
             "上一轮模型返回了不可直接应用的中间结构，你要把它改写为真正可应用的 CPT XML patch。"
-            "operationType 只能是 xml_patch；禁止返回 update_sql、set_form_property、set_data_column_filter、set_cell_style 等旧语义操作。"
+            "operationType 只能是 xml_patch；不要返回参数栏、SQL、样式、填报等中间语义操作名。"
             "如果上一轮意图是改参数栏、下拉框、SQL、样式、填报或脚本，你必须直接替换或插入对应的 CPT XML 片段。"
             "优先使用 cptSourceContext.snippets 里的 selector 和原始 XML；可以使用 selector=ReportParameterAttr、ParameterUI、TableData[name=\"ds1\"]、TableData[name=\"ds1\"]/Query、cell:A1 等。"
             "如果局部片段不足以表达正确修改，但当前需求明确，可以使用 action=full_replace 返回完整 WorkBook。"
@@ -834,6 +843,9 @@ class FrReportAiOperationService:
                 "dataColumn": cell.dataColumn.model_dump(mode="json") if cell.dataColumn else None,
                 "fieldBinding": cell.fieldBinding.model_dump(mode="json") if cell.fieldBinding else None,
                 "widget": cell.widget.model_dump(mode="json") if cell.widget else None,
+                "style": cell.style.model_dump(mode="json") if cell.style else None,
+                "rawPath": cell.rawPath,
+                "rawTag": self._limit_text(cell.rawTag, 3000) if cell.rawTag else None,
             }
 
         semantic_cells: list[dict[str, Any]] = []
@@ -870,6 +882,8 @@ class FrReportAiOperationService:
             "sheetName": sheet.name,
             "rowCount": sheet.rowCount,
             "columnCount": sheet.columnCount,
+            "columns": [item.model_dump(mode="json") for item in list(sheet.columns or [])[:120]],
+            "rowHeights": [item.model_dump(mode="json") for item in list(sheet.rows or [])[:120]],
             "policy": "这是当前报表的实际单元格布局。修改数据绑定或填写数据时，必须按表头链和现有数据区域定位，不得按自然语言顺序猜列。",
             "rows": rows,
             "semanticCells": semantic_cells[:180],
@@ -893,19 +907,60 @@ class FrReportAiOperationService:
         prompt: str,
         structure: FrReportFileStructureRead,
         source_xml: str | None,
+        db: AsyncSession | None = None,
+        user_id: int | None = None,
     ) -> dict[str, Any]:
         table_names = self._extract_database_table_names_for_context(prompt, structure, source_xml)
+        database_names = self._extract_database_names_for_context(structure, source_xml)
         if not table_names:
-            return {"available": False, "tableNames": [], "reason": "未从用户需求或当前数据集 SQL 中识别到数据库表名"}
+            return {
+                "available": False,
+                "tableNames": [],
+                "databaseNamesInCpt": database_names,
+                "reason": "未从用户需求或当前数据集 SQL 中识别到数据库表名",
+            }
 
-        schema, warnings, errors = await sqlserver_query_service.inspect_tables_schema(table_names)
+        connection, connection_reason, visible_connections = await self._resolve_database_context_connection(
+            db=db,
+            user_id=user_id,
+            database_names=database_names,
+        )
+        connection_config = self._database_connection_config(connection) if connection else None
+        if not connection_config and db is not None and user_id is not None and database_names:
+            return {
+                "available": False,
+                "tableNames": table_names,
+                "databaseNamesInCpt": database_names,
+                "connectionName": None,
+                "connectionStatus": "unmatched",
+                "visibleConnectionNames": visible_connections,
+                "connectionReason": connection_reason,
+                "schema": None,
+                "sampleRows": {},
+                "warnings": [
+                    "当前 CPT 的 FineReport 连接名未匹配到当前用户的平台查库连接；不会退回其他默认连接，避免拿错库误判数据。"
+                ],
+                "errors": [],
+                "policy": "FineReport 预览成功只说明 FineReport 服务器能访问该连接；后端 Agent 查表结构需要当前用户平台侧存在同名连接。",
+            }
+
+        if connection_config:
+            schema, warnings, errors = await sqlserver_query_service.inspect_tables_schema_with_config(table_names, connection_config)
+        else:
+            schema, warnings, errors = await sqlserver_query_service.inspect_tables_schema(table_names)
         samples: dict[str, list[dict[str, Any]]] = {}
         sample_errors: list[str] = []
         for table_name in self._table_names_from_resolved_schema(schema):
             try:
+                sample_sql = self._build_sample_sql(table_name, connection_config)
                 rows, _columns = await asyncio.to_thread(
+                    sqlserver_query_service._execute_sample_query_with_config if connection_config else sqlserver_query_service._execute_sample_query,
+                    sample_sql,
+                    connection_config,
+                    5,
+                ) if connection_config else await asyncio.to_thread(
                     sqlserver_query_service._execute_sample_query,
-                    f"SELECT TOP 5 * FROM {table_name}",
+                    sample_sql,
                 )
                 samples[table_name] = rows[:5]
             except Exception as exc:
@@ -915,12 +970,100 @@ class FrReportAiOperationService:
         return {
             "available": bool(schema),
             "tableNames": table_names,
+            "databaseNamesInCpt": database_names,
+            "connectionName": connection.connection_name if connection else None,
+            "connectionStatus": "matched" if connection else "unmatched",
+            "visibleConnectionNames": visible_connections,
+            "connectionReason": connection_reason,
             "schema": schema,
             "sampleRows": samples,
             "warnings": warnings,
             "errors": [*errors, *sample_errors],
-            "policy": "数据库字段、日期字段和样例值必须以这里的真实结构为准；没有出现在 schema.fields 中的字段不得编造。",
+            "policy": (
+                "数据库字段、日期字段和样例值必须以这里的真实结构为准；没有出现在 schema.fields 中的字段不得编造。"
+                "如果 connectionStatus=unmatched，说明 FineReport 预览连接和后端可查库连接未对齐，不能据此判断业务表无数据。"
+            ),
         }
+
+    async def _resolve_database_context_connection(
+        self,
+        *,
+        db: AsyncSession | None,
+        user_id: int | None,
+        database_names: list[str],
+    ) -> tuple[FrReportDatabaseConnection | None, str, list[str]]:
+        if db is None or user_id is None:
+            return None, "当前调用没有数据库会话，无法读取平台维护的数据源连接。", []
+
+        statement = select(FrReportDatabaseConnection).where(
+            FrReportDatabaseConnection.is_deleted == 0,
+            FrReportDatabaseConnection.status == "active",
+        )
+        rows = list((await db.exec(statement)).all())
+        visible_names = [row.connection_name for row in rows]
+        if not rows:
+            return None, "当前用户没有配置平台查库连接；FineReport 服务器预览连接不等同于后端可查库连接。", visible_names
+
+        wanted = [name for name in database_names if name]
+        for name in wanted:
+            matches = [row for row in rows if row.connection_name.strip().lower() == name.strip().lower()]
+            if matches:
+                row = self._prefer_user_connection(matches, user_id)
+                owner_text = "当前用户维护" if row.user_id == user_id else f"用户 {row.user_id} 维护的共享连接"
+                return row, f"已按 CPT 中的 FineReport 连接名 {name} 匹配到平台共享查库连接（{owner_text}）。", visible_names
+
+        if not wanted and len(rows) == 1:
+            return rows[0], f"CPT 中未读取到 DatabaseName，已使用平台唯一共享连接 {rows[0].connection_name}。", visible_names
+
+        if wanted:
+            return (
+                None,
+                f"CPT 使用的 FineReport 连接名为 {', '.join(wanted)}，但平台共享连接中只有 {', '.join(visible_names)}；预览可以成功，后端仍无法据此查询表结构。",
+                visible_names,
+            )
+        return None, f"平台有多个共享连接：{', '.join(visible_names)}，但 CPT 未提供明确 DatabaseName。", visible_names
+
+    def _prefer_user_connection(
+        self,
+        rows: list[FrReportDatabaseConnection],
+        user_id: int,
+    ) -> FrReportDatabaseConnection:
+        return sorted(rows, key=lambda item: (item.user_id != user_id, item.id))[0]
+
+    def _database_connection_config(self, connection: FrReportDatabaseConnection) -> dict[str, Any]:
+        return {
+            "host": connection.host,
+            "port": connection.port,
+            "database": connection.database,
+            "username": connection.username,
+            "password": connection.password,
+            "odbc_driver": connection.odbc_driver,
+            "db_type": connection.db_type,
+            "driver_key": connection.driver_key,
+        }
+
+    def _build_sample_sql(self, table_name: str, connection_config: dict[str, Any] | None = None) -> str:
+        db_type = str((connection_config or {}).get("db_type") or "sqlserver").lower()
+        if db_type == "mysql":
+            return f"SELECT * FROM {table_name} LIMIT 5"
+        return f"SELECT TOP 5 * FROM {table_name}"
+
+    def _extract_database_names_for_context(
+        self,
+        structure: FrReportFileStructureRead,
+        source_xml: str | None,
+    ) -> list[str]:
+        result: list[str] = []
+        for dataset in structure.datasets[:50]:
+            name = str(dataset.databaseName or "").strip()
+            if name and name not in result:
+                result.append(name)
+        if source_xml:
+            for match in re.finditer(r"<DatabaseName>\s*<!\[CDATA\[(.*?)]]>\s*</DatabaseName>", source_xml, flags=re.S | re.I):
+                name = match.group(1).strip()
+                if name and name not in result:
+                    result.append(name)
+        return result[:8]
 
     def _extract_database_table_names_for_context(
         self,
@@ -936,18 +1079,29 @@ class FrReportAiOperationService:
             for match in re.finditer(r"<(?:Query|SQL)\b[^>]*>(.*?)</(?:Query|SQL)>", source_xml, flags=re.S | re.I):
                 texts.append(self._strip_xml(match.group(1)))
         candidates: list[str] = []
+        all_cte_names: set[str] = set()
         for text in texts:
+            cte_names = self._extract_cte_names(text)
+            all_cte_names.update(cte_names)
+            is_sql_text = bool(re.search(r"\bselect\b.+\bfrom\b", text, flags=re.S | re.I))
             candidates.extend(self._extract_sql_from_join_tables(text))
-            candidates.extend(re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*\b", text))
             candidates.extend(
                 item
-                for item in re.findall(r"\b[A-Za-z_][A-Za-z0-9_]{2,}\b", text)
-                if "_" in item and item.lower() not in self._sql_reserved_words()
+                for item in re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*\b", text)
+                if len(item.split(".", 1)[0]) > 2
             )
+            if not is_sql_text:
+                candidates.extend(
+                    item
+                    for item in re.findall(r"\b[A-Za-z_][A-Za-z0-9_]{2,}\b", text)
+                    if "_" in item and item.lower() not in self._sql_reserved_words()
+                )
         result: list[str] = []
         for candidate in candidates:
             normalized = candidate.strip().strip("[]`\"")
             if not normalized or normalized.lower() in self._sql_reserved_words():
+                continue
+            if normalized.lower() in all_cte_names:
                 continue
             if not self._looks_like_database_table_name(normalized):
                 continue
@@ -956,6 +1110,14 @@ class FrReportAiOperationService:
             if len(result) >= 6:
                 break
         return result
+
+    def _extract_cte_names(self, text: str) -> set[str]:
+        if not re.search(r"\bwith\b", text, flags=re.I):
+            return set()
+        return {
+            match.group(1).strip().lower()
+            for match in re.finditer(r"(?:\bwith\b|,)\s+([A-Za-z_][A-Za-z0-9_]*)\s+as\s*\(", text, flags=re.I)
+        }
 
     def _extract_sql_from_join_tables(self, text: str) -> list[str]:
         return [
@@ -2367,6 +2529,7 @@ class FrReportAiOperationService:
         if not selector:
             raise ValueError("XML patch 缺少 selector")
         target_missing_table_data_map = False
+        target_missing_cell = False
         try:
             start, end = self._find_xml_patch_target(xml, selector)
         except ValueError:
@@ -2377,6 +2540,14 @@ class FrReportAiOperationService:
             elif action in {"replace", "insert_before", "insert_after"} and self._selector_targets_table_data_map(selector):
                 start = end = -1
                 target_missing_table_data_map = True
+            elif self._selector_cell_coordinates(selector):
+                if action == "delete":
+                    return xml
+                if action in {"replace", "insert_before", "insert_after"}:
+                    start = end = -1
+                    target_missing_cell = True
+                else:
+                    raise
             else:
                 raise
         if action != "delete":
@@ -2394,6 +2565,8 @@ class FrReportAiOperationService:
                 target_missing_table_data_map = True
         if target_missing_table_data_map:
             return self._insert_missing_table_data_map(xml, new_xml)
+        if target_missing_cell:
+            return self._insert_missing_cell_xml(xml, new_xml)
         if (
             action in {"insert_before", "insert_after"}
             and self._selector_targets_table_data_map(selector)
@@ -2418,16 +2591,16 @@ class FrReportAiOperationService:
         text = self._normalize_xml_patch_selector(selector)
         if len(text) > 500:
             raise ValueError("XML patch selector 过长")
-        if ">" in text:
-            return self._find_xml_patch_path_target(xml, text)
-        cell_match = re.fullmatch(r"cell:?\s*([A-Za-z]{1,3}[0-9]{1,7})", text, flags=re.I)
-        if cell_match:
-            row, column = self._parse_cell_address(cell_match.group(1)) or (0, 0)
+        cell_coordinates = self._selector_cell_coordinates(text)
+        if cell_coordinates:
+            row, column = cell_coordinates
             pattern = re.compile(rf"<C\b(?=[^>]*\bc=\"{column - 1}\")(?=[^>]*\br=\"{row - 1}\")[^>]*>.*?</C>", flags=re.S | re.I)
             match = pattern.search(xml)
             if match:
                 return match.start(), match.end()
-            raise ValueError(f"没有找到目标单元格 XML：{cell_match.group(1)}")
+            raise ValueError(f"没有找到目标单元格 XML：{self._column_label(column)}{row}")
+        if ">" in text:
+            return self._find_xml_patch_path_target(xml, text)
         c_match = re.fullmatch(r"C\[\s*c\s*=\s*['\"]?(\d+)['\"]?\s*,\s*r\s*=\s*['\"]?(\d+)['\"]?\s*\]", text, flags=re.I)
         if c_match:
             column = int(c_match.group(1))
@@ -2633,10 +2806,14 @@ class FrReportAiOperationService:
         return match.start() + query_match.start(), match.start() + query_match.end()
 
     def _normalize_xml_patch_fragment(self, selector: str, fragment: str) -> str:
+        fragment = self._strip_xml_patch_noise(fragment)
+        cell_coordinates = self._selector_cell_coordinates(selector)
+        if cell_coordinates:
+            return self._escape_bare_ampersands_outside_cdata(self._normalize_cell_patch_fragment(fragment, *cell_coordinates))
         if not self._selector_targets_query(selector.split(">")[-1] if ">" in selector else selector):
             if re.search(r"<TableData\b", fragment, flags=re.I):
-                return self._normalize_table_data_fragment(fragment)
-            return self._normalize_widget_fragment(fragment)
+                return self._escape_bare_ampersands_outside_cdata(self._normalize_table_data_fragment(fragment))
+            return self._escape_bare_ampersands_outside_cdata(self._normalize_widget_fragment(fragment))
         stripped = fragment.strip()
         query_match = re.fullmatch(r"<querySql\b([^>]*)>(.*)</querySql>", stripped, flags=re.S | re.I)
         if query_match:
@@ -2644,14 +2821,85 @@ class FrReportAiOperationService:
         query_match = re.fullmatch(r"<Query\b([^>]*)>(.*)</Query>", stripped, flags=re.S | re.I)
         if query_match:
             return f"<Query{query_match.group(1)}>{self._normalize_query_fragment_body(query_match.group(2))}</Query>"
+        if re.fullmatch(r"\s*<!\[CDATA\[.*]]>\s*", stripped, flags=re.S):
+            return f"<Query>{self._normalize_query_fragment_body(stripped)}</Query>"
         if not re.match(r"<Query\b", stripped, flags=re.I):
             return f"<Query><![CDATA[{self._normalize_query_sql(stripped)}]]></Query>"
         return fragment
 
+    def _strip_xml_patch_noise(self, fragment: str) -> str:
+        text = str(fragment or "").strip()
+        fence_match = re.fullmatch(r"```(?:xml|cpt|finereport)?\s*(.*?)\s*```", text, flags=re.S | re.I)
+        if fence_match:
+            text = fence_match.group(1).strip()
+        text = re.sub(r"^\s*<\?xml\b[^?]*\?>", "", text, count=1, flags=re.S | re.I).strip()
+        tag_match = re.search(r"<(?:/?[A-Za-z_][A-Za-z0-9_:.-]*\b|!\[CDATA\[|!--|\?)", text)
+        last_tag = text.rfind(">")
+        if tag_match and last_tag > tag_match.start():
+            first_tag = tag_match.start()
+            text = text[first_tag : last_tag + 1].strip()
+        return text
+
+    def _escape_bare_ampersands_outside_cdata(self, fragment: str) -> str:
+        parts = re.split(r"(<!\[CDATA\[.*?]]>)", fragment, flags=re.S)
+        for index, part in enumerate(parts):
+            if part.startswith("<![CDATA["):
+                continue
+            parts[index] = re.sub(r"&(?!#\d+;|#x[0-9A-Fa-f]+;|[A-Za-z][A-Za-z0-9]+;)", "&amp;", part)
+        return "".join(parts)
+
+    def _selector_cell_coordinates(self, selector: str) -> tuple[int, int] | None:
+        text = self._normalize_xml_patch_selector(selector)
+        cell_match = re.search(r"(?:^|[>\s/])cell:?\s*([A-Za-z]{1,3}[0-9]{1,7})(?:$|[>\s/])", text, flags=re.I)
+        if cell_match:
+            return self._parse_cell_address(cell_match.group(1))
+        c_match = re.search(r"(?:^|[>\s/])C\[\s*c\s*=\s*['\"]?(\d+)['\"]?\s*,\s*r\s*=\s*['\"]?(\d+)['\"]?\s*\](?:$|[>\s/])", text, flags=re.I)
+        if c_match:
+            return int(c_match.group(2)) + 1, int(c_match.group(1)) + 1
+        return None
+
+    def _normalize_cell_patch_fragment(self, fragment: str, row: int, column: int) -> str:
+        stripped = fragment.strip()
+        xml_column = column - 1
+        xml_row = row - 1
+        if not re.match(r"<C\b", stripped, flags=re.I):
+            return f'<C c="{xml_column}" r="{xml_row}"><O><![CDATA[{self._safe_cdata(stripped)}]]></O><PrivilegeControl/><Expand/></C>'
+        open_match = re.match(r"<C\b([^>]*)>", stripped, flags=re.S | re.I)
+        if not open_match:
+            return stripped
+        attrs = open_match.group(1)
+        attrs = re.sub(r'\s+c="[^"]*"', "", attrs, flags=re.I)
+        attrs = re.sub(r'\s+r="[^"]*"', "", attrs, flags=re.I)
+        open_tag = f'<C c="{xml_column}" r="{xml_row}"{attrs}>'
+        return open_tag + stripped[open_match.end() :]
+
+    def _insert_missing_cell_xml(self, xml: str, cell_xml: str) -> str:
+        existing = re.search(r"<CellElementList\b[^>]*>.*?</CellElementList>", xml, flags=re.S | re.I)
+        if existing:
+            close_match = re.search(r"</CellElementList\s*>", existing.group(0), flags=re.I)
+            if close_match:
+                insert_at = existing.start() + close_match.start()
+                return f"{xml[:insert_at].rstrip()}\n{cell_xml}\n{xml[insert_at:]}"
+        table_match = re.search(r"(<Table\b[^>]*>)", xml, flags=re.S | re.I)
+        if table_match:
+            cell_list = f"\n<CellElementList>\n{cell_xml}\n</CellElementList>"
+            return xml[: table_match.end()] + cell_list + xml[table_match.end() :]
+        report_match = re.search(r"</Report\s*>", xml, flags=re.I)
+        if report_match:
+            table_xml = f"<Table>\n<CellElementList>\n{cell_xml}\n</CellElementList>\n</Table>\n"
+            return xml[: report_match.start()] + table_xml + xml[report_match.start() :]
+        raise ValueError("没有找到可插入单元格的 Table 或 Report 节点")
+
     def _normalize_table_data_fragment(self, fragment: str) -> str:
+        def normalize_query(match: re.Match[str]) -> str:
+            attrs = match.group(1)
+            body = match.group(2)
+            return f"<Query{attrs}>{self._normalize_query_fragment_body(body)}</Query>"
+
         def normalize_block(match: re.Match[str]) -> str:
             block = match.group(0)
             block = re.sub(r"<SQL\b([^>]*)>(.*?)</SQL>", r"<Query\1>\2</Query>", block, flags=re.S | re.I)
+            block = re.sub(r"<Query\b([^>]*)>(.*?)</Query>", normalize_query, block, flags=re.S | re.I)
             open_match = re.match(r"<TableData\b[^>]*>", block, flags=re.I)
             if not open_match:
                 return block
@@ -2739,8 +2987,8 @@ class FrReportAiOperationService:
     def _normalize_query_fragment_body(self, body: str) -> str:
         cdata_match = re.fullmatch(r"\s*<!\[CDATA\[(.*)]]>\s*", body, flags=re.S)
         if cdata_match:
-            return f"<![CDATA[{self._normalize_query_sql(cdata_match.group(1))}]]>"
-        return body
+            return f"<![CDATA[{self._safe_cdata(self._normalize_query_sql(cdata_match.group(1)))}]]>"
+        return f"<![CDATA[{self._safe_cdata(self._normalize_query_sql(body.strip()))}]]>"
 
     def _normalize_query_sql(self, sql: str) -> str:
         pattern = re.compile(

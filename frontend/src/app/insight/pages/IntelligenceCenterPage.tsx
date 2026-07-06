@@ -1,6 +1,6 @@
-﻿import { useMemo, useState } from "react";
-import { EyeOff, ExternalLink, Loader2, Plus, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Star, Tags } from "lucide-react";
-import { Link, useSearchParams } from "react-router-dom";
+﻿import { useEffect, useMemo, useState } from "react";
+import { EyeOff, ExternalLink, FileUp, Loader2, Plus, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Star, Tags } from "lucide-react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,8 @@ import type {
     InsightCandidateListParams,
     InsightIntelligenceCandidateListItem,
     InsightIntelligenceCreate,
+    InsightIntelligenceImportItem,
+    InsightIntelligenceImportPreviewResponse,
     InsightIntelligenceListItem,
     InsightIntelligenceListParams,
 } from "../api";
@@ -26,9 +28,12 @@ import {
     useInsightCandidates,
     useInsightCompanies,
     useInsightCreateIntelligence,
-    useInsightDataSources,
+    useInsightConfirmImportIntelligence,
     useInsightIntelligences,
+    useInsightDictionaryTags,
+    useInsightPreviewImportIntelligence,
     useInsightSystemCompanies,
+    useInsightTagCategories,
 } from "../hooks";
 import { PageContainer } from "../layout/PageContainer";
 import { formatInsightDate, formatInsightType } from "../utils/display";
@@ -44,37 +49,19 @@ const subjectOptions = [
     { value: "custom", label: "自定义" },
 ];
 
-const intelligenceTypeOptions = [
-    { value: "", label: "全部情报类型" },
-    { value: "新品情报", label: "新品情报" },
-    { value: "财报公告", label: "财报公告" },
-    { value: "行业资讯", label: "行业资讯" },
-    { value: "政策法规", label: "政策法规" },
-    { value: "应用方案", label: "应用方案" },
-];
-
-const sourceOptions = [
-    { value: "", label: "全部来源" },
-    { value: "firecrawl", label: "网页抓取" },
-    { value: "baidu_news", label: "百度资讯" },
-    { value: "bocha_search", label: "博查搜索" },
-    { value: "bocha_news", label: "博查资讯" },
-];
-
-const sentimentOptions = [
-    { value: "", label: "全部情感" },
-    { value: "positive", label: "正向" },
-    { value: "neutral", label: "中性" },
-    { value: "negative", label: "负向" },
-    { value: "mixed", label: "混合" },
-];
-
 const bulkSentimentOptions = [
     { value: "", label: "不调整" },
     { value: "positive", label: "正向" },
     { value: "neutral", label: "中性" },
     { value: "negative", label: "负向" },
     { value: "mixed", label: "混合" },
+];
+
+const importanceOptions = [
+    { value: "", label: "全部重要性" },
+    { value: "high", label: "高" },
+    { value: "medium", label: "中" },
+    { value: "low", label: "低" },
 ];
 
 const systemTagNames = new Set([
@@ -106,6 +93,7 @@ const systemTagNames = new Set([
 const systemTagSources = new Set(["ai_review", "llm_analysis", "search_channel", "quality_rule", "smoke"]);
 
 export function IntelligenceCenterPage() {
+    const navigate = useNavigate();
     const [searchParams, setSearchParams] = useSearchParams();
     const dataSourceIdParam = Number(searchParams.get("data_source_id") || 0) || undefined;
     const [keywordInput, setKeywordInput] = useState("");
@@ -118,6 +106,8 @@ export function IntelligenceCenterPage() {
     const [projectName, setProjectName] = useState("");
     const [sentiment, setSentiment] = useState("");
     const [tag, setTag] = useState("");
+    const [categoryCode, setCategoryCode] = useState("");
+    const [importanceLevel, setImportanceLevel] = useState("");
     const [dataSourceId, setDataSourceId] = useState(dataSourceIdParam ? String(dataSourceIdParam) : "");
     const [dateFrom, setDateFrom] = useState("");
     const [dateTo, setDateTo] = useState("");
@@ -125,16 +115,19 @@ export function IntelligenceCenterPage() {
     const [assetQuery, setAssetQuery] = useState("");
     const [assetIncludeCandidates, setAssetIncludeCandidates] = useState(true);
     const [createOpen, setCreateOpen] = useState(false);
+    const [importOpen, setImportOpen] = useState(false);
     const [filterOpen, setFilterOpen] = useState(false);
     const [signalOpen, setSignalOpen] = useState(false);
     const [selectedOfficialIds, setSelectedOfficialIds] = useState<number[]>([]);
     const [bulkAccessOpen, setBulkAccessOpen] = useState(false);
     const [bulkEditOpen, setBulkEditOpen] = useState(false);
+    const [officialPage, setOfficialPage] = useState(1);
+    const [officialPageSize, setOfficialPageSize] = useState(20);
 
     const officialParams = useMemo<InsightIntelligenceListParams>(
         () => ({
-            page: 1,
-            size: 20,
+            page: officialPage,
+            size: officialPageSize,
             keyword: keyword || undefined,
             subject_type: subjectType || undefined,
             intelligence_type: intelligenceType || undefined,
@@ -142,12 +135,14 @@ export function IntelligenceCenterPage() {
             company_id: parseOptionalNumber(companyId) ?? undefined,
             project_name: projectName.trim() || undefined,
             sentiment: sentiment || undefined,
+            category_code: categoryCode || undefined,
+            importance_level: importanceLevel || undefined,
             tag: tag.trim() || undefined,
             data_source_id: parseOptionalNumber(dataSourceId) ?? dataSourceIdParam,
             date_from: dateFrom || undefined,
             date_to: dateTo || undefined,
         }),
-        [companyId, dataSourceId, dataSourceIdParam, dateFrom, dateTo, intelligenceType, keyword, projectName, sentiment, subjectType, sysCompanyId, tag],
+        [categoryCode, companyId, dataSourceId, dataSourceIdParam, dateFrom, dateTo, importanceLevel, intelligenceType, keyword, officialPage, officialPageSize, projectName, sentiment, subjectType, sysCompanyId, tag],
     );
     const candidateParams = useMemo<InsightCandidateListParams>(
         () => ({
@@ -165,13 +160,18 @@ export function IntelligenceCenterPage() {
     const intelligencesQuery = useInsightIntelligences(officialParams);
     const candidatesQuery = useInsightCandidates(candidateParams);
     const companiesQuery = useInsightCompanies({ page: 1, size: 500, sys_company_id: parseOptionalNumber(sysCompanyId) ?? undefined });
-    const dataSourcesQuery = useInsightDataSources({ page: 1, size: 500, status: "enabled" });
     const systemCompaniesQuery = useInsightSystemCompanies();
+    const tagCategoriesQuery = useInsightTagCategories();
+    const dictionaryTagsQuery = useInsightDictionaryTags(categoryCode || undefined);
     const assetSearchMutation = useInsightAssetSearch();
     const backfillFormalAssetsMutation = useInsightBackfillFormalAssets();
     const createMutation = useInsightCreateIntelligence();
+    const previewImportMutation = useInsightPreviewImportIntelligence();
+    const confirmImportMutation = useInsightConfirmImportIntelligence();
     const bulkMutation = useInsightBulkActionIntelligence();
     const intelligences = useMemo(() => intelligencesQuery.data?.items ?? [], [intelligencesQuery.data?.items]);
+    const officialTotal = intelligencesQuery.data?.total ?? 0;
+    const officialTotalPages = Math.max(1, Math.ceil(officialTotal / officialPageSize));
     const candidates = useMemo(
         () => (candidatesQuery.data?.items ?? []).filter((item) => !sourceType || item.source_channel === sourceType),
         [candidatesQuery.data?.items, sourceType],
@@ -183,19 +183,28 @@ export function IntelligenceCenterPage() {
         ],
         [companiesQuery.data?.items],
     );
-    const dataSourceOptions = useMemo(
-        () => [
-            { value: "", label: "全部数据源" },
-            ...(dataSourcesQuery.data?.items ?? []).map((source) => ({ value: String(source.id), label: source.source_name })),
-        ],
-        [dataSourcesQuery.data?.items],
-    );
     const systemCompanyOptions = useMemo(
         () => [
             { value: "", label: "全部所属公司" },
             ...(systemCompaniesQuery.data ?? []).map((company) => ({ value: String(company.id), label: company.code ? `${company.name}（${company.code}）` : company.name })),
         ],
         [systemCompaniesQuery.data],
+    );
+    const categoryOptions = useMemo(
+        () => [
+            { value: "", label: "全部分类" },
+            ...(tagCategoriesQuery.data ?? [])
+                .filter((category) => category.status !== "disabled")
+                .map((category) => ({ value: category.category_code ?? category.category_name, label: category.category_name })),
+        ],
+        [tagCategoriesQuery.data],
+    );
+    const tagOptions = useMemo(
+        () => [
+            { value: "", label: "全部标签" },
+            ...(dictionaryTagsQuery.data ?? []).map((item) => ({ value: item.tag_name, label: item.tag_name })),
+        ],
+        [dictionaryTagsQuery.data],
     );
     const hotItems = useMemo(
         () => (viewMode === "official" ? intelligences.slice(0, 5).map((item) => item.title) : candidates.slice(0, 5).map((item) => item.candidate_title)),
@@ -217,17 +226,24 @@ export function IntelligenceCenterPage() {
     }, [candidates, intelligences]);
     const advancedFilterCount = [
         subjectType,
-        intelligenceType,
-        sourceType,
         sysCompanyId,
         companyId,
-        projectName.trim(),
-        sentiment,
+        categoryCode,
+        importanceLevel,
         tag.trim(),
-        dataSourceId,
         dateFrom,
         dateTo,
     ].filter(Boolean).length;
+
+    useEffect(() => {
+        setOfficialPage(1);
+    }, [categoryCode, companyId, dataSourceId, dataSourceIdParam, dateFrom, dateTo, importanceLevel, intelligenceType, keyword, officialPageSize, projectName, sentiment, subjectType, sysCompanyId, tag]);
+
+    useEffect(() => {
+        if (officialPage > officialTotalPages) {
+            setOfficialPage(officialTotalPages);
+        }
+    }, [officialPage, officialTotalPages]);
 
     const search = () => setKeyword(keywordInput.trim());
     const searchAssets = () => {
@@ -264,6 +280,8 @@ export function IntelligenceCenterPage() {
         setProjectName("");
         setSentiment("");
         setTag("");
+        setCategoryCode("");
+        setImportanceLevel("");
         setDataSourceId("");
         setDateFrom("");
         setDateTo("");
@@ -274,7 +292,15 @@ export function IntelligenceCenterPage() {
 
     const selectedCount = viewMode === "official" ? selectedOfficialIds.length : 0;
     const toggleOfficial = (id: number) => setSelectedOfficialIds((current) => toggleId(current, id));
-    const selectCurrentOfficial = () => setSelectedOfficialIds(intelligences.map((item) => item.id));
+    const officialPageIds = useMemo(() => intelligences.map((item) => item.id), [intelligences]);
+    const officialPageAllSelected = officialPageIds.length > 0 && officialPageIds.every((id) => selectedOfficialIds.includes(id));
+    const selectCurrentOfficial = () =>
+        setSelectedOfficialIds((current) => {
+            if (officialPageAllSelected) {
+                return current.filter((id) => !officialPageIds.includes(id));
+            }
+            return Array.from(new Set([...current, ...officialPageIds]));
+        });
     const clearSelection = () => {
         setSelectedOfficialIds([]);
     };
@@ -341,6 +367,10 @@ export function IntelligenceCenterPage() {
                         <Plus className="size-4" />
                         新增情报
                     </Button>
+                    <Button type="button" variant="outline" className="h-10 rounded-xl border-slate-200 bg-white" onClick={() => setImportOpen(true)}>
+                        <FileUp className="size-4" />
+                        上传导入
+                    </Button>
                     <Button type="button" variant="outline" className="h-10 rounded-xl border-slate-200 bg-white" onClick={() => setSignalOpen(true)}>
                         <Tags className="size-4" />
                         热点标签
@@ -403,14 +433,11 @@ export function IntelligenceCenterPage() {
                     </DialogHeader>
                     <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                         <InsightSelect label="主题类型" value={subjectType} options={subjectOptions} onChange={setSubjectType} />
-                        <InsightSelect label="情报类型" value={intelligenceType} options={intelligenceTypeOptions} onChange={setIntelligenceType} />
                         <InsightSelect label="所属公司" value={sysCompanyId} options={systemCompanyOptions} onChange={setSysCompanyId} />
                         <InsightSelect label="企业" value={companyId} options={companyOptions} onChange={setCompanyId} />
-                        <InsightSelect label="情感" value={sentiment} options={sentimentOptions} onChange={setSentiment} />
-                        <InsightSelect label="数据源" value={dataSourceId} options={dataSourceOptions} onChange={setDataSourceId} />
-                        <InsightSelect label="候选来源" value={sourceType} options={sourceOptions} onChange={setSourceType} />
-                        <FilterInput label="课题" value={projectName} onChange={setProjectName} placeholder="课题/项目名称" />
-                        <FilterInput label="标签" value={tag} onChange={setTag} placeholder="例如：功能糖" />
+                        <InsightSelect label="分类" value={categoryCode} options={categoryOptions} onChange={(value) => { setCategoryCode(value); setTag(""); }} />
+                        <InsightSelect label="标签" value={tag} options={tagOptions} onChange={setTag} />
+                        <InsightSelect label="重要性" value={importanceLevel} options={importanceOptions} onChange={setImportanceLevel} />
                         <FilterInput label="开始日期" value={dateFrom} onChange={setDateFrom} type="date" />
                         <FilterInput label="结束日期" value={dateTo} onChange={setDateTo} type="date" />
                     </div>
@@ -465,11 +492,21 @@ export function IntelligenceCenterPage() {
                         <BulkActionBar
                             selectedCount={selectedCount}
                             pending={bulkMutation.isPending}
+                            pageAllSelected={officialPageAllSelected}
+                            pageSize={officialPageSize}
+                            onPageSizeChange={(value) => setOfficialPageSize(value)}
                             onSelectPage={selectCurrentOfficial}
                             onClear={clearSelection}
                             onOfficialAction={handleBulkOfficial}
                             onOpenBulkAccess={() => setBulkAccessOpen(true)}
                             onOpenBulkEdit={() => setBulkEditOpen(true)}
+                            onGenerateReport={() => {
+                                if (selectedOfficialIds.length === 0) {
+                                    toast.error("请先勾选要作为素材的正式情报");
+                                    return;
+                                }
+                                navigate(`/insight/reports?intelligence_ids=${selectedOfficialIds.join(",")}`);
+                            }}
                         />
                     ) : null}
                 </div>
@@ -513,6 +550,19 @@ export function IntelligenceCenterPage() {
                         />
                     )}
                 </div>
+                {viewMode === "official" ? (
+                    <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t border-slate-100 bg-slate-50 px-4 py-2">
+                        <div className="text-xs font-semibold text-slate-500">共 {officialTotal} 条 · 第 {officialPage} / {officialTotalPages} 页</div>
+                        <div className="flex items-center gap-2">
+                            <Button type="button" variant="outline" className="h-8 rounded-lg bg-white px-3 text-xs" disabled={officialPage <= 1 || intelligencesQuery.isFetching} onClick={() => setOfficialPage((value) => Math.max(1, value - 1))}>
+                                上一页
+                            </Button>
+                            <Button type="button" variant="outline" className="h-8 rounded-lg bg-white px-3 text-xs" disabled={officialPage >= officialTotalPages || intelligencesQuery.isFetching} onClick={() => setOfficialPage((value) => Math.min(officialTotalPages, value + 1))}>
+                                下一页
+                            </Button>
+                        </div>
+                    </div>
+                ) : null}
             </DemoCard>
 
             <CreateIntelligenceDialog
@@ -528,6 +578,38 @@ export function IntelligenceCenterPage() {
                         },
                         onError: () => toast.error("新增情报失败，请检查必填项"),
                     });
+                }}
+            />
+            <ImportIntelligenceDialog
+                open={importOpen}
+                previewPending={previewImportMutation.isPending}
+                confirmPending={confirmImportMutation.isPending}
+                previewResult={previewImportMutation.data}
+                onOpenChange={(open) => {
+                    setImportOpen(open);
+                    if (!open) {
+                        previewImportMutation.reset();
+                    }
+                }}
+                onPreview={(file) => {
+                    const formData = new FormData();
+                    formData.append("file", file);
+                    previewImportMutation.mutate(formData, {
+                        onError: () => toast.error("文件解析失败，请确认文件格式为 docx、xlsx 或 xlsm"),
+                    });
+                }}
+                onConfirm={(items, fileName) => {
+                    confirmImportMutation.mutate(
+                        { file_name: fileName, items, visibility_scope: "assigned" },
+                        {
+                            onSuccess: (result) => {
+                                toast.success(`已导入 ${result.created_count} 条正式情报`);
+                                setImportOpen(false);
+                                setViewMode("official");
+                            },
+                            onError: () => toast.error("导入保存失败，请检查分类标签或文件内容"),
+                        },
+                    );
                 }}
             />
             <AccessRuleDialog
@@ -552,26 +634,44 @@ export function IntelligenceCenterPage() {
 function BulkActionBar({
     selectedCount,
     pending,
+    pageAllSelected,
+    pageSize,
+    onPageSizeChange,
     onSelectPage,
     onClear,
     onOfficialAction,
     onOpenBulkAccess,
     onOpenBulkEdit,
+    onGenerateReport,
 }: {
     selectedCount: number;
     pending: boolean;
+    pageAllSelected: boolean;
+    pageSize: number;
+    onPageSizeChange: (value: number) => void;
     onSelectPage: () => void;
     onClear: () => void;
     onOfficialAction: (action: "hide" | "set_high_importance") => void;
     onOpenBulkAccess: () => void;
     onOpenBulkEdit: () => void;
+    onGenerateReport: () => void;
 }) {
     return (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50/80 px-3 py-3">
             <div className="flex flex-wrap items-center gap-2 text-sm font-bold text-slate-600">
                 <Button type="button" variant="outline" className="h-9 rounded-lg bg-white" onClick={onSelectPage}>
-                    选择本页
+                    {pageAllSelected ? "取消本页" : "全选本页"}
                 </Button>
+                <InsightSelect
+                    value={String(pageSize)}
+                    options={[
+                        { value: "20", label: "每页 20" },
+                        { value: "50", label: "每页 50" },
+                        { value: "100", label: "每页 100" },
+                    ]}
+                    triggerClassName="h-9 rounded-lg text-xs"
+                    onChange={(value) => onPageSizeChange(Number(value) || 20)}
+                />
                 <Button type="button" variant="ghost" className="h-9 rounded-lg text-slate-600" disabled={selectedCount === 0} onClick={onClear}>
                     清空选择
                 </Button>
@@ -585,6 +685,10 @@ function BulkActionBar({
                 <Button type="button" variant="outline" className="h-9 rounded-lg bg-white" disabled={pending || selectedCount === 0} onClick={onOpenBulkEdit}>
                     <Tags className="size-4" />
                     批量修正
+                </Button>
+                <Button type="button" variant="outline" className="h-9 rounded-lg bg-white" disabled={pending || selectedCount === 0} onClick={onGenerateReport}>
+                    <Star className="size-4" />
+                    生成报告
                 </Button>
                 <Button type="button" variant="outline" className="h-9 rounded-lg bg-white" disabled={pending || selectedCount === 0} onClick={onOpenBulkAccess}>
                     <ShieldCheck className="size-4" />
@@ -705,8 +809,14 @@ function OfficialFeed({
                         </div>
                     </div>
                     <p className="mt-3 line-clamp-3 text-sm font-semibold leading-6 text-slate-600">{compactText(row.summary || row.primary_source_title || "暂无摘要")}</p>
+                    {row.selection_reason ? (
+                        <p className="mt-2 line-clamp-2 text-xs font-semibold leading-5 text-blue-700">选中理由：{row.selection_reason}</p>
+                    ) : null}
+                    {row.business_insight ? (
+                        <p className="mt-1 line-clamp-2 text-xs font-semibold leading-5 text-slate-600">业务启示：{row.business_insight}</p>
+                    ) : null}
                     <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-                        <TagList tags={row.suggested_tags} fallback={row.subject_name || subjectTypeText[row.subject_type]} />
+                        <TagList tags={row.suggested_tags} tagNames={row.tag_names} fallback={row.subject_name || row.category_name || subjectTypeText[row.subject_type]} />
                         <div className="text-xs font-semibold text-slate-400">来源数 {row.source_count}</div>
                     </div>
                 </article>
@@ -938,10 +1048,14 @@ function MobileModeButton({ active, onClick, children }: { active: boolean; onCl
     );
 }
 
-function TagList({ tags, fallback }: { tags?: Array<{ name?: string } & Record<string, unknown>> | null; fallback?: string | null }) {
-    const visibleTags = (tags ?? [])
-        .map((tag) => normalizeBusinessTagName(tag))
-        .filter(Boolean)
+function TagList({ tags, tagNames, fallback }: { tags?: Array<{ name?: string } & Record<string, unknown>> | null; tagNames?: string[]; fallback?: string | null }) {
+    const visibleTags = [
+        ...(tagNames ?? []),
+        ...((tags ?? [])
+            .map((tag) => normalizeBusinessTagName(tag))
+            .filter(Boolean) as string[]),
+    ]
+        .filter((tag, index, all) => all.indexOf(tag) === index)
         .slice(0, 3) as string[];
     return (
         <div className="flex flex-wrap items-start gap-2">
@@ -959,6 +1073,116 @@ function normalizeBusinessTagName(tag?: { name?: string; source?: string } & Rec
     if (source && systemTagSources.has(source)) return null;
     if (/^(baidu|bocha|firecrawl|generic_web|manual_url)([_-].*)?$/i.test(name)) return null;
     return name;
+}
+
+function ImportIntelligenceDialog({
+    open,
+    previewPending,
+    confirmPending,
+    previewResult,
+    onOpenChange,
+    onPreview,
+    onConfirm,
+}: {
+    open: boolean;
+    previewPending: boolean;
+    confirmPending: boolean;
+    previewResult?: InsightIntelligenceImportPreviewResponse;
+    onOpenChange: (open: boolean) => void;
+    onPreview: (file: File) => void;
+    onConfirm: (items: InsightIntelligenceImportItem[], fileName?: string) => void;
+}) {
+    const [selectedIds, setSelectedIds] = useState<string[]>([]);
+    const items = previewResult?.items ?? [];
+    const selectedItems = items.filter((item) => selectedIds.includes(item.temp_id));
+
+    useEffect(() => {
+        if (previewResult?.items) {
+            setSelectedIds(previewResult.items.map((item) => item.temp_id));
+        }
+    }, [previewResult]);
+
+    return (
+        <Dialog open={open} onOpenChange={onOpenChange}>
+            <DialogContent className="flex max-h-[88dvh] flex-col overflow-hidden sm:max-w-5xl">
+                <DialogHeader>
+                    <DialogTitle>上传导入情报</DialogTitle>
+                    <DialogDescription>支持 Word 和 Excel，系统会先拆分成多条情报供你确认。</DialogDescription>
+                </DialogHeader>
+                <div className="flex min-h-0 flex-1 flex-col gap-4">
+                    <label className="flex min-h-28 cursor-pointer flex-col items-center justify-center rounded-2xl border border-dashed border-slate-300 bg-slate-50 px-4 py-5 text-center transition hover:bg-blue-50/50">
+                        {previewPending ? <Loader2 className="size-6 animate-spin text-primary" /> : <FileUp className="size-6 text-primary" />}
+                        <span className="mt-2 text-sm font-black text-slate-900">选择 .docx / .xlsx / .xlsm 文件</span>
+                        <span className="mt-1 text-xs font-semibold text-slate-500">上传后先预览，不会直接入库</span>
+                        <input
+                            type="file"
+                            accept=".docx,.xlsx,.xlsm"
+                            className="hidden"
+                            onChange={(event) => {
+                                const file = event.target.files?.[0];
+                                if (file) onPreview(file);
+                                event.target.value = "";
+                            }}
+                        />
+                    </label>
+                    {previewResult?.warnings.length ? (
+                        <div className="rounded-xl border border-amber-100 bg-amber-50 px-4 py-3 text-xs font-semibold leading-5 text-amber-700">
+                            {previewResult.warnings.join("；")}
+                        </div>
+                    ) : null}
+                    <div className="min-h-0 flex-1 overflow-y-auto rounded-2xl border border-slate-200">
+                        {items.map((item) => {
+                            const checked = selectedIds.includes(item.temp_id);
+                            return (
+                                <article key={item.temp_id} className="border-b border-slate-100 px-4 py-4">
+                                    <div className="flex items-start gap-3">
+                                        <input
+                                            type="checkbox"
+                                            className="mt-1 size-4 accent-blue-600"
+                                            checked={checked}
+                                            onChange={() =>
+                                                setSelectedIds((current) =>
+                                                    checked ? current.filter((id) => id !== item.temp_id) : [...current, item.temp_id],
+                                                )
+                                            }
+                                        />
+                                        <div className="min-w-0 flex-1">
+                                            <div className="line-clamp-2 text-base font-black leading-6 text-slate-950">{item.title}</div>
+                                            <div className="mt-2 flex flex-wrap items-center gap-2 text-xs font-semibold text-slate-500">
+                                                <DemoTag tone="blue">{item.category_name || item.category_code || "未分类"}</DemoTag>
+                                                <DemoTag tone="green">{item.intelligence_type || "行业资讯"}</DemoTag>
+                                                {item.publish_time ? <span>{formatInsightDate(item.publish_time)}</span> : null}
+                                                <span>置信度 {Math.round((item.confidence ?? 0) * 100)}%</span>
+                                            </div>
+                                            <p className="mt-2 line-clamp-2 text-sm font-semibold leading-6 text-slate-600">{item.summary || item.content || "暂无摘要"}</p>
+                                            {item.selection_reason ? <p className="mt-2 text-xs font-semibold leading-5 text-blue-700">选中理由：{item.selection_reason}</p> : null}
+                                            {item.business_insight ? <p className="mt-1 text-xs font-semibold leading-5 text-slate-600">业务启示：{item.business_insight}</p> : null}
+                                            <div className="mt-3 flex flex-wrap gap-2">
+                                                {item.tag_names.map((tag) => <DemoTag key={tag} tone="cyan">{tag}</DemoTag>)}
+                                                {item.suggested_new_tags.map((tag) => <DemoTag key={tag} tone="orange">建议：{tag}</DemoTag>)}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </article>
+                            );
+                        })}
+                        {!previewPending && items.length === 0 ? <EmptyState text="请选择文件后查看拆分结果。" /> : null}
+                    </div>
+                </div>
+                <DialogFooter>
+                    <Button variant="outline" className="rounded-xl bg-white" onClick={() => onOpenChange(false)}>取消</Button>
+                    <Button
+                        className="rounded-xl bg-primary text-primary-foreground"
+                        disabled={confirmPending || selectedItems.length === 0}
+                        onClick={() => onConfirm(selectedItems, previewResult?.file_name)}
+                    >
+                        {confirmPending ? <Loader2 className="size-4 animate-spin" /> : null}
+                        确认导入 {selectedItems.length} 条
+                    </Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
+    );
 }
 
 function SourceLink({ url }: { url: string }) {
@@ -1160,11 +1384,13 @@ const sourceChannelText: Record<string, string> = {
     baidu_news: "百度资讯",
     bocha_search: "博查搜索",
     bocha_news: "博查资讯",
+    doubao_web_search: "豆包联网搜索",
     baidu: "百度",
     bocha: "博查",
     FIRECRAWL: "网页抓取",
     BAIDU_NEWS: "百度资讯",
     BOCHA_NEWS: "博查资讯",
+    DOUBAO_WEB_SEARCH: "豆包联网搜索",
     BAIDU: "百度",
     BOCHA: "博查",
 };
@@ -1198,4 +1424,5 @@ function resolveViewMode(value: string | null): "official" | "candidate" | "asse
     if (value === "candidate" || value === "asset") return value;
     return "official";
 }
+
 

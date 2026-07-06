@@ -99,12 +99,12 @@ pnpm build
 
 ## 7. FineReport AI 报表生成约束
 
-- FineReport AI 新建报表仍以 ReportDSL 和确定性 CPT 生成作为主链路；已有 CPT 修改走直接文件补丁模式，模型按需读取当前 CPT/XML 片段并生成可审计的 `xml_patch`，由后端版本控制服务校验、归档、确认后写回。
+- FineReport AI 新建报表仍可沿用 ReportDSL 和确定性 CPT 生成；已有 CPT 修改主链路改为高权限专用 Agent：默认采用直接文件编辑，模型可按需读取索引、片段或完整 CPT XML，优先返回 `file_edit` 精确 `oldText/newText` 文件编辑，必要时才返回整份 WorkBook XML 兜底；旧 `xml_patch`、selector 语义操作和专用写入器不再作为主写入方式，后端通过版本控制服务归档、写回、预览校验和回档兜底。
 - 当前“AI 新建报表”入口只负责创建一个空白 CPT 并保存到用户指定的 `webroot/APP/reportlets/` 子路径；资料上传、需求解析、SQL、ReportDSL、样式和填报配置都应在打开该空报表后通过右侧小驰侧边栏逐步完成。
-- 右侧小驰侧边栏采用受控 ReAct 外壳：先通过大模型语义路由判断普通沟通、修改当前报表、开始生成或保存 CPT，模型不可用或 JSON 无效时才使用保守规则兜底；再在工具注册表内选择只读、待应用修改项或写入工具；只读工具可自动执行，确认待应用修改项、生成 CPT、覆盖、回档和回收必须经过用户确认。
-- 小驰能力边界通过后端 `GET /ai-api/v1/fr/ai-reports/agent/capabilities` 暴露，前端只展示工具、风险等级、运行策略和技能说明；已有 CPT 修改只允许 `xml_patch` 直接 CPT XML 补丁，前端技能配置不得扩大权限或绕过版本控制、安全确认和路径白名单。
+- 右侧小驰侧边栏默认调用 `POST /ai-api/v1/fr/ai-reports/agent/run/stream`，并以 `autonomyMode=high` 进入直接文件编辑链路：读取文件、查数据库、解析附件、检索案例库、修改 CPT、写入版本、预览验证和失败修复都通过 SSE 输出自然语言进度；旧 `agent/chat` 和待应用草稿仅作兼容/显式 review 入口。
+- 小驰能力边界通过后端 `GET /ai-api/v1/fr/ai-reports/agent/capabilities` 暴露；能力边界不再按参数栏、数据集、样式、填报、脚本等类型裁剪，最小硬边界是 reportlets 路径白名单、版本归档、diff 记录、预览校验、回档入口和禁止无确认永久删除。
 - 小驰支持类 Skills 的个人开发习惯配置，技能只能影响上下文注入、默认样式、SQL 风格、填报偏好和追问策略；工具仍需后端开发、授权、审计和输入输出 Schema 约束。
-- 小驰上下文工程默认按 token 预算裁剪：只注入当前报表摘要、选区、数据集预览字段、最近意图、启用技能和工具观察摘要；不得把完整 CPT/XML、大量样例行或完整历史对话直接塞入模型。已确认应用的修改项不得继续作为下一轮修改参考上下文，当前报表修改应以本轮用户指令和当前报表事实为主。历史经验只能按需检索为普通上下文 payload，不得直接拼进系统提示词或覆盖当前用户指令。
+- 小驰上下文工程默认先读索引和相关片段，信息不足时允许读取完整 CPT XML；完整历史对话、大量样例行和历史经验仍按需检索和摘要进入上下文，不得直接拼进系统提示词或覆盖当前用户指令。已写入版本的旧修改项不得继续作为下一轮修改参考事实，当前报表修改以本轮用户指令、当前 CPT 文件和真实数据库事实为主。
 - 第二步通过 `POST /ai-api/v1/fr/ai-reports/steps/dsl/generate` 基于第一步任务产物生成 ReportDSL，并写回同一条任务记录；该步骤不得生成 CPT/XML，也不得调用 FineReport 预览。
 - 第三步通过 `POST /ai-api/v1/fr/ai-reports/steps/cpt/generate` 或 AI 草稿 CPT 生成入口，基于已确认的 ReportDSL/快照确定性生成 CPT；写入用户指定的 `webroot/APP/reportlets/` 子路径前必须创建平台结构版本和 CPT 文件版本，并进行外部修改冲突检测。
 - 第二步允许携带 `dsl_feedback` 重新生成 ReportDSL，用于只调整版式和 DSL 预览，不重复跑 SQL。
@@ -113,6 +113,7 @@ pnpm build
 - Excel 多层表头解析必须结合合并单元格生成完整字段语义；例如期权填报模板中的 `开仓` + `权利金单价` 应解析为 `开仓权利金单价`，空白尾列不得进入字段列表。
 - Excel 解析必须先裁剪真实有效区域，避免被 `XFD` 等样式尾列污染；解析结果需要沉淀 `effectiveRange`、合并表头、公式规则和公式/说明冲突，供 Agent 作为事实证据使用。
 - 小驰侧边栏后续生成或修改报表时可接收多附件；Excel 附件进入结构解析，图片、Word、文本等暂作为需求资料上下文保留，不得因非 Excel 附件中断对话。
+- 小驰侧边栏上传图片时应先按当前模型档位选择 `sys_model.is_multimodal=true` 的 chat/vision 模型解析为文字上下文，再进入 FineReport Agent；不得把图片 base64 直接塞进主 Agent 提示词。模型管理页需要允许维护“是否多模态”属性。
 - 小驰侧边栏对话优先输出“方案草图 + 可开始生成”的推进方式，不应把所有未确认点作为硬阻断；用户明确“开始执行/直接开始做”时，未确认点应转为假设和风险，先在当前报表上下文生成可预览修改，再通过版本控制写入 CPT。
 - 小驰面向用户的主回答应优先使用大模型或后续 Agent 生成的自然短回复，避免固定模板腔；执行轨迹、工具结果和风险提示默认折叠展示，不应把内部流程说明当作每轮主回答。
 - AI 从需求中识别到的中文业务来源名称不等同于数据库真实表名；只有符合数据库标识符规则的英文/下划线表名才允许进入表结构读取和 SQL 预览。
@@ -121,14 +122,18 @@ pnpm build
 - FineReport AI 报表任务需要沉淀历史任务和会话上下文；新任务应优先写入 `conversation_id`、`revision_no` 和 `parent_task_id`，便于恢复旧任务、追踪多轮人工修订和后续经验检索。
 - 人工反馈应通过结构化反馈记录沉淀为正向样本或待优化样本；第一版只做历史经验积累和后续检索基础，不允许自动改写全局提示词、业务规则或代码。
 - SQL 生成应优先服务 FineReport 设计器布局：Excel 中城市、市场、区域等横向表头可通过 ReportDSL/FineReport 横向扩展表达时，SQL 保持 `record_date/market/price/change_amt` 等长表结果，不强行用大量 `CASE WHEN`、`PIVOT` 或聚合转宽表。
-- AI 新建或修改后的 CPT 可写入用户指定的 `webroot/APP/reportlets/` 子路径，也可以覆盖目标 CPT；但写入前必须检查当前 MinIO 文件 hash/lastModified，发现 FineReport 设计器外部修改时默认阻止覆盖，并要求同步外部修改或归档当前文件后覆盖。对已有真实 CPT 的修改主路径是直接修改 CPT XML：后端按需把当前单元格、参数栏、数据集、样式、填报、脚本等相关片段和轻量 XML 索引提供给模型，模型通过 `xml_patch` 返回 XML 片段替换、插入、删除或完整 CPT 替换；后端只在原始 CPT XML 上应用这些 patch，并通过版本控制写回、归档和预览。XML 索引只是省 token 的导航图，不能限制模型读取和修改的内容；需求涉及多处时允许返回多个 patch 或 full_replace。
-- 小驰新生成的已有 CPT 待应用修改项只允许确认 `xml_patch`；参数栏、SQL、样式、填报、脚本、单元格和尺寸都必须通过直接 CPT XML patch 表达。面向用户的详情只展示自然语言修改范围和风险提示，不展示原始 JSON 或 XML 片段。
-- 小驰 CPT 修改提示词应包含极短 mini-shot，示范按需读取片段、返回 `xml_patch`、说明风险和给出轻量预览补丁；mini-shot 只做行为引导，不得变成固定模板或新的能力限制。中风险和高风险修改必须在前端明确提示用户确认；高风险包括整份 WorkBook 替换、样式表、填报配置、脚本事件和数据集查询等可能影响运行时行为的节点。
+- AI 新建或修改后的 CPT 可写入用户指定的 `webroot/APP/reportlets/` 子路径，也可以覆盖目标 CPT；写入前后必须生成平台结构版本和 CPT 文件版本，发现 FineReport 设计器外部修改时必须先归档当前文件或阻止无版本覆盖。对已有真实 CPT 的修改主路径是直接修改 CPT XML：模型默认返回精确文件编辑，无法稳定表达时可返回完整 WorkBook XML；XML 索引只是省 token 的导航图，不能限制模型读取和修改的内容。
+- 小驰已有 CPT 修改结果面向用户只展示自然语言修改范围、版本号、写入路径、预览入口、验证结果和回档入口，不展示原始 JSON 或 XML。旧待应用草稿只作兼容，不得阻断高权限流式写入链路。
+- FineReport 案例库采用“样本报表自发现”机制：初始化时从 `webroot/APP/reportlets/数据分析/**` 选取 50-100 个典型报表作为分析样本，逐个读取结构、关键 XML、预览 URL 和可选截图，再由模型/结构事实发现值得沉淀的场景候选；最终案例数量不预设，一个报表可产生 0 个、1 个或多个案例。案例库是写入前的常规观察工具，不得变成下拉框、隐藏列、填报等固定规则映射。
+- 小驰每次准备修改并写入 CPT 前都必须动态调用 `search_reference_cpt` 检索案例库；需要更细证据时再调用 `read_reference_cpt_case` / `read_reference_report_full`。案例检索结果只作为参考经验，不能覆盖当前用户指令、当前 CPT 原文、真实数据库事实和实际预览结果。
+- FineReport 属性设置知识库通过 `search_fr_setting_knowledge` 按需检索格式、扩展、样式、形态、其他、悬浮元素、控件、条件属性、超级链接和填报等属性面板到 CPT 节点的受控参考；它只提供适用场景、避用场景和验证点，不得变成自动改写规则、全局 Prompt 注入或覆盖当前 CPT/案例/预览事实的依据。
+- 小驰 CPT 修改提示词应包含极短 mini-shot，示范按需读取片段、读取完整 CPT、根据数据库和报表语义定位、返回 `file_edit` 精确替换或完整 WorkBook 兜底，并说明验证重点；mini-shot 只做行为引导，不得变成固定模板或新的能力限制。
 - 每次写入 CPT 都必须同步生成平台结构版本和 CPT 文件版本；CPT 文件版本归档在目标文件夹下的 `版本库/<报表名>/v0001/` 等结构化目录中，至少包含 `report.cpt`、`report.dsl.json`、`manifest.json` 和 `diff.json`。
 - 同一 CPT 路径的生成、覆盖、外部同步、回档和回收必须通过版本控制服务串行化处理；只同步外部修改时不得覆盖当前 CPT，回收时移动到目标目录下 `回收站/<报表名>/<时间>/`。
 - 第三步对接文档见 `docs/fr-ai-report-third-step.md`；当前支持 CPT 生成、版本归档、目标路径写入和 FineReport 预览，正式发布或覆盖必须经过用户确认和外部修改检测。
 - 帆软报表文件读写使用专用 `FR_AI_MINIO_*` 配置，不复用平台通用 `MINIO_*`；第三步默认 `FR_AI_MINIO_ENDPOINT=192.168.14.41:9000`、`FR_AI_MINIO_BUCKET_NAME=fanruan`，FineReport 预览根地址为 `http://192.168.14.41:1080`，CPT 数据连接名通过 `FR_AI_FINEREPORT_DB_NAME` 配置，当前默认 `XcTest`。
-- 现有报表结构读取入口为 `GET /ai-api/v1/fr/ai-reports/files/structure`，只能在线内存读取 `FR_AI_REPORT_FILE_PREFIXES` 允许范围内且当前用户可见的 CPT/FRM；第一版只返回 XML 版本、数据集、连接名、参数、截断 SQL 和 warnings，不返回完整 CPT/XML 原文，不落盘下载。
+- FineReport 平台维护的数据源连接是全局共享资产，不按用户私有隔离；任一用户维护了连接后，其他用户的小驰查库、数据集预览和结构读取都应可复用。遇到同名连接重复时优先使用当前用户维护的版本，否则使用共享连接。
+- 报表结构读取入口 `GET /ai-api/v1/fr/ai-reports/files/structure` 仍只向前端返回结构化摘要；高权限 Agent 服务端可在白名单和权限校验后读取完整 CPT XML，用于模型上下文和写回，不向普通前端结构接口暴露完整源码。
 
 ## 8. 当前前端视觉基调
 
@@ -171,14 +176,16 @@ pnpm build
 - Insight 报告模板分为个人模板和模板市场：个人模板默认仅本人可见，可发布到市场；市场模板可被复制为个人模板后调整章节、Prompt、数据范围和导出格式。HTML 风格模板优先支持 PDF 导出，Word/Excel 上传模板优先服务 docx/xlsx 套版导出。
 - Insight 企业微信推送必须先写入 `insight_notification`，并在创建推送前复用目标报告或情报的后端权限校验；当前阶段只允许 `sent_mock` 模拟发送，接入真实企业微信 API 时不得绕过推送记录、账号映射、回执和失败重试。
 - Insight 前端视觉统一通过 `InsightLayout`、`InsightSidebar` 和 `InsightThemeScope` 控制；登录后业务页不使用常驻顶层 Header，用户信息与退出入口放在侧边栏底部，主页面根容器不做纵向整页滚动，滚动只放在列表、表格、详情、预览等组件内部。
+- Insight 所有可见交互控件必须优先使用 shadcn/ui 或 `frontend/src/app/insight/components/` 内的业务封装组件；不得直接裸写浏览器原生 `select`、`checkbox`、`radio`、`button`、分页器、弹窗、菜单、开关等控件造成系统原生样式混入。仅隐藏文件输入、无项目封装的极简文本输入可作为例外，且外层视觉必须由 Insight/shadcn 组件承载。
 - Insight 登录后页面默认不展示占位型大标题和解释型小标题；页面主信息、筛选、列表、图表和主要操作优先，次要说明放入弹窗、抽屉、折叠区或详情页。
-- Firecrawl、Bocha/博查等外部服务地址、密钥和鉴权信息不得硬编码在业务代码中。
+- Firecrawl、Bocha/博查、豆包联网搜索等外部服务地址、模型配置、密钥和鉴权信息不得硬编码在业务代码中。
 - Insight 渠道库属于系统基础配置，入口放在 `/insight/settings`，仅管理员维护；监测配置是普通业务用户入口，放在 `/insight/monitoring`。调度器直接扫描监测配置，但每次执行必须先生成“本轮采集计划”，按渠道分级、频率、预算、成本和触发条件选择执行渠道，禁止把监测配置与全部渠道源做笛卡尔积全量执行，也不再持久化 800+ 条旧执行源。百度资讯和博查搜索只是两个独立渠道源，不得作为其他网站渠道的统一代理；FoodDaily、WIPO、CNIPA、东方财富等渠道源后续需要逐个接入自己的爬取方式和脚本，并继续经过采集计划与预算控制。旧 `/insight/data-sources` 只做兼容跳转或历史查看。
 - Insight 全渠道适配器正式代码位于 `backend/app/services/agent/insight/crawler/channel_adapter_service.py`，预研脚本只作为迁移来源；适配器必须统一输出搜索命中并继续进入搜索去重、AI 自动评审、正式情报、资产、向量和图谱链路。适配器运行审计写入 `insight_channel_adapter_run`，查询入口为 `/ai-api/v1/insight/settings/channels/adapters` 和 `/ai-api/v1/insight/quality/adapter-runs`。近半月补数和日/周/月模拟入口为 `uv run python scripts/insight_run_all_channel_adapters.py --mode <backfill|simulate-daily|simulate-weekly|simulate-monthly> --days 15`；正式补数使用受控并行队列，跨网站并行、同网站串行，API/HTTP 与 Playwright 分池限流，并可用 `--shard-index/--shard-total` 跨夜分片。
 - Insight 企业档案支持通过登录态接口导入 Excel，仅允许 `.xlsx/.xlsm`，后端解析表头并按企业编码或当前用户同名企业做新增/更新，不允许前端绕过权限直接写入。
 - Insight 企业档案的“所属公司”必须从系统组织 `sys_company` 选择并保存 `sys_company_id`，不得做成前端自由文本。
-- Insight 默认搜索发现源当前只保留“百度资讯”和“博查搜索”。每个监测对象默认展示这两类来源，但博查属于消耗点数渠道，执行策略必须按“合并关键词、缓存去重、限额保护、百度资讯优先、百度结果不足或质量不足时再补充博查”设计，禁止按模块、按关键词、按网站笛卡尔积重复调用博查。
+- Insight 默认搜索发现源当前包括“百度资讯”“博查搜索”和“豆包联网搜索”。三者都是独立渠道源：百度资讯作为低成本单对象探针，可对每个 active 监测对象每日执行，但必须保留随机冷却、批次限流和失败记录以降低反爬风险；博查作为结构化搜索 API 补充，豆包联网搜索通过火山方舟 Responses API 的 `web_search` 工具补充发现并保留搜索动作、引用标注和模型整理后的结构化线索。博查和豆包也需要每日覆盖，但必须按客户组、竞对组、行业主题、政策主题等合并监测对象后并发执行，再将命中结果反向归属到具体监测配置，禁止按模块、按关键词、按网站笛卡尔积重复调用。
 - Insight 采集结果主流程采用 AI 自动评审，不再以人工审核为主；AI 评审输出正式情报、候选情报或噪声归档，并同步写入评审记录、情报资产层、向量索引和轻量知识图谱。
+- Insight 权限优先配置在企业档案和监测配置上，授权对象支持用户、部门、Insight 专用角色、所属公司和全员；角色必须维护在 `insight_role` / `insight_role_member`，不得复用平台通用 `sys_role`。内置 `insight_full_access` 为最高级只读数据角色，成员可查看市场洞察全部情报、资产、报告素材、企业和监测配置，但不自动获得编辑或系统管理权限。正式情报需要继承所属企业和监测配置的可见/编辑授权，避免逐条情报授权。普通用户列表、统计、资产检索和报告素材都必须按继承后的权限过滤。
 - Insight RAG 默认通过情报资产层检索，向量模型使用 `sys_model` 中 `model_type=embedding` 的配置，当前优先火山方舟 `doubao-embedding-vision-251215` 多模态向量接口，密钥继承现有火山配置。
  
 ## 泛微流程AI助手约束

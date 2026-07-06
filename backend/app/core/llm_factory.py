@@ -516,6 +516,20 @@ class LLMFactory:
         return models
 
     @classmethod
+    async def _load_all_models_for_types(cls, model_types: list[str]) -> list:
+        """加载多个模型类型并按级别、优先级排序。"""
+        models = []
+        seen_ids: set[int] = set()
+        for model_type in model_types:
+            for model in await cls._load_all_models(model_type):
+                model_id = getattr(model, "id", id(model))
+                if model_id in seen_ids:
+                    continue
+                seen_ids.add(model_id)
+                models.append(model)
+        return sorted(models, key=lambda item: (item.model_level, item.priority))
+
+    @classmethod
     async def get_model_by_name(
         cls,
         model_name: str,
@@ -628,6 +642,57 @@ class LLMFactory:
         raise ValueError(f"级别 {level} 无可用模型（可能全部熔断）")
 
     @classmethod
+    async def get_multimodal_model_by_level(
+        cls,
+        level: int = 3,
+        capability: str | None = None,
+        model_types: list[str] | None = None,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        streaming: bool = False,
+        json_mode: bool = False,
+        enable_reasoning: bool = False,
+        enable_langfuse_callbacks: bool = True,
+    ) -> BaseChatModel:
+        """
+        按档位获取支持图片等多模态输入的模型。
+
+        选择策略：先找同档位同能力标签，再找同档位任意多模态模型，最后按级别和优先级降级。
+        """
+        all_models = await cls._load_all_models_for_types(model_types or ["chat", "vision"])
+        multimodal_models = [model for model in all_models if bool(getattr(model, "is_multimodal", False))]
+        if not multimodal_models:
+            raise ValueError("没有启用的多模态模型，请在模型管理中勾选“支持图片/多模态”。")
+
+        candidates: list[Any] = []
+        if capability:
+            candidates.extend([model for model in multimodal_models if model.model_level == level and model.capability == capability])
+        candidates.extend([model for model in multimodal_models if model.model_level == level and model not in candidates])
+        if capability:
+            candidates.extend([model for model in multimodal_models if model.capability == capability and model not in candidates])
+        candidates.extend([model for model in multimodal_models if model not in candidates])
+
+        for model_config in candidates:
+            cb = cls._get_circuit_breaker(model_config.model_name)
+            if not cb.is_available:
+                logger.debug(f"多模态模型 {model_config.model_name} 已熔断，跳过")
+                continue
+            temp = temperature if temperature is not None else model_config.default_temperature
+            return cls._build_llm(
+                model_code=model_config.model_code,
+                api_key=model_config.api_key,
+                base_url=model_config.base_url,
+                temperature=temp,
+                max_tokens=max_tokens if max_tokens is not None else model_config.max_tokens,
+                streaming=streaming,
+                json_mode=json_mode,
+                enable_reasoning=enable_reasoning,
+                enable_langfuse_callbacks=enable_langfuse_callbacks,
+            )
+
+        raise ValueError("没有可用的多模态模型（可能全部熔断）。")
+
+    @classmethod
     async def get_model(
         cls,
         capability: str = "general",
@@ -707,6 +772,10 @@ class LLMFactory:
         json_mode: bool = False,
         enable_reasoning: bool = False,
         max_retries: int = 3,
+        langfuse_trace_context: dict[str, str] | None = None,
+        langfuse_run_name: str | None = None,
+        langfuse_metadata: dict[str, Any] | None = None,
+        langfuse_tags: list[str] | None = None,
     ) -> Any:
         """
         带熔断降级的安全调用
@@ -774,13 +843,20 @@ class LLMFactory:
                     streaming=False,  # safe_invoke 不使用流式
                     json_mode=json_mode,
                     enable_reasoning=enable_reasoning,
+                    enable_langfuse_callbacks=not bool(langfuse_trace_context),
                 )
+                callbacks = cls.create_langfuse_callbacks_for_trace(langfuse_trace_context) if langfuse_trace_context else []
+                invoke_config = None
+                if callbacks or langfuse_run_name or langfuse_metadata or langfuse_tags:
+                    invoke_config = {"run_name": langfuse_run_name or "llm_safe_invoke", "tags": langfuse_tags or [], "metadata": langfuse_metadata or {}}
+                    if callbacks:
+                        invoke_config["callbacks"] = callbacks
 
                 logger.info(
                     f"尝试调用模型: {model_config.model_name} "
                     f"(级别={model_config.model_level}, 优先级={model_config.priority})"
                 )
-                response = await llm.ainvoke(messages)
+                response = await llm.ainvoke(messages, config=invoke_config) if invoke_config else await llm.ainvoke(messages)
 
                 # 成功，重置熔断器
                 cb.record_success()

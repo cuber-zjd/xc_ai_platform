@@ -40,6 +40,7 @@ async def list_models(
             model_level=m.model_level,
             model_type=m.model_type,
             capability=m.capability,
+            is_multimodal=m.is_multimodal,
             max_tokens=m.max_tokens,
             default_temperature=m.default_temperature,
             priority=m.priority,

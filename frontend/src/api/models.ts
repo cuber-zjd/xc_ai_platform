@@ -15,6 +15,7 @@ export interface ModelConfig {
     model_level: number;
     model_type: string;
     capability: string | null;
+    is_multimodal: boolean;
     max_tokens: number | null;
     default_temperature: number;
     priority: number;
@@ -34,6 +35,7 @@ export interface ModelCreatePayload {
     model_level?: number;
     model_type?: string;
     capability?: string;
+    is_multimodal?: boolean;
     max_tokens?: number;
     default_temperature?: number;
     priority?: number;
@@ -52,6 +54,7 @@ export interface ModelUpdatePayload {
     model_level?: number;
     model_type?: string;
     capability?: string;
+    is_multimodal?: boolean;
     max_tokens?: number;
     default_temperature?: number;
     priority?: number;
@@ -75,38 +78,38 @@ export interface CircuitBreakerStatus {
 export const modelApi = {
     /** 获取所有模型配置 */
     getList: async () => {
-        return apiClient.get<any, ModelConfig[]>('/models');
+        return apiClient.get<unknown, ModelConfig[]>('/models');
     },
 
     /** 创建模型配置 */
     create: async (data: ModelCreatePayload) => {
-        return apiClient.post<any, { id: number; model_name: string }>('/models', data);
+        return apiClient.post<unknown, { id: number; model_name: string }>('/models', data);
     },
 
     /** 更新模型配置 */
     update: async (id: number, data: ModelUpdatePayload) => {
-        return apiClient.put<any, { id: number; model_name: string }>(`/models/${id}`, data);
+        return apiClient.put<unknown, { id: number; model_name: string }>(`/models/${id}`, data);
     },
 
     /** 删除模型配置 */
     delete: async (id: number) => {
-        return apiClient.delete<any, any>(`/models/${id}`);
+        return apiClient.delete<unknown, unknown>(`/models/${id}`);
     },
 
     /** 获取熔断器状态 */
     getCircuitBreakers: async () => {
-        return apiClient.get<any, CircuitBreakerStatus>('/models/circuit-breakers');
+        return apiClient.get<unknown, CircuitBreakerStatus>('/models/circuit-breakers');
     },
 
     /** 重置熔断器 */
     resetCircuitBreaker: async (modelName?: string) => {
-        return apiClient.post<any, any>('/models/circuit-breakers/reset', null, {
+        return apiClient.post<unknown, unknown>('/models/circuit-breakers/reset', null, {
             params: modelName ? { model_name: modelName } : {},
         });
     },
 
     /** 清除模型配置缓存 */
     invalidateCache: async () => {
-        return apiClient.post<any, any>('/models/cache/invalidate');
+        return apiClient.post<unknown, unknown>('/models/cache/invalidate');
     },
 };

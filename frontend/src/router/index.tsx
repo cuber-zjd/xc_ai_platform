@@ -42,6 +42,7 @@ const FrAiReportChatPage = lazy(() =>
     import("@/features/fr-ai-report/pages/FrAiReportChatPage").then((module) => ({ default: module.FrAiReportChatPage })),
 );
 const InsightLoginPage = lazy(() => import("@/app/insight").then((module) => ({ default: module.InsightLoginPage })));
+const InsightWecomAuthPage = lazy(() => import("@/app/insight").then((module) => ({ default: module.InsightWecomAuthPage })));
 const InsightLayout = lazy(() => import("@/app/insight").then((module) => ({ default: module.InsightLayout })));
 const InsightDashboardPage = lazy(() => import("@/app/insight").then((module) => ({ default: module.DashboardPage })));
 const IntelligenceCenterPage = lazy(() => import("@/app/insight").then((module) => ({ default: module.IntelligenceCenterPage })));
@@ -50,6 +51,7 @@ const CompanyArchivePage = lazy(() => import("@/app/insight").then((module) => (
 const MonitorConfigPage = lazy(() => import("@/app/insight").then((module) => ({ default: module.MonitorConfigPage })));
 const TagCategoryPage = lazy(() => import("@/app/insight").then((module) => ({ default: module.TagCategoryPage })));
 const ReportCenterPage = lazy(() => import("@/app/insight").then((module) => ({ default: module.ReportCenterPage })));
+const OperationIntelligencePage = lazy(() => import("@/app/insight").then((module) => ({ default: module.OperationIntelligencePage })));
 const QualityOverviewPage = lazy(() => import("@/app/insight").then((module) => ({ default: module.QualityOverviewPage })));
 const SettingsPage = lazy(() => import("@/app/insight").then((module) => ({ default: module.SettingsPage })));
 
@@ -136,6 +138,15 @@ const router = createBrowserRouter([
         element: (
             <Suspense fallback={<PageLoader />}>
                 <InsightLoginPage />
+            </Suspense>
+        ),
+        errorElement: <RouteErrorPage />,
+    },
+    {
+        path: "/insight/wecom-auth",
+        element: (
+            <Suspense fallback={<PageLoader />}>
+                <InsightWecomAuthPage />
             </Suspense>
         ),
         errorElement: <RouteErrorPage />,
@@ -330,7 +341,7 @@ const router = createBrowserRouter([
             },
             {
                 path: "assistant",
-                element: <Navigate to="/insight" replace />,
+                element: <Navigate to="/insight?assistant=open" replace />,
             },
             {
                 path: "intelligence",
@@ -378,6 +389,16 @@ const router = createBrowserRouter([
                     <Suspense fallback={<PageLoader />}>
                         <ReportCenterPage />
                     </Suspense>
+                ),
+            },
+            {
+                path: "operation-intelligence",
+                element: (
+                    <AdminRoute redirectTo="/insight">
+                        <Suspense fallback={<PageLoader />}>
+                            <OperationIntelligencePage />
+                        </Suspense>
+                    </AdminRoute>
                 ),
             },
                 {

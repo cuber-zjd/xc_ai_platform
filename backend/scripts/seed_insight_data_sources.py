@@ -235,8 +235,8 @@ async def upsert_sources() -> dict[str, int]:
                     fetch_frequency=item.get("fetch_frequency", "manual"),
                     fetch_config=item.get("fetch_config"),
                     status="enabled",
-                    create_by="codex",
-                    update_by="codex",
+                    create_by="system",
+                    update_by="system",
                 )
                 session.add(row)
                 created += 1
@@ -247,7 +247,7 @@ async def upsert_sources() -> dict[str, int]:
                 row.fetch_frequency = item.get("fetch_frequency", "manual")
                 row.fetch_config = item.get("fetch_config")
                 row.status = "enabled"
-                row.update_by = "codex"
+                row.update_by = "system"
                 row.update_time = datetime.now()
                 updated += 1
             await session.flush()

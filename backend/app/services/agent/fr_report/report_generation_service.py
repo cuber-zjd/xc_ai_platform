@@ -62,77 +62,127 @@ class FrAiReportService:
     def get_agent_capabilities(self) -> FrAiReportAgentCapabilitiesResponse:
         return FrAiReportAgentCapabilitiesResponse(
             strategy=FrAiReportAgentRuntimePolicy(
-                strategy="react",
-                maxToolSteps=6,
-                contextTokenBudget=12000,
+                strategy="high_authority_react",
+                maxToolSteps=16,
+                contextTokenBudget=48000,
                 autoRunReadOnlyTools=True,
                 autoCreateDraft=True,
-                requireApprovalForWrite=True,
+                requireApprovalForWrite=False,
+                memoryPolicy="历史经验、参考报表和工具观察按需检索进入上下文；当前 CPT 事实、用户本轮指令和版本托底优先。",
             ),
             tools=[
                 FrAiReportAgentToolRead(
-                    name="read_report_structure",
-                    label="读取报表结构",
+                    name="read_cpt_full",
+                    label="读取完整 CPT",
                     category="只读",
                     riskLevel="low",
-                    description="读取当前 CPT/FRM 的工作表、单元格、合并区域、数据集、参数和结构摘要。",
+                    description="读取当前 CPT 的完整 WorkBook XML，必要时交给模型做整份重写。",
                     inputSchema={"objectPath": "当前报表对象路径"},
                 ),
                 FrAiReportAgentToolRead(
-                    name="read_dataset_preview",
-                    label="读取数据集预览字段",
+                    name="read_cpt_slice",
+                    label="读取 CPT 片段",
                     category="只读",
                     riskLevel="low",
-                    description="使用用户点击的数据集预览结果作为字段事实，不凭空编字段。",
-                    inputSchema={"datasetName": "当前数据集名称", "previewColumns": "预览字段列表"},
+                    description="按单元格、数据集、参数栏、样式、填报、脚本等线索读取局部 XML，用于节省上下文。",
+                    inputSchema={"selector": "cell:C3、TableDataMap、ReportParameterAttr 等"},
                 ),
                 FrAiReportAgentToolRead(
-                    name="read_database_schema",
-                    label="读取数据库表结构",
+                    name="inspect_report_layout",
+                    label="解析报表布局",
+                    category="只读",
+                    riskLevel="low",
+                    description="解析单元格语义矩阵、合并表头、数据区、参数栏、数据集、样式和脚本索引。",
+                ),
+                FrAiReportAgentToolRead(
+                    name="inspect_database_schema",
+                    label="读取数据库结构",
                     category="只读",
                     riskLevel="medium",
-                    description="只读取符合英文/下划线标识符规则的真实表结构，中文业务名称不会直接当作表名查询。",
+                    description="读取真实数据库表结构，辅助模型用真实字段生成 SQL 和绑定关系。",
                     inputSchema={"tableNames": "一个或多个真实数据库表名"},
                 ),
                 FrAiReportAgentToolRead(
-                    name="preview_sql",
-                    label="SQL 只读预览",
+                    name="query_database_sample",
+                    label="读取样例数据",
                     category="只读",
                     riskLevel="medium",
-                    description="只允许 SELECT/WITH 查询，限制样例行数，禁止 DDL、DML、存储过程和多语句。",
-                    inputSchema={"sql": "待预览 SQL"},
+                    description="读取少量样例数据，校验字段含义、日期字段、下拉候选和值域。",
+                    inputSchema={"tableName": "真实表名", "maxRows": 5},
                 ),
                 FrAiReportAgentToolRead(
-                    name="parse_uploads",
-                    label="解析附件资料",
+                    name="read_excel_context",
+                    label="读取 Excel 上下文",
                     category="只读",
                     riskLevel="low",
-                    description="Excel 进入结构化解析，图片、Word 和文本先作为需求上下文保留，后续可接 OCR 和文档摘要。",
+                    description="读取 Excel 有效区域、合并表头、样例行、公式、备注和模板结构。",
                 ),
                 FrAiReportAgentToolRead(
-                    name="create_operation_draft",
-                    label="生成待应用修改项",
-                    category="待应用",
+                    name="read_word_context",
+                    label="读取 Word 需求",
+                    category="只读",
+                    riskLevel="low",
+                    description="读取 Word 文本、表格说明和样式/填报要求，作为修改依据。",
+                ),
+                FrAiReportAgentToolRead(
+                    name="search_fr_setting_knowledge",
+                    label="检索属性设置知识",
+                    category="只读",
+                    riskLevel="low",
+                    description="检索 FineReport 属性面板能力到 CPT XML 节点的受控参考，例如格式、扩展、样式、控件、条件属性和超链接；只作为节点线索和验证提示，不作为自动改写规则。",
+                    inputSchema={"query": "自然语言需求或属性面板名称", "limit": 5},
+                ),
+                FrAiReportAgentToolRead(
+                    name="search_reference_cpt",
+                    label="检索参考报表",
+                    category="只读",
+                    riskLevel="low",
+                    description="在 Agent 分析过程中按需检索案例库中的真实报表写法，不作为开局固定规则。",
+                ),
+                FrAiReportAgentToolRead(
+                    name="read_reference_cpt_case",
+                    label="读取参考案例",
+                    category="只读",
+                    riskLevel="low",
+                    description="读取案例库中某个案例的关键 XML 片段和来源说明，用于模仿真实 FineReport 写法。",
+                ),
+                FrAiReportAgentToolRead(
+                    name="read_reference_report_full",
+                    label="读取完整参考报表",
+                    category="只读",
                     riskLevel="medium",
-                    description="把用户意图转成可确认的 CPT 文件修改项，并生成前端预览效果。",
-                    requiresApproval=True,
+                    description="当案例片段仍不足时读取参考报表完整 CPT XML；只作为参考，不覆盖当前 CPT 事实。",
                 ),
                 FrAiReportAgentToolRead(
-                    name="generate_sql_and_dsl",
-                    label="生成 SQL 与 ReportDSL",
-                    category="中间产物",
-                    riskLevel="medium",
-                    description="生成可预览 SQL 和 ReportDSL，AI 仍不直接生成 CPT/XML。",
-                    requiresApproval=True,
-                ),
-                FrAiReportAgentToolRead(
-                    name="generate_cpt_with_version",
-                    label="生成 CPT 并归档版本",
+                    name="edit_cpt_file",
+                    label="源码级编辑 CPT",
                     category="写入",
                     riskLevel="high",
-                    autoExecutable=False,
-                    requiresApproval=True,
-                    description="基于已确认 DSL/快照确定性生成 CPT，写入前进行版本归档和外部修改冲突检测。",
+                    description="按 oldText/newText 精确编辑 CPT XML；写入前后自动归档版本、记录 diff 并保留回档入口。",
+                    requiresApproval=False,
+                ),
+                FrAiReportAgentToolRead(
+                    name="write_cpt_full",
+                    label="完整写回 CPT 兜底",
+                    category="写入",
+                    riskLevel="high",
+                    description="当精确文件编辑无法稳定表达时，允许整份 WorkBook XML 重写；写入前后自动归档版本、记录 diff 并保留回档入口。",
+                    requiresApproval=False,
+                ),
+                FrAiReportAgentToolRead(
+                    name="validate_finereport_preview",
+                    label="FineReport 预览校验",
+                    category="验证",
+                    riskLevel="medium",
+                    description="写入后打开 FineReport 预览，收集错误、空白、下拉无数据和 SQL 报错等结果。",
+                ),
+                FrAiReportAgentToolRead(
+                    name="repair_from_preview_error",
+                    label="根据错误自修复",
+                    category="验证",
+                    riskLevel="high",
+                    description="预览或 XML 校验失败时，Agent 可读取错误、重新修改 CPT 并生成新版本。",
+                    requiresApproval=False,
                 ),
                 FrAiReportAgentToolRead(
                     name="version_rollback",
@@ -141,7 +191,7 @@ class FrAiReportService:
                     riskLevel="high",
                     autoExecutable=False,
                     requiresApproval=True,
-                    description="把平台结构版本或 CPT 文件版本回档到指定版本，必须由用户确认。",
+                    description="把平台结构版本或 CPT 文件版本回档到指定版本；永久删除仍需用户确认。",
                 ),
             ],
             skills=[
@@ -168,16 +218,16 @@ class FrAiReportService:
                     name="上下文与记忆控制",
                     scope="system",
                     description="控制上下文进入模型的粒度，避免长报表和长会话撑爆 token。",
-                    instruction="只把当前任务目标、最近 6 条对话摘要、启用技能、结构摘要、当前选区、数据集字段和工具观察摘要放入模型；完整 XML、完整 SQL 历史和大样例数据不得直接进入模型。",
+                    instruction="默认先读索引和相关片段；信息不足时允许读取完整 CPT。历史经验按需检索，不直接塞入系统提示词，也不能覆盖当前用户指令。",
                     appliesTo=["上下文", "记忆", "token"],
                     tokenBudget=400,
                 ),
             ],
             boundaries=[
-                "已有 CPT 修改只接收 xml_patch；模型可基于按需片段生成 CPT XML 补丁，写入仍由版本控制服务执行。",
-                "只读工具可自动执行；确认待应用修改项、生成 CPT、覆盖、回档和回收必须经过用户确认。",
-                "所有文件写入必须走版本库、hash/lastModified 外部修改检测和目标路径白名单。",
-                "用户技能只能影响工作习惯和上下文注入，不能扩大后端工具权限或绕过安全策略。",
+                "Agent 可完整读取 CPT；已有 CPT 修改优先使用精确文件编辑，必要时才完整 WorkBook XML 兜底。",
+                "最小硬边界是 reportlets 路径白名单、版本归档、diff 记录、预览校验和回档入口。",
+                "中高风险修改可以直接生成版本；永久删除、回收和显式回档仍需要用户确认。",
+                "历史经验、参考报表和技能只是指导上下文，不得覆盖当前用户指令或当前 CPT 事实。",
             ],
         )
 
@@ -1670,16 +1720,16 @@ class FrAiReportService:
         self,
         draft: FrReportAiOperationDraftResponse,
     ) -> FrReportAiOperationDraftResponse:
-        xml_patch_operations = [item for item in draft.operations if item.operationType == "xml_patch"]
-        if len(xml_patch_operations) == len(draft.operations):
+        full_write_operations = [item for item in draft.operations if item.operationType in {"file_edit", "write_cpt_full"}]
+        if len(full_write_operations) == len(draft.operations):
             return draft
-        ignored_count = len(draft.operations) - len(xml_patch_operations)
-        draft.operations = xml_patch_operations
+        ignored_count = len(draft.operations) - len(full_write_operations)
+        draft.operations = full_write_operations
         draft.warnings = [
             *draft.warnings,
             f"已拦截 {ignored_count} 个旧式中间操作，未进入待应用修改项。",
         ]
-        if not xml_patch_operations:
+        if not full_write_operations:
             draft.status = "blocked"
             draft.assistantMessage = "本轮没有形成可确认的文件修改项。请重新生成，或补充希望修改的具体区域。"
             draft.safety = {**draft.safety, "requiresApproval": True, "riskLevel": "medium"}

@@ -146,14 +146,21 @@ class InsightAssistantService:
                 .where(InsightCompany.is_deleted == 0)
             )
         if not is_admin:
-            filters.append(await self._company_isolation_filter(db, user_id=user_id, is_admin=is_admin))
             filters.append(
-                await insight_permission_service.visibility_filter_for_user(
-                    db,
-                    InsightIntelligence,
-                    target_type="intelligence",
-                    user_id=user_id,
-                    is_admin=is_admin,
+                or_(
+                    await insight_permission_service.visibility_filter_for_user(
+                        db,
+                        InsightIntelligence,
+                        target_type="intelligence",
+                        user_id=user_id,
+                        is_admin=is_admin,
+                    ),
+                    await insight_permission_service.inherited_intelligence_filter_for_user(
+                        db,
+                        InsightIntelligence,
+                        user_id=user_id,
+                        is_admin=is_admin,
+                    ),
                 )
             )
         rows = list(
