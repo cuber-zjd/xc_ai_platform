@@ -94,7 +94,7 @@ class InsightFeishuMonthlyReportService:
             period_start=period_start,
             period_end=period_end,
             materials=materials,
-            model_name=model_pool[0],
+            model_names=model_pool,
             stage_trace=stage_trace,
         )
         if len(approved) < 10:
@@ -285,11 +285,14 @@ class InsightFeishuMonthlyReportService:
         period_start: datetime,
         period_end: datetime,
         materials: list[dict[str, Any]],
-        model_name: str,
+        model_names: list[str],
         stage_trace: list[dict[str, Any]],
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        compact = [self._compact_material(item) for item in materials[:180]]
-        prompt = f"""
+        batches = [materials[index : index + 25] for index in range(0, min(len(materials), 200), 25)]
+
+        async def approve_batch(batch_index: int, batch: list[dict[str, Any]]) -> tuple[dict[str, Any], str]:
+            compact = [self._compact_material(item) for item in batch]
+            prompt = f"""
 你是月报资料审批员，不写报告。审批 {company_name} 在
 {self._period_text(period_start, period_end)} 的正式情报。
 
@@ -319,45 +322,53 @@ class InsightFeishuMonthlyReportService:
 }}
 
 公司业务边界由材料中的所属公司和主题共同确定。审批阈值 72 分，不得为凑数量降标。
-材料：
+这是第 {batch_index + 1}/{len(batches)} 批。材料：
 {json.dumps(compact, ensure_ascii=False, default=str)}
 """
-        payload, used_model = await self._invoke_json(
-            stage="material_approval",
-            system="你是严格的资料审批员，只依据输入资料输出合法 JSON。",
-            prompt=prompt,
-            preferred_model=model_name,
-            stage_trace=stage_trace,
+            return await self._invoke_json(
+                stage=f"material_approval_batch_{batch_index + 1}",
+                system="你是严格的资料审批员，只依据输入资料输出合法 JSON。",
+                prompt=prompt,
+                preferred_model=model_names[batch_index % len(model_names)],
+                stage_trace=stage_trace,
+            )
+
+        batch_results = await asyncio.gather(
+            *[
+                approve_batch(batch_index, batch)
+                for batch_index, batch in enumerate(batches)
+            ]
         )
         by_id = {int(item["id"]): item for item in materials if item.get("id") is not None}
         approved_meta: list[dict[str, Any]] = []
         approved_ids: list[int] = []
-        for row in payload.get("approved") or []:
-            if not isinstance(row, dict):
-                continue
-            try:
-                item_id = int(row.get("id"))
-                score = int(row.get("score") or 0)
-            except (TypeError, ValueError):
-                continue
-            if item_id in by_id and score >= 72 and item_id not in approved_ids:
-                approved_ids.append(item_id)
-                approved_meta.append(
-                    {
-                        "id": item_id,
-                        "score": score,
-                        "role": str(row.get("role") or "行业"),
-                        "subject": str(row.get("subject") or by_id[item_id].get("subject_name") or ""),
-                        "fact_digest": str(row.get("fact_digest") or by_id[item_id].get("summary") or "")[:800],
-                        "key_numbers": [str(value)[:120] for value in (row.get("key_numbers") or [])[:8]],
-                        "corroborating_ids": [
-                            int(value)
-                            for value in (row.get("corroborating_ids") or [])
-                            if str(value).isdigit() and int(value) in by_id
-                        ][:8],
-                        "reason": str(row.get("reason") or "")[:300],
-                    }
-                )
+        for payload, _used_model in batch_results:
+            for row in payload.get("approved") or []:
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    item_id = int(row.get("id"))
+                    score = int(row.get("score") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if item_id in by_id and score >= 72 and item_id not in approved_ids:
+                    approved_ids.append(item_id)
+                    approved_meta.append(
+                        {
+                            "id": item_id,
+                            "score": score,
+                            "role": str(row.get("role") or "行业"),
+                            "subject": str(row.get("subject") or by_id[item_id].get("subject_name") or ""),
+                            "fact_digest": str(row.get("fact_digest") or by_id[item_id].get("summary") or "")[:800],
+                            "key_numbers": [str(value)[:120] for value in (row.get("key_numbers") or [])[:8]],
+                            "corroborating_ids": [
+                                int(value)
+                                for value in (row.get("corroborating_ids") or [])
+                                if str(value).isdigit() and int(value) in by_id
+                            ][:8],
+                            "reason": str(row.get("reason") or "")[:300],
+                        }
+                    )
         if len(approved_ids) < 10:
             raise ValueError(
                 f"月报资料审批仅通过 {len(approved_ids)} 条，未达到 10 条最低证据要求；"
@@ -371,17 +382,24 @@ class InsightFeishuMonthlyReportService:
             approved.append(item)
         rejected = [
             {"id": row.get("id"), "reason": str(row.get("reason") or "")[:300]}
+            for payload, _used_model in batch_results
             for row in (payload.get("rejected") or [])
             if isinstance(row, dict)
         ]
+        coverage_gaps = [
+            str(value)[:300]
+            for payload, _used_model in batch_results
+            for value in (payload.get("coverage_gaps") or [])[:6]
+        ]
         return approved, {
-            "model": used_model,
+            "models": list(dict.fromkeys(used_model for _payload, used_model in batch_results)),
+            "batch_count": len(batch_results),
             "candidate_count": len(materials),
             "approved_count": len(approved),
             "rejected_count": max(len(materials) - len(approved), 0),
             "approved": approved_meta,
             "rejected": rejected,
-            "coverage_gaps": [str(value)[:300] for value in (payload.get("coverage_gaps") or [])[:12]],
+            "coverage_gaps": list(dict.fromkeys(coverage_gaps))[:12],
         }
 
     async def _generate_single_model(
@@ -978,7 +996,7 @@ facts_to_recheck、strengths。
             "",
             "# 一、资料审批",
             "",
-            f"资料审批模型：{approval.get('model') or '--'}。",
+            f"资料审批模型：{'、'.join(approval.get('models') or []) or '--'}。",
             f"审批通过 {approved_count} 条，排除 {approval.get('rejected_count', 0)} 条。",
         ]
         gaps = approval.get("coverage_gaps") or []
