@@ -7,6 +7,7 @@ import random
 import re
 from re import DOTALL, IGNORECASE, compile as compile_regex, sub
 from typing import Any
+from urllib.parse import urlsplit
 from urllib.parse import quote_plus, urlparse
 
 import httpx
@@ -14,6 +15,7 @@ from sqlalchemy import or_
 from sqlmodel import select
 
 from app.core.config import settings
+from app.core.llm_usage import record_llm_usage_payload
 from app.db.session import async_session
 from app.models.agent.insight import InsightCrawlerChannel
 from app.models.system.sys_model import SysModel
@@ -162,6 +164,16 @@ class BochaSearchClient:
         if not value:
             return None
         lower_value = value.lower()
+        day_match = re.fullmatch(r"(\d+)\s*d", lower_value)
+        if day_match:
+            days = int(day_match.group(1))
+            if days <= 1:
+                return "oneDay"
+            if days <= 7:
+                return "oneWeek"
+            if days <= 30:
+                return "oneMonth"
+            return "noLimit"
         if lower_value in {"halfmonth", "half_month", "15d", "recent15d", "recent_15d"}:
             return "oneMonth"
         return value
@@ -247,6 +259,7 @@ class DoubaoWebSearchClient:
         web_queries: list[str] = []
         annotations: list[dict[str, Any]] = []
         event_samples: list[dict[str, Any]] = []
+        response_usage: dict[str, Any] | None = None
 
         async with httpx.AsyncClient(timeout=max(settings.INSIGHT_SEARCH_TIMEOUT_SECONDS, 90)) as client:
             async with client.stream("POST", endpoint, json=payload, headers=headers) as response:
@@ -276,8 +289,15 @@ class DoubaoWebSearchClient:
                     query_text = self._extract_web_query(event)
                     if query_text and query_text not in web_queries:
                         web_queries.append(query_text)
+                    usage = event.get("usage")
+                    response_payload = event.get("response")
+                    if not isinstance(usage, dict) and isinstance(response_payload, dict):
+                        usage = response_payload.get("usage")
+                    if isinstance(usage, dict):
+                        response_usage = usage
 
         answer_text = "".join(text_parts).strip()
+        record_llm_usage_payload(model.model_code, response_usage)
         raw_context = {
             "source_channel": "doubao_web_search",
             "model": model.model_code,
@@ -324,7 +344,10 @@ class DoubaoWebSearchClient:
     def _build_prompt(self, query: str, count: int, freshness: str | None) -> str:
         time_hint = "近 15 天"
         value = (freshness or "").strip().lower()
-        if value in {"oneweek", "one_week", "week", "7d"}:
+        day_match = re.fullmatch(r"(\d+)\s*d", value)
+        if day_match:
+            time_hint = f"近 {max(int(day_match.group(1)), 1)} 天"
+        elif value in {"oneweek", "one_week", "week", "7d"}:
             time_hint = "近 7 天"
         elif value in {"oneday", "one_day", "day", "24h"}:
             time_hint = "近 24 小时"
@@ -368,7 +391,7 @@ class DoubaoWebSearchClient:
         hits: list[InsightSearchHit] = []
         seen: set[str] = set()
         for record in records:
-            url = self._first_text(record.get("url"), record.get("link"))
+            url = self._clean_result_url(self._first_text(record.get("url"), record.get("link")))
             if not url or url in seen:
                 continue
             seen.add(url)
@@ -391,6 +414,18 @@ class DoubaoWebSearchClient:
             if len(hits) >= count:
                 break
         return hits
+
+    def _clean_result_url(self, value: str | None) -> str | None:
+        if not value:
+            return None
+        matched = re.match(r"https?://[^\s\"'<>}\]]+", value.strip(), flags=re.IGNORECASE)
+        if not matched:
+            return None
+        url = matched.group(0).rstrip("。；，,、.)）]")
+        parsed = urlsplit(url)
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+            return None
+        return url
 
     def _json_records(self, text: str) -> list[dict[str, Any]]:
         value = text.strip()

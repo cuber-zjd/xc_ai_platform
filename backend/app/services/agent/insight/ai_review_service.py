@@ -1,6 +1,7 @@
 import json
 import re
 from typing import Any
+from urllib.parse import urlparse
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from sqlmodel import select
@@ -22,6 +23,7 @@ from app.schemas.agent.insight.asset import InsightAiReviewDecision, InsightAiRe
 from app.schemas.agent.insight.intelligence import InsightCandidatePromoteRequest, InsightCandidateReviewRequest
 from app.services.agent.insight.asset_service import insight_asset_service
 from app.services.agent.insight.dictionary_service import INSIGHT_INTELLIGENCE_TYPES
+from app.services.agent.insight.event_aggregation_service import insight_event_aggregation_service
 
 
 class InsightAiReviewService:
@@ -74,9 +76,51 @@ class InsightAiReviewService:
                 asset_id=None,
             )
 
+        aggregation = await insight_event_aggregation_service.try_merge_candidate(
+            db,
+            candidate,
+            crawl_result,
+            user_id=user_id,
+        )
+        if aggregation:
+            from app.models.agent.insight import InsightIntelligenceSource
+
+            sources = list(
+                (
+                    await db.exec(
+                        select(InsightIntelligenceSource).where(
+                            InsightIntelligenceSource.intelligence_id == aggregation.intelligence.id,
+                            InsightIntelligenceSource.is_deleted == 0,
+                        ).order_by(
+                            InsightIntelligenceSource.credibility_score.desc(),
+                            InsightIntelligenceSource.source_publish_time.asc().nullslast(),
+                            InsightIntelligenceSource.create_time.asc(),
+                        )
+                    )
+                ).all()
+            )
+            asset = await insight_asset_service.upsert_intelligence_asset(
+                db,
+                aggregation.intelligence,
+                sources,
+            )
+            await db.commit()
+            return InsightAiReviewResponse(
+                candidate_id=candidate.id or candidate_id,
+                decision=InsightAiReviewDecision(
+                    decision="formal",
+                    score=min(max(aggregation.score, 0), 1),
+                    reason=f"已归并到同一事件，当前由 {len(sources)} 个公开来源共同印证",
+                    evidence=f"匹配方式：{aggregation.method}",
+                ),
+                candidate_status=InsightCandidateReviewStatus.PROMOTED.value,
+                intelligence_id=aggregation.intelligence.id,
+                asset_id=asset.id,
+            )
+
         context = await self._review_context(db, candidate, crawl_result)
         decision = await self._review_with_llm(candidate, crawl_result, context)
-        decision = self._normalize_decision(decision, candidate, context)
+        decision = self._normalize_decision(decision, candidate, context, crawl_result)
         self._attach_review_tag(candidate, decision, context)
 
         intelligence_id: int | None = None
@@ -240,7 +284,9 @@ class InsightAiReviewService:
                 "url": crawl_result.source_url,
                 "title": crawl_result.source_title,
                 "snippet": crawl_result.snippet,
-                "content": (crawl_result.markdown_content or "")[:5000],
+                "content": (crawl_result.markdown_content or "")[:12000],
+                "fulltext_available": self._has_sufficient_fulltext(crawl_result),
+                "trusted_structured_source": self._allows_without_fulltext(crawl_result),
                 "published_at": crawl_result.published_at.isoformat() if crawl_result.published_at else None,
             },
             "context": context,
@@ -265,6 +311,8 @@ class InsightAiReviewService:
                             "tag_codes 只能从 controlled_tags 的 tag_code 中选择，不允许编造正式标签；"
                             "确实缺少标签时，只能放入 suggested_new_tags，等待管理员维护字典。"
                             "必须先参考 context.own_business 中的我方业务定位，再结合监测对象关系类型、监测模块和原文证据判断业务价值。"
+                            "source.fulltext_available=false 时表示系统没有读到原文，只能保守保留候选；"
+                            "只有 source.trusted_structured_source=true 的政府、交易所或权威结构化公告允许例外进入正式情报。"
                             "business_value 要写清楚这条信息对香驰控股在客户经营洞察、销售跟进、研发应用、竞对策略、供应链、质量风险或战略研判上的具体用途。"
                             "formal 表示监测对象相关、公开证据清楚，且有明确业务价值；"
                             "正式情报不限于直接采购需求，新设公司、战略规划、风险投诉、专利技术、产品研发、渠道动作、合作融资、经营变化等只要与监测口径相关也应进入 formal。"
@@ -315,6 +363,7 @@ class InsightAiReviewService:
         decision: InsightAiReviewDecision,
         candidate: InsightIntelligenceCandidate,
         context: dict[str, Any],
+        crawl_result: InsightCrawlResult,
     ) -> InsightAiReviewDecision:
         value = decision.decision.strip().lower()
         if value not in {"formal", "candidate", "noise"}:
@@ -343,8 +392,43 @@ class InsightAiReviewService:
             value = "formal"
             rule_note = "系统规则：评分、受控标签和业务价值达到正式情报阈值，自动转正式。"
             decision.reason = f"{decision.reason or ''} {rule_note}".strip()[:1000]
+        if (
+            value == "formal"
+            and not self._has_sufficient_fulltext(crawl_result)
+            and not self._allows_without_fulltext(crawl_result)
+        ):
+            value = "candidate"
+            rule_note = "正文尚未抓取成功，暂保留为候选线索，补全原文后再进行正式评审。"
+            decision.reason = f"{decision.reason or ''} {rule_note}".strip()[:1000]
         decision.decision = value
         return decision
+
+    def _has_sufficient_fulltext(self, crawl_result: InsightCrawlResult) -> bool:
+        content = re.sub(r"\s+", "", str(crawl_result.markdown_content or ""))
+        return len(content) >= 200 and "页面需要安全验证" not in content
+
+    def _allows_without_fulltext(self, crawl_result: InsightCrawlResult) -> bool:
+        host = (urlparse(crawl_result.source_url or "").hostname or "").lower()
+        if host == "gov.cn" or host.endswith(".gov.cn"):
+            return True
+        trusted_hosts = (
+            "sse.com.cn",
+            "szse.cn",
+            "bse.cn",
+            "cninfo.com.cn",
+            "wipo.int",
+        )
+        if any(host == value or host.endswith(f".{value}") for value in trusted_hosts):
+            return True
+        metadata = crawl_result.crawl_metadata if isinstance(crawl_result.crawl_metadata, dict) else {}
+        raw = metadata.get("raw") if isinstance(metadata.get("raw"), dict) else {}
+        adapter_code = str(
+            raw.get("adapter_code")
+            or raw.get("channel_code")
+            or metadata.get("adapter_code")
+            or ""
+        ).lower()
+        return adapter_code in {"cnipa", "wipo", "sse", "szse", "bse", "samr"}
 
     def _should_promote_high_value_candidate(self, decision: InsightAiReviewDecision) -> bool:
         if decision.score < self.formal_threshold:

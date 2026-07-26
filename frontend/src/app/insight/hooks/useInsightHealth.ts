@@ -57,6 +57,8 @@ import {
     type InsightRoleMemberUpsert,
     type InsightRoleUpdate,
     type InsightSearchDiscoveryRequest,
+    type InsightSchedulerLogListParams,
+    type InsightFeishuSyncRequest,
     type InsightTagCategoryCreate,
     type InsightTagCategoryUpdate,
     type InsightTagCreate,
@@ -91,6 +93,8 @@ export const insightQueryKeys = {
     monitorConfigs: (params: InsightMonitorConfigListParams) => [...insightQueryKeys.all, "monitor-configs", params] as const,
     dataSourceExecutionLogs: (params: InsightDataSourceExecutionLogParams) => [...insightQueryKeys.all, "data-source-execution-logs", params] as const,
     schedulerStatus: () => [...insightQueryKeys.all, "scheduler-status"] as const,
+    schedulerLogs: (params: InsightSchedulerLogListParams) => [...insightQueryKeys.all, "scheduler-logs", params] as const,
+    feishuSyncOptions: () => [...insightQueryKeys.all, "feishu-sync-options"] as const,
     intelligences: (params: InsightIntelligenceListParams) => [...insightQueryKeys.all, "intelligences", params] as const,
     intelligenceDetail: (intelligenceId: number) => [...insightQueryKeys.all, "intelligence", intelligenceId] as const,
     visibilityRules: (intelligenceId: number) => [...insightQueryKeys.all, "visibility-rules", intelligenceId] as const,
@@ -533,6 +537,31 @@ export function useInsightSchedulerStatus() {
         queryKey: insightQueryKeys.schedulerStatus(),
         queryFn: insightApi.getSchedulerStatus,
         refetchInterval: 30000,
+    });
+}
+
+export function useInsightSchedulerLogs(params: InsightSchedulerLogListParams) {
+    return useQuery({
+        queryKey: insightQueryKeys.schedulerLogs(params),
+        queryFn: () => insightApi.listSchedulerLogs(params),
+        refetchInterval: 30000,
+    });
+}
+
+export function useInsightFeishuSyncOptions() {
+    return useQuery({
+        queryKey: insightQueryKeys.feishuSyncOptions(),
+        queryFn: insightApi.getFeishuSyncOptions,
+    });
+}
+
+export function useInsightSyncToFeishu() {
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: (payload: InsightFeishuSyncRequest) => insightApi.syncIntelligenceToFeishu(payload),
+        onSuccess: () => {
+            void queryClient.invalidateQueries({ queryKey: insightQueryKeys.all });
+        },
     });
 }
 

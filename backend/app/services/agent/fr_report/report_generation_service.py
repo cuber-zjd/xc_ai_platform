@@ -62,7 +62,7 @@ class FrAiReportService:
     def get_agent_capabilities(self) -> FrAiReportAgentCapabilitiesResponse:
         return FrAiReportAgentCapabilitiesResponse(
             strategy=FrAiReportAgentRuntimePolicy(
-                strategy="high_authority_react",
+                strategy="high_authority_direct_edit",
                 maxToolSteps=16,
                 contextTokenBudget=48000,
                 autoRunReadOnlyTools=True,
@@ -249,7 +249,7 @@ class FrAiReportService:
             upload_files.insert(0, file)
         primary_excel_file = self._select_primary_excel_upload(upload_files)
         events: list[FrAiReportAgentEvent] = [
-            FrAiReportAgentEvent(type="message", content="小驰已收到，我会按 ReAct 方式先判断目标，再选择工具；只读工具可自动执行，写文件前会停下来确认。"),
+            FrAiReportAgentEvent(type="message", content="小驰已收到，我会先判断目标并读取必要上下文；只读工具可自动执行，写文件前会停下来确认。"),
             FrAiReportAgentEvent(
                 type="memory_context",
                 toolName="context_budget",
@@ -594,7 +594,7 @@ class FrAiReportService:
             FrAiReportAgentEvent(
                 type="tool_call_start",
                 toolName="generate_sql_with_preview",
-                content="条件已满足，开始读取真实表结构、预览数据并让 SQL ReAct Agent 生成可执行 SQL。",
+                content="条件已满足，开始读取真实表结构、预览数据，并生成可执行 SQL。",
             )
         )
         sql_step = await self.generate_sql_step(

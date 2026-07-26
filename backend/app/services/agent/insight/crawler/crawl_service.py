@@ -1,3 +1,4 @@
+import asyncio
 import json
 import re
 from datetime import datetime
@@ -12,6 +13,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.llm_factory import LLMFactory
 from app.core.logger import logger
+from app.core.config import settings
 from app.models.agent.insight import (
     InsightCandidateReviewStatus,
     InsightCompany,
@@ -32,6 +34,98 @@ from app.services.agent.insight.permission_service import insight_permission_ser
 
 
 class InsightCrawlService:
+    def __init__(self) -> None:
+        self._fulltext_semaphore = asyncio.Semaphore(
+            max(settings.INSIGHT_REVIEW_FULLTEXT_CONCURRENCY, 1)
+        )
+
+    async def enrich_discovered_result(
+        self,
+        db: AsyncSession,
+        crawl_result: InsightCrawlResult,
+    ) -> InsightCrawlResult:
+        """在原搜索记录上补全正文，不重复创建采集任务和候选。"""
+
+        async with self._fulltext_semaphore:
+            firecrawl_data = await firecrawl_client.scrape_url_with_fallback(crawl_result.source_url)
+        metadata = firecrawl_data.get("metadata") or {}
+        markdown = insight_content_cleaner.clean_text(
+            firecrawl_data.get("markdown") or firecrawl_data.get("content")
+        )
+        readable = insight_content_cleaner.clean_readable_excerpt(markdown) or ""
+        if len(readable) < 200 or "页面需要安全验证" in readable:
+            raise ValueError("未提取到足够的网页正文")
+
+        original_snippet = crawl_result.snippet
+        extracted_title = insight_content_cleaner.clean_title(
+            metadata.get("title"),
+            firecrawl_data.get("title"),
+            crawl_result.source_title,
+            crawl_result.source_url,
+        )
+        extracted_publish_time = insight_content_cleaner.parse_publish_time(
+            metadata,
+            markdown,
+            extracted_title,
+        )
+        crawl_result.source_title = extracted_title
+        crawl_result.snippet = insight_content_cleaner.clean_summary(markdown, 500)
+        crawl_result.markdown_content = markdown
+        if extracted_publish_time:
+            crawl_result.published_at = extracted_publish_time
+        crawl_result.dedupe_hash = insight_content_cleaner.build_dedupe_hash(
+            crawl_result.source_url,
+            extracted_title,
+            markdown,
+        )
+        crawl_result.status = InsightCrawlStatus.PARSED
+        crawl_result.error_message = None
+        crawl_metadata = dict(crawl_result.crawl_metadata or {})
+        crawl_metadata["fulltext_fetch"] = {
+            "status": "success",
+            "provider": "firecrawl",
+            "fetched_at": datetime.now().isoformat(),
+            "markdown_length": len(markdown),
+            "readable_length": len(readable),
+            "original_search_snippet": original_snippet,
+            "metadata": metadata,
+        }
+        crawl_result.crawl_metadata = crawl_metadata
+        quality_report = await self._assess_crawl_quality(db, crawl_result)
+        crawl_result.crawl_metadata = crawl_metadata | {"quality_report": quality_report}
+        crawl_result.update_time = datetime.now()
+        db.add(crawl_result)
+        await db.commit()
+        await db.refresh(crawl_result)
+        return crawl_result
+
+    async def mark_fulltext_failure(
+        self,
+        db: AsyncSession,
+        crawl_result: InsightCrawlResult,
+        error: Exception | str,
+    ) -> None:
+        crawl_metadata = dict(crawl_result.crawl_metadata or {})
+        crawl_metadata["fulltext_fetch"] = {
+            "status": "failed",
+            "provider": "firecrawl",
+            "attempted_at": datetime.now().isoformat(),
+            "error": str(error)[:500],
+        }
+        crawl_result.crawl_metadata = crawl_metadata
+        crawl_result.error_message = f"正文补抓失败：{str(error)[:500]}"
+        crawl_result.update_time = datetime.now()
+        db.add(crawl_result)
+        await db.commit()
+
+    async def summarize_fulltext_candidate(
+        self,
+        title: str,
+        url: str,
+        content: str,
+    ) -> dict[str, Any] | None:
+        return await self._summarize_candidate_with_llm(title, url, content)
+
     async def crawl_manual_url(
         self,
         db: AsyncSession,
@@ -264,7 +358,7 @@ class InsightCrawlService:
         url: str,
         content: str,
     ) -> dict[str, Any] | None:
-        compact_content = insight_content_cleaner.clean_text(content)[:5000]
+        compact_content = insight_content_cleaner.clean_text(content)[:12000]
         if not compact_content:
             return None
         payload = {

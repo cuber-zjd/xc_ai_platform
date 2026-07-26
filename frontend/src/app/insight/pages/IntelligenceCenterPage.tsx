@@ -1,5 +1,5 @@
 ﻿import { useEffect, useMemo, useState } from "react";
-import { EyeOff, ExternalLink, FileUp, Loader2, Plus, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Star, Tags } from "lucide-react";
+import { EyeOff, ExternalLink, FileUp, Loader2, Plus, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Star, Table2, Tags } from "lucide-react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 
@@ -19,7 +19,7 @@ import type {
     InsightIntelligenceListParams,
 } from "../api";
 import { DemoCard, DemoTag, RankList, SectionHeader, type TagTone } from "../components/DemoPrimitives";
-import { AccessRuleDialog } from "../components";
+import { AccessRuleDialog, FeishuSyncDialog } from "../components";
 import { InsightSelect } from "../components/InsightSelect";
 import {
     useInsightBackfillFormalAssets,
@@ -118,6 +118,7 @@ export function IntelligenceCenterPage() {
     const [importOpen, setImportOpen] = useState(false);
     const [filterOpen, setFilterOpen] = useState(false);
     const [signalOpen, setSignalOpen] = useState(false);
+    const [feishuSyncOpen, setFeishuSyncOpen] = useState(false);
     const [selectedOfficialIds, setSelectedOfficialIds] = useState<number[]>([]);
     const [bulkAccessOpen, setBulkAccessOpen] = useState(false);
     const [bulkEditOpen, setBulkEditOpen] = useState(false);
@@ -371,6 +372,7 @@ export function IntelligenceCenterPage() {
                         <FileUp className="size-4" />
                         上传导入
                     </Button>
+                    {viewMode === "official" ? <Button type="button" variant="outline" className="h-10 rounded-xl border-slate-200 bg-white" onClick={() => setFeishuSyncOpen(true)}><Table2 className="size-4" />同步飞书</Button> : null}
                     <Button type="button" variant="outline" className="h-10 rounded-xl border-slate-200 bg-white" onClick={() => setSignalOpen(true)}>
                         <Tags className="size-4" />
                         热点标签
@@ -485,6 +487,14 @@ export function IntelligenceCenterPage() {
                     </div>
                 </DialogContent>
             </Dialog>
+
+            <FeishuSyncDialog
+                open={feishuSyncOpen}
+                selectedIds={selectedOfficialIds}
+                initialDateFrom={dateFrom}
+                initialDateTo={dateTo}
+                onOpenChange={setFeishuSyncOpen}
+            />
 
             <DemoCard className="flex min-h-0 flex-1 flex-col overflow-hidden">
                 <div className={viewMode === "official" ? "shrink-0 space-y-3 p-3 sm:p-4" : "hidden"}>
@@ -786,9 +796,9 @@ function OfficialFeed({
                         </label>
                         <div className="min-w-0 flex-1">
                             <a
-                                href={row.primary_source_url || `/insight/intelligence/${row.id}`}
-                                target={row.primary_source_url ? "_blank" : undefined}
-                                rel={row.primary_source_url ? "noreferrer" : undefined}
+                                href={row.source_count > 1 ? `/insight/intelligence/${row.id}` : row.primary_source_url || `/insight/intelligence/${row.id}`}
+                                target={row.source_count <= 1 && row.primary_source_url ? "_blank" : undefined}
+                                rel={row.source_count <= 1 && row.primary_source_url ? "noreferrer" : undefined}
                                 className="line-clamp-2 text-lg font-black leading-7 text-slate-900 group-hover:text-blue-600"
                             >
                                 {row.title}
@@ -799,6 +809,7 @@ function OfficialFeed({
                                 <DemoTag tone="blue">{formatInsightType(row.intelligence_type)}</DemoTag>
                                 <DemoTag tone={sentimentTone[row.sentiment] ?? "slate"}>{sentimentText[row.sentiment] ?? row.sentiment}</DemoTag>
                                 <DemoTag tone={row.visibility_scope === "public" ? "green" : "slate"}>{visibilityText[row.visibility_scope] ?? row.visibility_scope}</DemoTag>
+                                {row.source_count > 1 ? <DemoTag tone="green">{row.source_count} 个来源共同报道</DemoTag> : null}
                             </div>
                         </div>
                         <div className="flex shrink-0 flex-wrap items-center justify-start gap-2">
@@ -817,7 +828,9 @@ function OfficialFeed({
                     ) : null}
                     <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
                         <TagList tags={row.suggested_tags} tagNames={row.tag_names} fallback={row.subject_name || row.category_name || subjectTypeText[row.subject_type]} />
-                        <div className="text-xs font-semibold text-slate-400">来源数 {row.source_count}</div>
+                        <div className="text-xs font-semibold text-slate-400">
+                            {row.source_count > 1 ? `已聚合 ${row.source_count} 篇报道，点击详情查看全部来源` : "单一来源"}
+                        </div>
                     </div>
                 </article>
             ))}

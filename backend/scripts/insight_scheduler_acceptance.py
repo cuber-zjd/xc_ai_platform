@@ -11,6 +11,9 @@ def main() -> None:
     checks = {
         "status_schema_valid": isinstance(status_read.enabled, bool),
         "enabled_reflects_settings": status_read.enabled == settings.INSIGHT_SCHEDULER_ENABLED,
+        "trigger_mode_supported": status_read.trigger_mode in {"daily", "fixed_interval"},
+        "daily_time_present": bool(status_read.daily_time),
+        "timezone_present": bool(status_read.timezone),
         "interval_positive": status_read.interval_seconds > 0,
         "batch_limit_positive": status_read.batch_limit > 0,
         "failure_threshold_positive": status_read.failure_pause_threshold > 0,
@@ -30,6 +33,9 @@ def main() -> None:
         {
             "enabled": status_read.enabled,
             "running": status_read.running,
+            "trigger_mode": status_read.trigger_mode,
+            "daily_time": status_read.daily_time,
+            "timezone": status_read.timezone,
             "interval_seconds": status_read.interval_seconds,
             "batch_limit": status_read.batch_limit,
             "failure_pause_threshold": status_read.failure_pause_threshold,

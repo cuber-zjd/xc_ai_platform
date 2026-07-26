@@ -54,6 +54,8 @@ const ReportCenterPage = lazy(() => import("@/app/insight").then((module) => ({ 
 const OperationIntelligencePage = lazy(() => import("@/app/insight").then((module) => ({ default: module.OperationIntelligencePage })));
 const QualityOverviewPage = lazy(() => import("@/app/insight").then((module) => ({ default: module.QualityOverviewPage })));
 const SettingsPage = lazy(() => import("@/app/insight").then((module) => ({ default: module.SettingsPage })));
+const ScheduledTasksPage = lazy(() => import("@/app/insight").then((module) => ({ default: module.ScheduledTasksPage })));
+const FeishuBriefPage = lazy(() => import("@/app/insight").then((module) => ({ default: module.FeishuBriefPage })));
 
 const PageLoader = () => (
     <div className="app-page flex min-h-[60vh] items-center justify-center">
@@ -365,6 +367,26 @@ const router = createBrowserRouter([
                     <Suspense fallback={<PageLoader />}>
                         <CompanyArchivePage />
                     </Suspense>
+                ),
+            },
+            {
+                path: "schedules",
+                element: (
+                    <AdminRoute redirectTo="/insight">
+                        <Suspense fallback={<PageLoader />}>
+                            <ScheduledTasksPage />
+                        </Suspense>
+                    </AdminRoute>
+                ),
+            },
+            {
+                path: "feishu-briefs",
+                element: (
+                    <AdminRoute redirectTo="/insight">
+                        <Suspense fallback={<PageLoader />}>
+                            <FeishuBriefPage />
+                        </Suspense>
+                    </AdminRoute>
                 ),
             },
             {

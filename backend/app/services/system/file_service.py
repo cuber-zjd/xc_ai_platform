@@ -2,7 +2,6 @@ import asyncio
 import io
 from datetime import timedelta
 from minio import Minio
-from minio.error import S3Error
 from app.core.config import settings
 from app.core.logger import logger
 
@@ -15,21 +14,37 @@ class FileService:
             secure=False # TODO: Set to True in production if HTTPS
         )
         self.bucket = settings.MINIO_BUCKET_NAME
+        self._bucket_ready = False
         self._ensure_bucket_exists()
 
-    def _ensure_bucket_exists(self):
+    def _ensure_bucket_exists(self) -> bool:
+        if self._bucket_ready:
+            return True
         try:
             if not self.client.bucket_exists(self.bucket):
                 self.client.make_bucket(self.bucket)
                 logger.info(f"Created MinIO bucket: {self.bucket}")
-        except S3Error as e:
-            logger.error(f"MinIO bucket check failed: {e}")
+            self._bucket_ready = True
+            return True
+        except Exception as e:
+            logger.warning(
+                f"MinIO bucket check failed, file APIs may be unavailable: "
+                f"endpoint={settings.MINIO_ENDPOINT}, bucket={self.bucket}, error={e}"
+            )
+            return False
+
+    def _ensure_bucket_available(self) -> None:
+        if not self._ensure_bucket_exists():
+            raise RuntimeError(
+                f"MinIO bucket unavailable: endpoint={settings.MINIO_ENDPOINT}, bucket={self.bucket}"
+            )
 
     async def upload_file(self, file_data: bytes, object_name: str, content_type: str = "application/octet-stream") -> str:
         """
         Uploads bytes to MinIO. Returns the object name.
         """
         try:
+            self._ensure_bucket_available()
             file_stream = io.BytesIO(file_data)
             length = len(file_data)
             
@@ -53,6 +68,7 @@ class FileService:
         Generates a presigned URL for frontend access.
         """
         try:
+            self._ensure_bucket_available()
             url = await asyncio.to_thread(
                 self.client.presigned_get_object,
                 bucket_name=self.bucket,
@@ -69,6 +85,7 @@ class FileService:
         Downloads file content as bytes (for backend processing/OCR).
         """
         try:
+            self._ensure_bucket_available()
             response = await asyncio.to_thread(
                 self.client.get_object,
                 bucket_name=self.bucket,

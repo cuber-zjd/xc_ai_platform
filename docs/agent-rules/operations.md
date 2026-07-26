@@ -58,8 +58,10 @@ pnpm dev
 - Milvus：`MILVUS_HOST`、`MILVUS_PORT`
 - LangFuse：`LANGFUSE_PUBLIC_KEY`、`LANGFUSE_SECRET_KEY`、`LANGFUSE_HOST`
 - OnlyOffice：`ONLYOFFICE_SERVER_URL`、`ONLYOFFICE_JWT_SECRET`
-- Insight 通用采集：`INSIGHT_FIRECRAWL_BASE_URL`、`INSIGHT_FIRECRAWL_API_KEY`、`INSIGHT_FIRECRAWL_TIMEOUT_SECONDS`、`INSIGHT_BOCHA_API_KEY`、`INSIGHT_BOCHA_BASE_URL`、`INSIGHT_SEARCH_TIMEOUT_SECONDS`、`INSIGHT_OWN_BUSINESS_PROFILE`
-- Insight 周期调度：`INSIGHT_SCHEDULER_ENABLED`、`INSIGHT_SCHEDULER_INTERVAL_SECONDS`、`INSIGHT_SCHEDULER_BATCH_LIMIT`、`INSIGHT_SCHEDULER_STARTUP_DELAY_SECONDS`、`INSIGHT_SCHEDULER_ADVISORY_LOCK_ID`、`INSIGHT_SCHEDULER_USER_ID`、`INSIGHT_SCHEDULER_FAILURE_PAUSE_THRESHOLD`
+- Insight 通用采集：`INSIGHT_FIRECRAWL_BASE_URL`、`INSIGHT_FIRECRAWL_API_KEY`、`INSIGHT_FIRECRAWL_TIMEOUT_SECONDS`、`INSIGHT_REVIEW_FULLTEXT_REQUIRED`、`INSIGHT_REVIEW_FULLTEXT_TOP_N`、`INSIGHT_REVIEW_FULLTEXT_CONCURRENCY`、`INSIGHT_BOCHA_API_KEY`、`INSIGHT_BOCHA_BASE_URL`、`INSIGHT_SEARCH_TIMEOUT_SECONDS`、`INSIGHT_OWN_BUSINESS_PROFILE`
+- Insight 周期调度：`INSIGHT_SCHEDULER_ENABLED`、`INSIGHT_SCHEDULER_AUTO_START`、`INSIGHT_SCHEDULER_TRIGGER_MODE`、`INSIGHT_SCHEDULER_DAILY_TIME`、`INSIGHT_SCHEDULER_TIMEZONE`、`INSIGHT_SCHEDULER_INTERVAL_SECONDS`、`INSIGHT_SCHEDULER_BATCH_LIMIT`、`INSIGHT_SCHEDULER_DAILY_DISCOVERY_ENABLED`、`INSIGHT_SCHEDULER_DAILY_DISCOVERY_FRESHNESS`、`INSIGHT_SCHEDULER_BAIDU_CONCURRENCY`、`INSIGHT_SCHEDULER_BAIDU_COOLDOWN_MIN_SECONDS`、`INSIGHT_SCHEDULER_BAIDU_COOLDOWN_MAX_SECONDS`、`INSIGHT_SCHEDULER_GROUPED_BATCH_SIZE`、`INSIGHT_SCHEDULER_GROUPED_BATCH_LIMIT`、`INSIGHT_SCHEDULER_STARTUP_DELAY_SECONDS`、`INSIGHT_SCHEDULER_ADVISORY_LOCK_ID`、`INSIGHT_SCHEDULER_USER_ID`、`INSIGHT_SCHEDULER_FAILURE_PAUSE_THRESHOLD`
+- Insight 飞书集成：`FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`FEISHU_BASE_URL`、`FEISHU_TIMEOUT_SECONDS`、`FEISHU_RETRY_MAX_ATTEMPTS`、`INSIGHT_FEISHU_SYNC_ENABLED`、`INSIGHT_FEISHU_DAILY_BRIEF_ENABLED`、`INSIGHT_FEISHU_BITABLE_APP_TOKEN`、`INSIGHT_FEISHU_BITABLE_TABLE_ID`、`INSIGHT_FEISHU_DOC_FOLDER_TOKEN`、`INSIGHT_FEISHU_DEFAULT_CHAT_ID`、`INSIGHT_FEISHU_DEFAULT_RECEIVE_ID_TYPE`。多维表格字段和记录查询可能超过 10 秒，`FEISHU_TIMEOUT_SECONDS` 默认使用 30 秒；同步失败日志必须保留异常类型和请求路径，前端应直接展示后端返回的具体原因。
+- Insight 独立飞书简报机器人使用 `INSIGHT_FEISHU_BRIEF_ENABLED`、`INSIGHT_FEISHU_BRIEF_APP_ID`、`INSIGHT_FEISHU_BRIEF_APP_SECRET`、`INSIGHT_FEISHU_BRIEF_FOLDER_TOKEN`、`INSIGHT_FEISHU_BRIEF_BOT_NAME`、`INSIGHT_FEISHU_BRIEF_DEFAULT_RECIPIENTS_JSON`、`INSIGHT_FEISHU_BRIEF_TIMEOUT_SECONDS` 和 `INSIGHT_FEISHU_BRIEF_MAX_MATERIALS`。该应用凭证不得复用某个用户身份；只有独立应用凭证、文件夹授权和计划配置均有效时才允许发布。
 - 安全：`SECRET_KEY`、`MCP_API_KEY`、`EXTERNAL_API_KEYS`
 
 ## 4. 测试与检查
@@ -150,6 +152,8 @@ uv sync
 - Insight 第一阶段通用网页抓取通过本地 Firecrawl 服务完成，接口由 `INSIGHT_FIRECRAWL_BASE_URL` 指定，例如 `http://127.0.0.1:3002`。
 - 如 Firecrawl 启用 API Key，使用 `INSIGHT_FIRECRAWL_API_KEY` 配置；未启用时留空。
 - 抓取超时由 `INSIGHT_FIRECRAWL_TIMEOUT_SECONDS` 控制，默认 30 秒。
+- 搜索命中在最终 AI 评审前默认补抓正文，由 `INSIGHT_REVIEW_FULLTEXT_REQUIRED=true` 开启；每次监测优先补抓数量由 `INSIGHT_REVIEW_FULLTEXT_TOP_N` 控制，默认 3；跨监测任务并发由 `INSIGHT_REVIEW_FULLTEXT_CONCURRENCY` 控制，默认 6。
+- 政府、交易所等静态页面优先尝试受控直接 HTTP 抽取；其他页面在 Firecrawl 超时或正文过短时降级直接抽取。直接抽取最多跟随 5 次重定向、响应体上限 5MB，并阻断本机、链路本地和 RFC1918 内网目标。
 - 手动 URL 抓取接口为 `POST /ai-api/v1/insight/crawler/manual-url`，会创建采集任务、调用 Firecrawl、写入爬取结果和候选情报。
 - 关键词搜索发现接口为 `POST /ai-api/v1/insight/crawler/search-discovery`，第一版支持百度发现和 Bocha/博查 API，发现候选 URL 后复用 Firecrawl 正文抽取链路。
 - 抓取结果入库前会做 URL 归一、追踪参数清理、标题/摘要清洗、发布时间解析、内容去重和候选主题/类型/标签规则识别；候选列表接口为 `GET /ai-api/v1/insight/intelligence/candidates`。
@@ -163,19 +167,36 @@ uv sync
   - Insight 测试/烟测/样例数据清理入口为 `uv run python scripts/cleanup_insight_test_data.py`。默认只预览命中数量和样例；确认范围后加 `--execute` 才会软删除候选线索、正式情报、来源证据、报告、资产、向量、图谱、采集任务等关联数据。清理规则只匹配“测试客户、烟测、样例、仅用于测试、smoke=true”等明确测试痕迹，避免因真实网页正文中的普通 `Demo` 或“测试数据”字样误删业务数据。
   - AI 自动评审会默认注入香驰控股有限公司的大豆、玉米精深加工，功能糖、糖醇、植物蛋白、豆粕、粮油和营养健康应用画像；如需补充内部战略、重点客户群或阶段性经营口径，可用 `INSIGHT_OWN_BUSINESS_PROFILE` 配置额外文本，系统会合并进评审上下文。
 - Insight 企业微信推送卡片默认使用 `INSIGHT_PUBLIC_BASE_URL=https://ai.xiangchi.com` 拼接报告和情报链接；真实发送仍必须配置 `INSIGHT_WECOM_CORP_ID`、`INSIGHT_WECOM_AGENT_ID`、`INSIGHT_WECOM_SECRET` 并开启 `INSIGHT_WECOM_SEND_ENABLED`。
+- Insight 飞书集成默认关闭：`INSIGHT_FEISHU_SYNC_ENABLED=false`、`INSIGHT_FEISHU_DAILY_BRIEF_ENABLED=false`。启用正式情报同步多维表格和飞书云文档日报前，必须填写 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`、`INSIGHT_FEISHU_BITABLE_APP_TOKEN`、`INSIGHT_FEISHU_BITABLE_TABLE_ID`、`INSIGHT_FEISHU_DOC_FOLDER_TOKEN`，如需推送还需填写 `INSIGHT_FEISHU_DEFAULT_CHAT_ID` 或后续接收人配置。
+- Insight 手动同步多维表格不依赖 `INSIGHT_FEISHU_SYNC_ENABLED`，只要飞书应用、多维表格 app token 和 table id 配置完整即可使用；该开关控制调度器是否在每日任务中自动同步。管理员可通过 `/insight/schedules` 查看每轮调度日志和 Token 用量，后端日志接口为 `GET /ai-api/v1/insight/scheduler/logs`。
 - Insight 服务器上线前可执行环境自检脚本：`cd backend && uv run python scripts/insight_env_check.py`，Windows 也可执行 `backend/scripts/insight_env_check.ps1`。脚本会检查 Python、PostgreSQL、Redis、Milvus、Playwright、Insight 必需表、核心渠道、调度器配置、模型配置、目录写入权限和外部连通性；默认不触发付费搜索，只有显式增加 `--probe-paid` / `-ProbePaid` 时才调用博查真实搜索。
+- Insight 生产调度策略的本地批量验证入口为 `uv run python scripts/insight_run_due_monitor_configs_once.py --limit 20 --days 2`，它调用 `monitor_execution_service.run_due_monitor_configs`，保留“基础渠道先跑、博查/豆包分组补充、到期监测配置分批执行”的真实调度策略；`--days` 只覆盖本次时间窗，不修改正式调度配置。
+- Insight 正式每日调度以“每日全覆盖发现 + 信号深挖 + 周期补漏”运行：每日发现不受 `INSIGHT_SCHEDULER_BATCH_LIMIT` 限制，百度资讯逐对象低并发执行，博查和豆包按同类对象合并查询；批量上限只限制较重的垂直站点深挖。上述旧批量脚本只验证深挖层，不代表完整每日调度。
+- Insight 按自然日精确补采使用 `uv run python scripts/insight_run_daily_discovery_once.py --start-date YYYY-MM-DD --end-date YYYY-MM-DD`。该入口复用正式每日发现策略，结束日期包含当天；搜索命中先做时间过滤，正文补抓解析出真实发布时间后还会二次校验，越界或仍无日期的结果只保留采集审计，不进入候选、正式情报和资产链路。
 - Insight 首页看板接口为 `GET /ai-api/v1/insight/dashboard`，聚合当前用户可见的正式情报，返回 KPI、近 7 日趋势、来源分布、重点动态和最新情报；权限过滤和隐藏池过滤必须在后端完成。
 - Insight 数据源配置需要支持手动和周期采集。第一版数据源类型包括官网、通用网页、百度资讯、博查资讯和博查网页搜索；百度资讯通道需要显式走资讯搜索参数，不应复用普通网页搜索结果。
-- 数据源周期配置支持 `manual`、`15m`、`hourly`、`daily` 和自定义 cron。当前正式运行推荐 `INSIGHT_SCHEDULER_ENABLED=true`，`.env.example` 已按开启配置；仅在纯开发调试且不希望消耗外部搜索/抓取额度时手动改为 `false`。调度器只读取启用且到期的数据源创建采集任务，每轮写入 `scheduler_tick` 任务日志，并通过 PostgreSQL advisory lock 避免多实例重复执行。周期调度推荐搜索类数据源配置 `crawl_top_n=0`、`create_candidate_from_hits=true`、`enable_llm_filter=true` 和明确的 `filter_prompt`：平台会先做搜索发现、LLM 结果筛选和搜索摘要级 AI 初筛，再把候选入库；正文级深挖由批处理脚本分时执行，避免常驻调度器被慢 URL 阻塞。搜索通道可用但结果被规则或 LLM 全部过滤时，应记录为成功的 0 候选任务，并保留 `filter_summary`、`rejected_items` 和 LLM 判分信息；只有未配置搜索通道或外部通道调用失败时才标记失败。调度器对单个数据源有超时保护，超时后按失败写回该源状态并进入下一源，不允许长期占用 `scheduler_tick`。前端数据源配置页通过 `/ai-api/v1/insight/scheduler/status` 查看运行状态，通过 `/scheduler/run-once` 立即扫描到期任务，通过 `/scheduler/start` 和 `/scheduler/stop` 做运行态控制。连续失败达到 `INSIGHT_SCHEDULER_FAILURE_PAUSE_THRESHOLD` 后数据源会自动暂停周期采集，人工排查后可调用 `/ai-api/v1/insight/data-sources/{data_source_id}/schedule/retry` 加入下一轮调度。
+- 数据源周期配置支持 `manual`、`15m`、`hourly`、`daily` 和自定义 cron。生产环境默认不应依赖后端重启触发采集：`INSIGHT_SCHEDULER_ENABLED=true` 只表示允许调度器运行，`INSIGHT_SCHEDULER_AUTO_START=true` 时 FastAPI 启动后也只是进入定时等待；默认 `INSIGHT_SCHEDULER_TRIGGER_MODE=daily`、`INSIGHT_SCHEDULER_DAILY_TIME=01:00`、`INSIGHT_SCHEDULER_TIMEZONE=Asia/Shanghai`，到点才执行一轮。旧的 `fixed_interval` 只作兼容模式。如未显式开启 `AUTO_START`，应由人工、平台接口或服务器外部定时任务在夜间窗口调用 `/scheduler/run-once` 或 `/scheduler/start`。调度器只读取启用且到期的数据源创建采集任务，每轮写入 `scheduler_tick` 任务日志，并通过 PostgreSQL advisory lock 避免多实例重复执行。周期调度推荐搜索类数据源配置 `crawl_top_n=0`、`create_candidate_from_hits=true`、`enable_llm_filter=true` 和明确的 `filter_prompt`：平台会先做搜索发现、LLM 结果筛选和搜索摘要级 AI 初筛，再把候选入库；正文级深挖由批处理脚本分时执行，避免常驻调度器被慢 URL 阻塞。搜索通道可用但结果被规则或 LLM 全部过滤时，应记录为成功的 0 候选任务，并保留 `filter_summary`、`rejected_items` 和 LLM 判分信息；只有未配置搜索通道或外部通道调用失败时才标记失败。调度器对单个数据源有超时保护，超时后按失败写回该源状态并进入下一源，不允许长期占用 `scheduler_tick`。前端数据源配置页通过 `/ai-api/v1/insight/scheduler/status` 查看运行状态，通过 `/scheduler/run-once` 立即扫描到期任务，通过 `/scheduler/start` 和 `/scheduler/stop` 做运行态控制。连续失败达到 `INSIGHT_SCHEDULER_FAILURE_PAUSE_THRESHOLD` 后数据源会自动暂停周期采集，人工排查后可调用 `/ai-api/v1/insight/data-sources/{data_source_id}/schedule/retry` 加入下一轮调度。
 - 数据源筛选配置包括确定性规则和 LLM 筛选提示词。LLM 筛选必须可关闭，筛选失败时按数据源配置决定降级保留或丢弃，并记录过滤原因。
 - 御馨及健源第一批实际数据源初始化脚本为 `backend/scripts/seed_insight_data_sources.py`。执行 `uv run python scripts/seed_insight_data_sources.py` 可幂等写入 14 条 `yxjy_` 前缀数据源；追加 `--test` 会代表性测试嘉华官网、御馨大豆蛋白博查资讯和健源新茶饮百度资讯链路。
+
+## 11. Insight Linux 发布方式
+
+- 192.168.14.44 服务器固定使用原 git 工作目录 `/home/xinxi/ai_platform` 部署和运行，不再创建 `ai_platform_releases` 或 `ai_platform_current` 发布目录。
+- 部署前必须先确认当前运行进程、端口占用和其他服务，备份原目录或关键配置后再在 `/home/xinxi/ai_platform` 内同步代码、安装依赖、构建前端和重启服务。
+- 前后端使用用户级 `ai-platform-backend.service`、`ai-platform-frontend.service` 守护，服务工作目录必须指向 `/home/xinxi/ai_platform/backend` 和 `/home/xinxi/ai_platform/frontend`。
+- 要求未登录也能开机启动时，需要管理员执行 `loginctl enable-linger xinxi`；未启用 linger 时，用户级服务只在该用户的 systemd manager 存活期间运行。
+- 回滚优先使用部署前备份或 git 历史在 `/home/xinxi/ai_platform` 内恢复。操作前必须精确核验端口和进程归属，不得批量终止服务器上的其他应用。
  
 ## 泛微流程AI助手环境配置
 
 - `WEAVER_DEFAULT_ENV`：ecode 未传 `env` 时使用的默认泛微环境 key。
 - `WEAVER_DB_CONFIGS`：泛微 MySQL8 多环境连接配置，JSON 对象，key 为环境名，例如 `test`、`prod`。
+- `WEAVER_DB_CONFIGS.<env>.ssl_disabled`：是否禁用泛微 MySQL TLS，默认 `true`。当前内网 MySQL 不强制安全传输，禁用可避免 PyMySQL 自动 TLS 握手偶发断开；跨网络或生产环境需要 TLS 时设置为 `false`，并通过 `ssl_ca` 配置 CA 文件。
+- `WEAVER_DB_CONFIGS.<env>.retry_backoff_base`、`retry_backoff_max`：连接失败后的指数退避秒数，默认分别为 `0.2` 和 `1.5`，用于缩短偶发握手断开后的恢复等待。
+- 泛微 MySQL 连接返回前会执行一次 `ping`；握手成功但首个命令断开的连接会被关闭并进入既有重试流程。连接默认启用 `autocommit`，避免只读元数据查询长期占用事务。
 - `WEAVER_AI_FIELD_CONFIGS`：字段配置可按环境组织，推荐结构为 `{"test":{"494":[...]}, "prod":{"494":[...]}}`；旧结构 `{"494":[...]}` 仅作为兼容。
 - `WEAVER_AI_MODEL_NAME`：泛微流程 AI 助手专用模型名；配置后优先按模型名调用，用于给流程规则理解更强的模型。
 - `WEAVER_AI_MODEL_CAPABILITY`：未配置专用模型名时使用的模型能力标签，默认 `complex-reasoning`。
 - `WEAVER_AI_ENABLE_REASONING`：模型支持 reasoning 时可开启；本地小模型或不兼容模型建议保持 `false`。
+- `WEAVER_AI_FIELD_CONFIG_CACHE_TTL_SECONDS`：泛微字段元数据按 `env + workflowId` 的进程内缓存秒数，默认 `600`；设置为 `0` 可关闭缓存。
 - ecode 调用字段配置接口时可携带 `env`：`/ai-api/v1/weaver/ai-assistant/field-config?workflow_id=494&env=test`。

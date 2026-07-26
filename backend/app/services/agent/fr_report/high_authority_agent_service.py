@@ -4,9 +4,11 @@ import re
 import zipfile
 import asyncio
 from datetime import datetime
+from html import unescape as html_unescape
 from io import BytesIO
 from typing import Any, AsyncIterator
 from uuid import uuid4
+from xml.sax.saxutils import escape
 
 from fastapi import UploadFile
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -337,6 +339,8 @@ class FrReportHighAuthorityAgentService:
                     initial_operations=operations,
                     assistant_message=assistant_message,
                     model_payload=base_model_payload,
+                    db=db,
+                    user_id=user_id,
                 )
             except CandidatePreparationError as exc:
                 await self._rollback_session_safely(db, "候选 CPT 准备失败")
@@ -357,6 +361,19 @@ class FrReportHighAuthorityAgentService:
                 return
             if candidate_warnings:
                 warnings.extend(candidate_warnings)
+            candidate_audit = model_result.get("_candidateAudit") if isinstance(model_result.get("_candidateAudit"), dict) else {}
+            if candidate_audit:
+                audit_facts = candidate_audit.get("facts") if isinstance(candidate_audit.get("facts"), dict) else {}
+                yield self._tool_result(
+                    "validate_candidate_cpt",
+                    "候选 CPT 已完成结构、绑定和影响面审计。",
+                    {
+                        "status": candidate_audit.get("status") or "passed",
+                        "datasetCount": audit_facts.get("datasetCount"),
+                        "dsColumnCount": audit_facts.get("dsColumnCount"),
+                        "warningCount": len(candidate_audit.get("warnings") or []),
+                    },
+                )
             if not self._should_write_immediately(message, autonomy_mode):
                 operation_draft = self._build_operation_draft(
                     assistant_message=assistant_message,
@@ -534,7 +551,7 @@ class FrReportHighAuthorityAgentService:
                 trace_observation.update_trace(
                     session_id=conversation_id,
                     user_id=str(user_id),
-                    tags=["fr-report-agent", "high-authority", "react"],
+                    tags=["fr-report-agent", "high-authority", "work-loop"],
                     metadata={"object_path": normalized_path, "autonomy_mode": autonomy_mode},
                 )
             except Exception as trace_exc:
@@ -681,11 +698,11 @@ class FrReportHighAuthorityAgentService:
         for step in range(1, max_steps + 1):
             payload = {
                 **base_payload,
-                "reactStep": step,
+                "workStep": step,
                 "observations": observations[-10:],
                 "availableTools": self._react_available_tools(),
                 "instruction": (
-                    "你必须按 ReAct 方式推进：如果信息不足，返回 toolCalls；如果已经能修改，优先返回 file_edit 精确文件编辑。"
+                    "你必须按观察、行动、验证的循环推进：如果信息不足，返回 toolCalls；如果已经能修改，优先返回 file_edit 精确文件编辑。"
                     "不要把工具名当成最终修改；真正写入 CPT 必须给出可应用的 file_edit，必要时再用 finalCptXml 兜底。"
                 ),
                 "expectedJson": self._react_expected_json(),
@@ -694,12 +711,12 @@ class FrReportHighAuthorityAgentService:
                 fr_report_ai_operation_service._invoke_json(
                     system_prompt=self._react_system_prompt(),
                     payload=payload,
-                    agent_name=f"FrReportHighAuthorityReactAgent.step{step}",
+                    agent_name=f"FrReportHighAuthorityWorkAgent.step{step}",
                     langfuse_trace_context=langfuse_trace_context,
-                    langfuse_run_name=f"fr_report_react_step_{step}",
+                    langfuse_run_name=f"fr_report_work_step_{step}",
                     langfuse_metadata={
                         "conversation_id": conversation_id,
-                        "react_step": step,
+                        "work_step": step,
                         "tool_observation_count": len(observations),
                     },
                 )
@@ -726,7 +743,7 @@ class FrReportHighAuthorityAgentService:
                     pass
                 observations.append(
                     {
-                        "toolName": "react_model_step",
+                        "toolName": "planning_step",
                         "status": "timeout",
                         "payload": {
                             "step": step,
@@ -736,7 +753,7 @@ class FrReportHighAuthorityAgentService:
                     }
                 )
                 yield self._tool_result(
-                    "react_model_step",
+                    "planning_step",
                     "这一轮模型没有及时返回，我先中断它，带着已读到的上下文继续收束。",
                     {"step": step, "timeoutSeconds": self.REACT_MODEL_STEP_TIMEOUT_SECONDS, "status": "timeout"},
                 )
@@ -748,7 +765,7 @@ class FrReportHighAuthorityAgentService:
             except Exception as exc:
                 observations.append(
                     {
-                        "toolName": "react_model_step",
+                        "toolName": "planning_step",
                         "status": "failed",
                         "error": str(exc),
                         "payload": {
@@ -758,7 +775,7 @@ class FrReportHighAuthorityAgentService:
                     }
                 )
                 yield self._tool_result(
-                    "react_model_step",
+                    "planning_step",
                     "这一轮模型调用失败，我会保留错误并继续尝试收束。",
                     {"step": step, "error": str(exc), "status": "failed"},
                 )
@@ -801,13 +818,13 @@ class FrReportHighAuthorityAgentService:
                     return
                 if self._needs_evidence_before_accepting(base_payload, result, operations, observations):
                     yield self._tool_result(
-                        "react_evidence_guard",
+                        "evidence_guard",
                         "这版修改先不直接采纳，我会补读当前 XML 片段和相似案例后再写。",
                         {"reason": "模型在缺少工具观察时已经给出 CPT 修改，容易出现坐标、格式或原生节点写法偏差。"},
                     )
                     observations.append(
                         {
-                            "toolName": "react_evidence_guard",
+                            "toolName": "evidence_guard",
                             "status": "needs_more_evidence",
                             "payload": {
                                 "candidateSummary": self._compact(result, 12000),
@@ -834,7 +851,7 @@ class FrReportHighAuthorityAgentService:
                 if date_format_gap:
                     observations.append(date_format_gap)
                     yield self._tool_result(
-                        "react_evidence_guard",
+                        "evidence_guard",
                         "单元格格式还不够，我发现目标字段本身可能已经在 SQL 里被格式化，需要继续查数据集。",
                         {"reason": date_format_gap.get("hint")},
                     )
@@ -922,7 +939,7 @@ class FrReportHighAuthorityAgentService:
             if not filtered_tool_calls:
                 observations.append(
                     {
-                        "toolName": "react_tool_loop_guard",
+                        "toolName": "tool_loop_guard",
                         "status": "enough_evidence",
                         "payload": {
                             "hint": "模型继续请求的工具已经读过或已达到本轮上限；下一步必须基于现有观察生成候选 CPT，不能继续重复读上下文。",
@@ -1017,7 +1034,7 @@ class FrReportHighAuthorityAgentService:
         )
         if finalization_result:
             yield self._tool_result(
-                "react_finalizer",
+                "final_review",
                 "观察已经足够，我把模型从“继续分析”收束成可写入候选修改。",
                 {"operationCount": len(finalization_result["operations"])},
             )
@@ -1344,9 +1361,9 @@ class FrReportHighAuthorityAgentService:
                 fr_report_ai_operation_service._invoke_json(
                     system_prompt=self._react_system_prompt(),
                     payload=final_payload,
-                    agent_name="FrReportHighAuthorityReactFinalizer",
+                    agent_name="FrReportHighAuthorityFinalReviewer",
                     langfuse_trace_context=langfuse_trace_context,
-                    langfuse_run_name="fr_report_react_finalizer",
+                    langfuse_run_name="fr_report_final_review",
                     langfuse_metadata={"conversation_id": conversation_id, "mode": "finalizer"},
                 ),
                 timeout=self.REACT_FINALIZER_TIMEOUT_SECONDS,
@@ -1363,10 +1380,10 @@ class FrReportHighAuthorityAgentService:
                 "operations": operations,
             }
         except asyncio.TimeoutError:
-            logger.warning("FineReport ReAct 最终成稿超时")
+            logger.warning("FineReport 工作循环最终成稿超时")
             return None
         except Exception as exc:
-            logger.warning(f"FineReport ReAct 最终成稿失败: {exc}")
+            logger.warning(f"FineReport 工作循环最终成稿失败: {exc}")
             return None
 
     def _trace_context_from_observation(self, observation: Any) -> dict[str, str] | None:
@@ -1444,7 +1461,7 @@ class FrReportHighAuthorityAgentService:
             if self._is_redundant_tool_call(tool_name, arguments, observations):
                 observations.append(
                     {
-                        "toolName": "react_tool_loop_guard",
+                        "toolName": "tool_loop_guard",
                         "status": "skipped_duplicate_tool",
                         "payload": {
                             "skippedTool": tool_name,
@@ -2575,7 +2592,7 @@ class FrReportHighAuthorityAgentService:
 
     def _react_system_prompt(self) -> str:
         return (
-            "你是 FineReport 报表专用高权限 ReAct Agent。你不是一次性模板生成器，必须根据观察循环推进。"
+            "你是 FineReport 报表专用高权限 Agent。你不是一次性模板生成器，必须根据观察循环推进。"
             "每一轮只做两类事之一：1）信息不足时返回 toolCalls 调用工具；2）信息足够时返回 file_edit 精确文件编辑，必要时用 finalCptXml 完整 WorkBook 兜底。"
             "不要输出 Markdown，不要输出自然语言之外的解释块；只返回严格 JSON。"
             "工具观察是事实，用户当前指令优先于旧会话记录；已写入版本的旧待应用项不能当成本轮事实。"
@@ -2598,7 +2615,7 @@ class FrReportHighAuthorityAgentService:
             "mini-shot：用户说“把市场筛选改成下拉”。若不知道参数栏写法，先 toolCalls=[read_cpt_slice ReportParameterAttr, search_xml ComboBox]；观察后在完整 WorkBook 中改好参数控件和相关字典。"
             "mini-shot：用户说“黄曲霉用 price1，不保黄曲霉用 price2”。先查 schema/sample，再读相关表头单元格和数据单元格 XML，最后在完整 WorkBook 中改 TableData SQL 与 DSColumn 绑定。"
             "mini-shot：用户说“隐藏第一列”。先看 ReportPageAttr/HC 和 ColumnWidth；设计器真值通常是 <HC F=\"0\" T=\"0\"/>，并把 ColumnWidth 的第 1 项置 0，最后返回两个 file_edit 精确替换相关节点。"
-            "mini-shot：用户说“第二列日期改成 yyyy年MM月dd日”。先读 cell:B? 和数据集 SQL；若 B5 绑定 month_day 且 SQL 是 CAST(zdata AS DATE) AS month_day，就用 file_edit 把 SQL 片段改成 FORMAT(CAST(zdata AS DATE), 'yyyy年MM月dd日') AS month_day，并适当放宽 B 列 ColumnWidth。"
+            "mini-shot：用户说“第二列日期改成 yyyy年MM月dd日”。先读目标日期单元格、格式节点、数据集 SQL 和填报引用；若预览不吃单元格格式，就优先把 SQL 输出字段改为目标显示格式，并同步检查列宽和写回公式。"
             "面向用户的 assistantMessage 要像正在工作的人：短、自然、说明正在查什么或改什么，不要固定模板腔。"
             "不要反复使用“报表结构已经拿到了”“基础情况差不多清楚了”“下面我会”“收到，准备”这类流程套话；如果没有新信息，就少说或直接调用工具。"
             "进度句要贴住当前任务里的具体对象，例如某个单元格、字段、数据集、XML 节点或参考案例，而不是泛泛描述流程。"
@@ -2622,7 +2639,7 @@ class FrReportHighAuthorityAgentService:
         draft_operations = self._draft_safe_operations(operations, candidate_xml)
         highest_risk = "high" if any(str(item.get("riskLevel") or "") == "high" for item in draft_operations) else "medium"
         return {
-            "draftId": f"fr-react-draft-{uuid4().hex[:12]}",
+            "draftId": f"fr-work-draft-{uuid4().hex[:12]}",
             "baseVersion": "current",
             "targetVersion": "pending",
             "status": "draft" if draft_operations else "blocked",
@@ -2898,6 +2915,8 @@ class FrReportHighAuthorityAgentService:
         initial_operations: list[dict[str, Any]],
         assistant_message: str,
         model_payload: dict[str, Any],
+        db: AsyncSession | None = None,
+        user_id: int | None = None,
     ) -> tuple[str, list[dict[str, Any]], dict[str, Any], str, list[str]]:
         current_result = dict(initial_model_result)
         current_operations = list(initial_operations)
@@ -2938,6 +2957,12 @@ class FrReportHighAuthorityAgentService:
                     request=str(model_payload.get("userRequest") or ""),
                 )
                 last_candidate_xml = candidate_xml
+                candidate_xml, binding_warnings = self._normalize_pseudo_dataset_bindings(candidate_xml)
+                warnings.extend(binding_warnings)
+                last_candidate_xml = candidate_xml
+                candidate_xml, nested_binding_warnings = self._normalize_nested_dscolumn_objects(candidate_xml)
+                warnings.extend(nested_binding_warnings)
+                last_candidate_xml = candidate_xml
                 candidate_xml, writeback_warnings = self._normalize_writeback_after_presentation_change(
                     source_xml=source_xml,
                     candidate_xml=candidate_xml,
@@ -2951,7 +2976,22 @@ class FrReportHighAuthorityAgentService:
                 candidate_xml, total_warnings = self._normalize_static_total_columns_after_horizontal_expansion(candidate_xml)
                 warnings.extend(total_warnings)
                 last_candidate_xml = candidate_xml
-                candidate_xml, dataset_sql_warnings = await self._validate_and_normalize_dataset_sql(candidate_xml)
+                candidate_xml, dataset_sql_warnings = await self._validate_and_normalize_dataset_sql(
+                    candidate_xml,
+                    db=db,
+                    user_id=user_id,
+                )
+                audit_report = await self._audit_candidate_cpt(
+                    source_xml=source_xml,
+                    candidate_xml=candidate_xml,
+                    request=str(model_payload.get("userRequest") or ""),
+                    db=db,
+                    user_id=user_id,
+                )
+                warnings.extend(audit_report.get("warnings") or [])
+                if audit_report.get("issues"):
+                    raise ValueError("候选 CPT 审计未通过：" + "；".join(str(item) for item in audit_report["issues"]))
+                current_result["_candidateAudit"] = audit_report
                 last_candidate_xml = candidate_xml
                 self._validate_insert_before_anchor_preserves_left_side(
                     source_xml,
@@ -2972,6 +3012,15 @@ class FrReportHighAuthorityAgentService:
                 failed_result = {
                     **current_result,
                     "_candidateDatasetQueries": self._extract_dataset_context(last_candidate_xml) if last_candidate_xml else [],
+                    "_candidateAudit": await self._safe_candidate_audit(
+                        source_xml=source_xml,
+                        candidate_xml=last_candidate_xml,
+                        request=str(model_payload.get("userRequest") or ""),
+                        db=db,
+                        user_id=user_id,
+                    )
+                    if last_candidate_xml
+                    else None,
                 }
                 try:
                     repaired = await self._repair_result(
@@ -3393,6 +3442,168 @@ class FrReportHighAuthorityAgentService:
             return re.sub(r"\n?<Expand\b", "\n" + number_format_xml + "\n<Expand", cell_xml, count=1, flags=re.S | re.I)
         return re.sub(r"\n?</C>\s*$", "\n" + number_format_xml + "\n</C>", cell_xml, count=1, flags=re.S | re.I)
 
+    def _normalize_pseudo_dataset_bindings(self, cpt_xml: str) -> tuple[str, list[str]]:
+        """把模型偶发生成的伪数据绑定转成 FineReport 原生 DSColumn。
+
+        FineReport 常见样本使用 `<O t="DSColumn"><Attributes dsName="..." columnName="..."/>...`。
+        模型容易生成 `<O t="ds"><![CDATA[$$$字段]]></O>` 或 `<O t="ds"><DS ds="..." name="..."/></O>`，
+        这两类都看起来像绑定，但 FineReport 运行和结构解析不稳定。
+        """
+
+        if not re.search(r"<O\b[^>]*\bt=\"ds\"", cpt_xml, flags=re.S | re.I):
+            return cpt_xml, []
+        dataset_names = self._extract_dataset_names(cpt_xml)
+        converted_fields: list[str] = []
+        unresolved_count = 0
+
+        def canonical_dscolumn(dataset_name: str, field_name: str) -> str:
+            return (
+                '<O t="DSColumn">\n'
+                f'<Attributes dsName="{escape(dataset_name)}" columnName="{escape(field_name)}"/>\n'
+                '<Condition class="com.fr.data.condition.ListCondition"/>\n'
+                "<Complex/>\n"
+                '<RG class="com.fr.report.cell.cellattr.core.group.FunctionGrouper"/>\n'
+                "<Parameters/>\n"
+                "</O>"
+            )
+
+        def infer_dataset(raw_dataset: str | None) -> str | None:
+            dataset = (raw_dataset or "").strip()
+            if dataset:
+                return dataset
+            if len(dataset_names) == 1:
+                return dataset_names[0]
+            return None
+
+        def normalize_object(match: re.Match[str]) -> str:
+            raw_value = (match.group("cdata") or match.group("text") or "").strip()
+            if not raw_value.startswith("$$$"):
+                return match.group(0)
+            field_name = raw_value[3:].strip()
+            dataset_name = infer_dataset(None)
+            if not field_name or not dataset_name:
+                nonlocal unresolved_count
+                unresolved_count += 1
+                return match.group(0)
+            converted_fields.append(field_name)
+            return canonical_dscolumn(dataset_name, field_name)
+
+        def normalize_ds_node(match: re.Match[str]) -> str:
+            attrs = match.group("attrs") or ""
+            dataset_name = infer_dataset(self._regex_first(attrs, r'\b(?:ds|dsName|dataset)="([^"]+)"'))
+            field_name = (
+                self._regex_first(attrs, r'\b(?:name|columnName|field)="([^"]+)"')
+                or ""
+            ).strip()
+            if not dataset_name or not field_name:
+                nonlocal unresolved_count
+                unresolved_count += 1
+                return match.group(0)
+            converted_fields.append(field_name)
+            return canonical_dscolumn(dataset_name, field_name)
+
+        next_xml = re.sub(
+            r'<O\b[^>]*\bt="ds"[^>]*>\s*(?:<!\[CDATA\[(?P<cdata>\$\$\$.*?)]]>|(?P<text>\$\$\$.*?))\s*</O>',
+            normalize_object,
+            cpt_xml,
+            flags=re.S | re.I,
+        )
+        next_xml = re.sub(
+            r'<O\b[^>]*\bt="ds"[^>]*>\s*<DS\b(?P<attrs>[^>]*)/>\s*</O>',
+            normalize_ds_node,
+            next_xml,
+            flags=re.S | re.I,
+        )
+        if not converted_fields:
+            if unresolved_count:
+                return next_xml, [f"检测到 {unresolved_count} 个 t=\"ds\" 伪数据绑定，但无法安全推断数据集或字段，已保留并等待下一轮修复。"]
+            return next_xml, []
+        sample = "、".join(converted_fields[:8])
+        suffix = "等" if len(converted_fields) > 8 else ""
+        next_xml, header_warnings = self._restore_duplicate_header_dataset_bindings(next_xml)
+        warnings = [f"已将 {len(converted_fields)} 个伪数据绑定规范为 FineReport DSColumn：{sample}{suffix}。"]
+        if unresolved_count:
+            warnings.append(f"另有 {unresolved_count} 个伪数据绑定缺少数据集或字段，仍需模型继续修复。")
+        warnings.extend(header_warnings)
+        return next_xml, warnings
+
+    def _normalize_nested_dscolumn_objects(self, cpt_xml: str) -> tuple[str, list[str]]:
+        """把 `<O><DSColumn>...</DSColumn></O>` 规范为 `<O t="DSColumn">...</O>`。"""
+
+        converted_fields: list[str] = []
+
+        def normalize(match: re.Match[str]) -> str:
+            attrs = match.group("attrs") or ""
+            body = (match.group("body") or "").strip()
+            dataset = self._regex_first(body, r'\bdsName="([^"]+)"') or ""
+            field = self._regex_first(body, r'\bcolumnName="([^"]+)"') or ""
+            if field:
+                converted_fields.append(field)
+            if 't="DSColumn"' in attrs or "t='DSColumn'" in attrs:
+                return match.group(0)
+            return f'<O t="DSColumn">\n{body}\n</O>'
+
+        next_xml = re.sub(
+            r'<O\b(?P<attrs>(?:(?!\bt=)[^>])*)>\s*<DSColumn>\s*(?P<body>.*?)\s*</DSColumn>\s*</O>',
+            normalize,
+            cpt_xml,
+            flags=re.S | re.I,
+        )
+        if not converted_fields:
+            return cpt_xml, []
+        sample = "、".join(converted_fields[:8])
+        suffix = "等" if len(converted_fields) > 8 else ""
+        return next_xml, [f"已将 {len(converted_fields)} 个嵌套 DSColumn 规范为 FineReport 原生写法：{sample}{suffix}。"]
+
+    def _restore_duplicate_header_dataset_bindings(self, cpt_xml: str) -> tuple[str, list[str]]:
+        cells = self._extract_cell_blocks(cpt_xml)
+        if not cells:
+            return cpt_xml, []
+        by_position = {(int(item["c"]), int(item["r"])): item for item in cells}
+        restored: list[str] = []
+        next_xml = cpt_xml
+        for (column, row), item in sorted(by_position.items()):
+            raw = str(item.get("raw") or "")
+            field = self._regex_first(raw, r'\bcolumnName="([^"]+)"')
+            if not field:
+                continue
+            below = by_position.get((column, row + 1))
+            if not below:
+                continue
+            below_field = self._regex_first(str(below.get("raw") or ""), r'\bcolumnName="([^"]+)"')
+            if below_field != field:
+                continue
+            fixed_raw = re.sub(
+                r"<O\b[^>]*\bt=\"DSColumn\"[^>]*>.*?</O>",
+                f"<O>\n<![CDATA[{field}]]></O>",
+                raw,
+                count=1,
+                flags=re.S | re.I,
+            )
+            fixed_raw = re.sub(r"<Expand\b[^>]*/>", "<Expand/>", fixed_raw, count=1, flags=re.S | re.I)
+            if fixed_raw == raw:
+                continue
+            next_xml = next_xml.replace(raw, fixed_raw, 1)
+            restored.append(self._cell_address(column, row))
+        if not restored:
+            return cpt_xml, []
+        return next_xml, [f"已将疑似误绑定的表头单元格恢复为静态文本：{', '.join(restored[:8])}。"]
+
+    def _extract_dataset_names(self, cpt_xml: str) -> list[str]:
+        names: list[str] = []
+        seen: set[str] = set()
+        for match in re.finditer(r"<TableData\b(?P<attrs>[^>]*)>", cpt_xml, flags=re.S | re.I):
+            attrs = match.group("attrs")
+            name_match = re.search(r'\bname="([^"]+)"', attrs)
+            if not name_match:
+                continue
+            name = name_match.group(1).strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            names.append(name)
+        return names
+
     def _normalize_operations(self, result: dict[str, Any]) -> list[dict[str, Any]]:
         operations = result.get("operations")
         normalized: list[dict[str, Any]] = []
@@ -3574,7 +3785,7 @@ class FrReportHighAuthorityAgentService:
                 "预览中的展开单元格通常不是独立模板节点；例如预览 B5 通常对应 CPT 模板 <C c=\"1\" r=\"4\">。",
                 "隐藏整行/整列应优先使用当前 CPT 已有的原生隐藏配置表达，例如 ReportPageAttr 下的 HR/HC 节点，并同步检查 ColumnWidth/RowHeight 是否被设计器置 0。",
                 "设计器隐藏列的真实样本是组合写法：ReportPageAttr 写 HC 范围，ColumnWidth 对应列宽置 0；不要只改其中一个就断言完成。",
-                "用户说第一列、第二列、A列、B列时，默认按模板设计坐标处理；当前手工真值显示隐藏 A 列写成 HC F=\"0\" T=\"0\"，并将 ColumnWidth 第 1 项改为 0。",
+                "用户说第一列、第二列、A列、B列时，默认按模板设计坐标处理；隐藏整列需要同时观察当前 CPT 的原生隐藏节点和尺寸节点，按当前文件已有写法保持一致。",
                 "修改日期/数字显示格式时必须保留原单元格的数据绑定/DSColumn/公式主体，只替换或补充格式相关 XML。",
                 "如果预览结果与预期不一致，应同时检查单元格绑定、单元格格式、数据集最终输出字段和参考报表写法，再选择改格式、改绑定、改 SQL 或完整 WorkBook。",
                 "修改数据展示字段时，不要把样例值写死到单元格；应修改 TableData/Query 或 DSColumn 绑定。",
@@ -3700,11 +3911,247 @@ class FrReportHighAuthorityAgentService:
         match = re.search(pattern, text, flags=re.S | re.I)
         return match.group(1) if match else None
 
-    async def _validate_and_normalize_dataset_sql(self, cpt_xml: str) -> tuple[str, list[str]]:
+    async def _safe_candidate_audit(
+        self,
+        *,
+        source_xml: str,
+        candidate_xml: str,
+        request: str,
+        db: AsyncSession | None,
+        user_id: int | None,
+        run_sql: bool = False,
+    ) -> dict[str, Any]:
+        try:
+            return await self._audit_candidate_cpt(
+                source_xml=source_xml,
+                candidate_xml=candidate_xml,
+                request=request,
+                db=db,
+                user_id=user_id,
+                run_sql=run_sql,
+            )
+        except Exception as exc:
+            return {"status": "audit_failed", "issues": [str(exc)], "warnings": []}
+
+    async def _audit_candidate_cpt(
+        self,
+        *,
+        source_xml: str,
+        candidate_xml: str,
+        request: str,
+        db: AsyncSession | None,
+        user_id: int | None,
+        run_sql: bool = False,
+    ) -> dict[str, Any]:
+        issues: list[str] = []
+        warnings: list[str] = []
+        facts: dict[str, Any] = {}
+
+        if source_xml == candidate_xml:
+            issues.append("候选 CPT 与源文件完全一致，没有产生实际修改")
+
+        pseudo_count = len(re.findall(r"<O\b[^>]*\bt=\"ds\"", candidate_xml, flags=re.S | re.I))
+        if pseudo_count:
+            issues.append(f"仍存在 {pseudo_count} 个 t=\"ds\" 伪数据绑定，必须改为 FineReport DSColumn")
+        nested_dscolumn_count = len(re.findall(r"<O\b(?:(?!\bt=)[^>])*>\s*<DSColumn\b", candidate_xml, flags=re.S | re.I))
+        if nested_dscolumn_count:
+            issues.append(f"仍存在 {nested_dscolumn_count} 个嵌套 DSColumn，必须规范为 <O t=\"DSColumn\"> 写法")
+
+        dataset_names = set(self._extract_dataset_names(candidate_xml))
+        ds_bindings = self._extract_ds_column_bindings(candidate_xml)
+        facts["datasetCount"] = len(dataset_names)
+        facts["dsColumnCount"] = len(ds_bindings)
+        missing_dataset_bindings = sorted({item["dataset"] for item in ds_bindings if item["dataset"] not in dataset_names})
+        if missing_dataset_bindings:
+            issues.append(f"存在绑定到不存在数据集的单元格：{', '.join(missing_dataset_bindings[:8])}")
+
+        literal_bindings = self._extract_literal_dataset_binding_cells(candidate_xml)
+        if literal_bindings:
+            sample = "、".join(item["address"] for item in literal_bindings[:8])
+            issues.append(f"存在看起来像数据列但实际是普通文本的单元格：{sample}")
+
+        hidden_warnings = self._audit_hidden_layout_consistency(candidate_xml)
+        warnings.extend(hidden_warnings)
+
+        writeback_issues = self._audit_writeback_cell_references(candidate_xml)
+        issues.extend(writeback_issues)
+
+        if run_sql and db is not None and user_id is not None:
+            sql_report = await self._audit_dataset_result_columns(candidate_xml, db=db, user_id=user_id)
+            facts["datasetSql"] = sql_report.get("facts") or {}
+            issues.extend(sql_report.get("issues") or [])
+            warnings.extend(sql_report.get("warnings") or [])
+        elif run_sql:
+            warnings.append("当前调用缺少数据库会话，无法执行数据集 SQL 结果列审计。")
+
+        if re.search(r"填报|写回|提交|录入|修改数据", request or "") and "ReportWriteAttr" not in candidate_xml:
+            warnings.append("用户提到了填报/写回，但候选 CPT 中没有 ReportWriteAttr，请确认是否确实不需要填报属性。")
+
+        return {
+            "status": "failed" if issues else "passed",
+            "issues": issues,
+            "warnings": self._dedupe_texts(warnings),
+            "facts": facts,
+        }
+
+    def _extract_ds_column_bindings(self, cpt_xml: str) -> list[dict[str, str]]:
+        cells_by_range = {
+            (int(item["c"]), int(item["r"])): item
+            for item in self._extract_cell_blocks(cpt_xml)
+            if str(item.get("c") or "").isdigit() and str(item.get("r") or "").isdigit()
+        }
+        bindings: list[dict[str, str]] = []
+        for (column, row), item in sorted(cells_by_range.items()):
+            raw = str(item.get("raw") or "")
+            blocks = re.findall(r'<O\b[^>]*\bt="DSColumn"[^>]*>.*?</O>', raw, flags=re.S | re.I)
+            blocks.extend(re.findall(r'<O\b(?:(?!\bt=)[^>])*>\s*<DSColumn\b.*?</DSColumn>\s*</O>', raw, flags=re.S | re.I))
+            for block in blocks:
+                dataset = html_unescape(self._regex_first(block, r'\bdsName="([^"]+)"') or "").strip()
+                field = html_unescape(self._regex_first(block, r'\bcolumnName="([^"]+)"') or "").strip()
+                if dataset or field:
+                    bindings.append({"address": self._cell_address(column, row), "dataset": dataset, "field": field})
+        return bindings
+
+    def _extract_literal_dataset_binding_cells(self, cpt_xml: str) -> list[dict[str, str]]:
+        result: list[dict[str, str]] = []
+        for item in self._extract_cell_blocks(cpt_xml):
+            raw = str(item.get("raw") or "")
+            if 't="DSColumn"' in raw or "<DSColumn" in raw or 't="formula"' in raw:
+                continue
+            text = self._regex_first(raw, r"<O(?:\s[^>]*)?>\s*<!\[CDATA\[(.*?)]]>\s*</O>") or ""
+            text = text.strip()
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\.G\([^)]+\)", text) or text.startswith("$$$"):
+                result.append(
+                    {
+                        "address": self._cell_address(int(item["c"]), int(item["r"])),
+                        "text": text,
+                    }
+                )
+        return result
+
+    async def _audit_dataset_result_columns(
+        self,
+        cpt_xml: str,
+        *,
+        db: AsyncSession,
+        user_id: int,
+    ) -> dict[str, Any]:
+        issues: list[str] = []
+        warnings: list[str] = []
+        facts: dict[str, Any] = {}
+        bindings_by_dataset: dict[str, set[str]] = {}
+        for binding in self._extract_ds_column_bindings(cpt_xml):
+            if binding["dataset"] and binding["field"]:
+                bindings_by_dataset.setdefault(binding["dataset"], set()).add(binding["field"])
+
+        for dataset in self._extract_table_data_queries(cpt_xml):
+            dataset_name = dataset["name"]
+            database_name = dataset.get("databaseName") or ""
+            bound_fields = sorted(bindings_by_dataset.get(dataset_name) or [])
+            if not bound_fields:
+                continue
+            connection_config, connection_warning = await self._resolve_dataset_connection_config(
+                db=db,
+                user_id=user_id,
+                database_name=database_name,
+            )
+            if connection_warning:
+                warnings.append(connection_warning)
+            if database_name and not connection_config:
+                warnings.append(f"数据集 {dataset_name} 未匹配到平台同名查库连接，跳过绑定结果列审计。")
+                continue
+            executable_sql = self._make_report_sql_executable_for_smoke_test(dataset["sql"])
+            try:
+                if connection_config:
+                    db_type = str(connection_config.get("db_type") or "sqlserver").lower()
+                    sample_sql = sqlserver_query_service._limit_preview_sql(
+                        executable_sql,
+                        min(settings.FR_AI_SQLSERVER_MAX_ROWS, 20),
+                        db_type,
+                    )
+                    _rows, columns = await asyncio.to_thread(
+                        sqlserver_query_service._execute_sample_query_with_config,
+                        sample_sql,
+                        connection_config,
+                        min(settings.FR_AI_SQLSERVER_MAX_ROWS, 20),
+                    )
+                else:
+                    _rows, columns = await asyncio.to_thread(sqlserver_query_service._execute_sample_query, executable_sql)
+            except Exception as exc:
+                issues.append(f"数据集 {dataset_name} SQL 无法执行，不能确认单元格绑定：{exc}")
+                continue
+            available = {html_unescape(str(column)).strip().lower() for column in columns if str(column).strip()}
+            missing = [field for field in bound_fields if field.lower() not in available]
+            facts[dataset_name] = {
+                "boundFieldCount": len(bound_fields),
+                "resultColumnCount": len(columns),
+                "missingFields": missing[:20],
+            }
+            if missing:
+                issues.append(f"数据集 {dataset_name} 绑定字段不在 SQL 返回列中：{', '.join(missing[:12])}")
+        return {"issues": issues, "warnings": warnings, "facts": facts}
+
+    def _audit_hidden_layout_consistency(self, cpt_xml: str) -> list[str]:
+        warnings: list[str] = []
+        hidden_columns = self._hidden_layout_ranges(cpt_xml, "HC")
+        column_widths = self._dimension_values(cpt_xml, "ColumnWidth")
+        for start, end in hidden_columns:
+            for index in range(start, end + 1):
+                if index < len(column_widths) and column_widths[index] != "0":
+                    warnings.append(f"隐藏列 {self._column_label(index + 1)} 的 ColumnWidth 不是 0，预览或设计器可能显示不一致。")
+        hidden_rows = self._hidden_layout_ranges(cpt_xml, "HR")
+        row_heights = self._dimension_values(cpt_xml, "RowHeight")
+        for start, end in hidden_rows:
+            for index in range(start, end + 1):
+                if index < len(row_heights) and row_heights[index] != "0":
+                    warnings.append(f"隐藏行 {index + 1} 的 RowHeight 不是 0，预览或设计器可能显示不一致。")
+        return warnings
+
+    def _dimension_values(self, cpt_xml: str, tag: str) -> list[str]:
+        match = re.search(rf"<{tag}\b[^>]*>.*?</{tag}>", cpt_xml, flags=re.S | re.I)
+        if not match:
+            return []
+        cdata = self._regex_first(match.group(0), r"<!\[CDATA\[(.*?)]]>") or ""
+        return [item.strip() for item in cdata.split(",")]
+
+    def _audit_writeback_cell_references(self, cpt_xml: str) -> list[str]:
+        match = re.search(r"<ReportWriteAttr\b[^>]*(?:/>|>.*?</ReportWriteAttr>)", cpt_xml, flags=re.S | re.I)
+        if not match:
+            return []
+        existing_cells = {
+            self._cell_address(int(item["c"]), int(item["r"]))
+            for item in self._extract_cell_blocks(cpt_xml)
+            if str(item.get("c") or "").isdigit() and str(item.get("r") or "").isdigit()
+        }
+        refs = sorted(set(re.findall(r"\b[A-Z]{1,3}\d+\b", match.group(0))))
+        missing = [ref for ref in refs if ref not in existing_cells]
+        if missing:
+            return [f"填报属性引用了不存在的单元格：{', '.join(missing[:12])}"]
+        return []
+
+    def _dedupe_texts(self, values: list[str]) -> list[str]:
+        result: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            text = str(value).strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            result.append(text)
+        return result
+
+    async def _validate_and_normalize_dataset_sql(
+        self,
+        cpt_xml: str,
+        *,
+        db: AsyncSession | None = None,
+        user_id: int | None = None,
+    ) -> tuple[str, list[str]]:
         warnings: list[str] = []
         next_xml = cpt_xml
         for dataset in self._extract_table_data_queries(next_xml):
             dataset_name = dataset["name"]
+            database_name = dataset.get("databaseName") or ""
             original_sql = dataset["sql"]
             normalized_sql = self._normalize_report_dataset_sql(original_sql)
             if normalized_sql != original_sql:
@@ -3715,8 +4162,34 @@ class FrReportHighAuthorityAgentService:
             safety_errors = sqlserver_query_service._validate_readonly_sql(executable_sql)
             if safety_errors:
                 raise ValueError(f"数据集 {dataset_name} SQL 校验未通过：" + "；".join(safety_errors))
+            connection_config, connection_warning = await self._resolve_dataset_connection_config(
+                db=db,
+                user_id=user_id,
+                database_name=database_name,
+            )
+            if connection_warning:
+                warnings.append(connection_warning)
+            if database_name and not connection_config and db is not None and user_id is not None:
+                warnings.append(
+                    f"数据集 {dataset_name} 使用 FineReport 连接 {database_name}，但平台未匹配到同名查库连接，已跳过后端 SQL 执行校验。"
+                )
+                continue
             try:
-                rows, columns = await asyncio.to_thread(sqlserver_query_service._execute_sample_query, executable_sql)
+                if connection_config:
+                    db_type = str(connection_config.get("db_type") or "sqlserver").lower()
+                    sample_sql = sqlserver_query_service._limit_preview_sql(
+                        executable_sql,
+                        settings.FR_AI_SQLSERVER_MAX_ROWS,
+                        db_type,
+                    )
+                    rows, columns = await asyncio.to_thread(
+                        sqlserver_query_service._execute_sample_query_with_config,
+                        sample_sql,
+                        connection_config,
+                        settings.FR_AI_SQLSERVER_MAX_ROWS,
+                    )
+                else:
+                    rows, columns = await asyncio.to_thread(sqlserver_query_service._execute_sample_query, executable_sql)
             except Exception as exc:
                 raise ValueError(f"数据集 {dataset_name} SQL 执行失败：{exc}") from exc
 
@@ -3724,8 +4197,64 @@ class FrReportHighAuthorityAgentService:
                 warnings.append(f"数据集 {dataset_name} SQL 可执行，但未返回字段信息。")
             elif not rows:
                 warnings.append(f"数据集 {dataset_name} SQL 可执行但样例返回 0 行，请在预览里核对筛选条件。")
+            warnings.extend(self._validate_dataset_column_bindings(next_xml, dataset_name, columns))
             warnings.extend(await self._diagnose_default_parameter_result(dataset_name, normalized_sql, next_xml))
         return next_xml, warnings
+
+    def _validate_dataset_column_bindings(
+        self,
+        cpt_xml: str,
+        dataset_name: str,
+        columns: list[str],
+    ) -> list[str]:
+        available_columns = {
+            html_unescape(str(column)).strip().lower()
+            for column in columns
+            if str(column).strip()
+        }
+        if not available_columns:
+            return []
+
+        bound_fields: list[str] = []
+        for binding in self._extract_ds_column_bindings(cpt_xml):
+            if binding["dataset"] != dataset_name:
+                continue
+            field = binding["field"]
+            if field and field not in bound_fields:
+                bound_fields.append(field)
+
+        missing = [field for field in bound_fields if field.lower() not in available_columns]
+        if missing:
+            available_sample = "、".join(sorted(columns)[:20])
+            missing_sample = "、".join(missing[:12])
+            raise ValueError(
+                f"数据集 {dataset_name} 有单元格绑定了 SQL 结果中不存在的字段：{missing_sample}。"
+                f"当前 SQL 返回字段包括：{available_sample}"
+            )
+        if bound_fields:
+            return [f"已校验数据集 {dataset_name} 的 {len(bound_fields)} 个单元格绑定字段均存在于 SQL 结果列。"]
+        return []
+
+    async def _resolve_dataset_connection_config(
+        self,
+        *,
+        db: AsyncSession | None,
+        user_id: int | None,
+        database_name: str,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        name = database_name.strip()
+        if not name:
+            return None, None
+        if db is None or user_id is None:
+            return None, f"数据集使用 FineReport 连接 {name}，但当前调用缺少数据库会话，已退回默认 SQL 校验连接。"
+        connection, reason, _visible_connections = await fr_report_ai_operation_service._resolve_database_context_connection(
+            db=db,
+            user_id=user_id,
+            database_names=[name],
+        )
+        if not connection:
+            return None, reason
+        return fr_report_ai_operation_service._database_connection_config(connection), reason
 
     def _extract_table_data_queries(self, cpt_xml: str) -> list[dict[str, str]]:
         datasets: list[dict[str, str]] = []
@@ -3733,16 +4262,28 @@ class FrReportHighAuthorityAgentService:
             table_xml = table_match.group(0)
             attrs = table_match.group("attrs")
             name_match = re.search(r'\bname="([^"]+)"', attrs)
+            database_name = self._extract_table_data_database_name(table_xml)
             sql_match = re.search(r"<Query\b[^>]*>\s*<!\[CDATA\[(?P<sql>.*?)]]>\s*</Query>", table_xml, flags=re.S | re.I)
             if not sql_match:
                 continue
             datasets.append(
                 {
                     "name": name_match.group(1) if name_match else "未命名数据集",
+                    "databaseName": database_name or "",
                     "sql": sql_match.group("sql"),
                 }
             )
         return datasets
+
+    def _extract_table_data_database_name(self, table_xml: str) -> str | None:
+        match = re.search(
+            r"<DatabaseName>\s*(?:<!\[CDATA\[(?P<cdata>.*?)]]>|(?P<text>.*?))\s*</DatabaseName>",
+            table_xml,
+            flags=re.S | re.I,
+        )
+        if not match:
+            return None
+        return (match.group("cdata") or match.group("text") or "").strip()
 
     def _normalize_report_dataset_sql(self, sql: str) -> str:
         # 模型可能把单元格列号拼进字段引用，例如 p.[date]A；这在 SQL Server 中一定是非法语法。
@@ -3919,7 +4460,7 @@ class FrReportHighAuthorityAgentService:
 
     def _system_prompt(self) -> str:
         return (
-            "你是 FineReport 报表专用高权限 Agent。你像代码助手修改源码一样修改 CPT XML。"
+            "你是 FineReport 报表专用高权限 Agent。你直接编辑 CPT XML，像维护结构化文件一样处理报表。"
             "你可以完整读取 CPT，并优先返回 oldText/newText 精确文件编辑；必要时才返回修改后的整份 WorkBook XML。"
             "本链路不使用旧 xml_patch/selector 写入器；file_edit 是源码级精确替换，不是抽象写入器操作。"
             "file_edit 的 oldText 必须来自当前 CPT 原文并尽量唯一，newText 只写替换后的对应 XML 片段。"

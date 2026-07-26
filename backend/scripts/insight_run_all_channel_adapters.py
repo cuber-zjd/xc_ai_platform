@@ -263,6 +263,11 @@ def max_results_for(mode: str, channel_code: str) -> int:
     return 30
 
 
+def freshness_for_days(days: int) -> str:
+    normalized_days = max(days, 1)
+    return f"{normalized_days}d"
+
+
 async def execute_item(
     *,
     channel: ChannelSnapshot,
@@ -290,7 +295,7 @@ async def execute_item(
             request = InsightSearchDiscoveryRequest(
                 query=query,
                 channels=[handler],
-                freshness="halfMonth" if days <= 15 else "noLimit",
+                freshness=freshness_for_days(days),
                 max_results=max_results_for(mode, channel.channel_code),
                 crawl_top_n=0,
                 monitor_config_id=monitor_config.id if monitor_config else None,

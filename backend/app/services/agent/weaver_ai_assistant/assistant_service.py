@@ -33,8 +33,47 @@ class WeaverAiAssistantService:
     ACTION_START_TAG = "<WEAVER_ACTIONS>"
     ACTION_END_TAG = "</WEAVER_ACTIONS>"
 
+    def __init__(self) -> None:
+        self._field_config_cache: dict[
+            tuple[str, str],
+            tuple[float, WeaverFieldConfigResponse],
+        ] = {}
+        self._field_config_locks: dict[tuple[str, str], asyncio.Lock] = {}
+
     async def get_field_config(self, workflow_id: str, weaver_env: str | None = None) -> WeaverFieldConfigResponse:
         env_key = self._normalize_env(weaver_env)
+        cache_key = (env_key, str(workflow_id))
+        cached = self._field_config_cache.get(cache_key)
+        now = time.monotonic()
+        if cached and cached[0] > now:
+            logger.debug(f"泛微流程 AI 助手命中字段配置缓存: env={env_key}, workflow_id={workflow_id}")
+            return cached[1]
+
+        lock = self._field_config_locks.setdefault(cache_key, asyncio.Lock())
+        async with lock:
+            cached = self._field_config_cache.get(cache_key)
+            now = time.monotonic()
+            if cached and cached[0] > now:
+                return cached[1]
+
+            data = await self._load_field_config_uncached(workflow_id, env_key)
+            if cached and cached[1].fields and not data.fields:
+                logger.warning(
+                    "泛微流程 AI 助手字段配置刷新为空，继续使用上一版缓存: "
+                    f"env={env_key}, workflow_id={workflow_id}, fields={len(cached[1].fields)}"
+                )
+                data = cached[1]
+
+            ttl_seconds = max(int(settings.WEAVER_AI_FIELD_CONFIG_CACHE_TTL_SECONDS), 0)
+            if ttl_seconds > 0:
+                self._field_config_cache[cache_key] = (time.monotonic() + ttl_seconds, data)
+            return data
+
+    async def _load_field_config_uncached(
+        self,
+        workflow_id: str,
+        env_key: str,
+    ) -> WeaverFieldConfigResponse:
         metadata_config = self._get_weaver_db_config(env_key)
         if metadata_config:
             try:
@@ -144,11 +183,22 @@ class WeaverAiAssistantService:
         charset = str(db_config.get("charset") or "utf8mb4")
         retry_count = int(db_config.get("retry_count") or db_config.get("retries") or 8)
         connect_timeout = int(db_config.get("connect_timeout") or 20)
+        retry_backoff_base = max(float(db_config.get("retry_backoff_base") or 0.2), 0)
+        retry_backoff_max = max(float(db_config.get("retry_backoff_max") or 1.5), retry_backoff_base)
+        ssl_disabled = self._config_bool(db_config.get("ssl_disabled"), default=True)
+        ssl_ca = str(db_config.get("ssl_ca") or "").strip()
+        ssl_options: dict[str, Any] | None = None
+        if not ssl_disabled and ssl_ca:
+            ssl_options = {
+                "ca": ssl_ca,
+                "check_hostname": self._config_bool(db_config.get("ssl_verify_identity"), default=True),
+            }
         last_error: Exception | None = None
 
         for attempt in range(1, max(retry_count, 1) + 1):
+            conn = None
             try:
-                return pymysql.connect(
+                conn = pymysql.connect(
                     host=host,
                     port=port,
                     user=user,
@@ -159,16 +209,38 @@ class WeaverAiAssistantService:
                     connect_timeout=connect_timeout,
                     read_timeout=int(db_config.get("read_timeout") or 20),
                     write_timeout=int(db_config.get("write_timeout") or 20),
+                    autocommit=True,
+                    ssl=ssl_options,
+                    ssl_disabled=ssl_disabled,
+                    program_name="ai_platform_weaver_assistant",
                 )
+                conn.ping(reconnect=False)
+                return conn
             except Exception as exc:
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
                 last_error = exc
                 logger.warning(
                     "泛微流程 AI 助手连接数据库失败，准备重试: "
-                    f"host={host}, port={port}, database={database}, attempt={attempt}/{retry_count}, error={exc}"
+                    f"host={host}, port={port}, database={database}, ssl_disabled={ssl_disabled}, "
+                    f"attempt={attempt}/{retry_count}, error={exc}"
                 )
                 if attempt < retry_count:
-                    time.sleep(min(attempt, 3))
+                    delay_seconds = min(retry_backoff_base * (2 ** (attempt - 1)), retry_backoff_max)
+                    if delay_seconds > 0:
+                        time.sleep(delay_seconds)
         raise RuntimeError(f"连接泛微数据库失败: {last_error}") from last_error
+
+    @staticmethod
+    def _config_bool(value: Any, *, default: bool) -> bool:
+        if value is None or value == "":
+            return default
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
     def _fetch_one(self, cursor: Any, sql: str, params: tuple[Any, ...]) -> dict[str, Any] | None:
         cursor.execute(sql, params)

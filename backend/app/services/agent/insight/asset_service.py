@@ -109,7 +109,11 @@ class InsightAssetService:
             select(InsightIntelligenceSource).where(
                 InsightIntelligenceSource.intelligence_id == intelligence.id,
                 InsightIntelligenceSource.is_deleted == 0,
-            ).order_by(InsightIntelligenceSource.create_time.asc())
+            ).order_by(
+                InsightIntelligenceSource.credibility_score.desc(),
+                InsightIntelligenceSource.source_publish_time.asc().nullslast(),
+                InsightIntelligenceSource.create_time.asc(),
+            )
         )).all())
         primary_source = sources[0] if sources else None
         existing = (

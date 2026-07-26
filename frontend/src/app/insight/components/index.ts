@@ -4,6 +4,7 @@ export * from "./DemoPrimitives";
 export { EmptyState } from "./EmptyState";
 export { FilterBar } from "./FilterBar";
 export { InsightSelect } from "./InsightSelect";
+export { FeishuSyncDialog } from "./FeishuSyncDialog";
 export { InsightTag } from "./InsightTag";
 export { KPIStatCard } from "./KPIStatCard";
 export { PageTitle } from "./PageTitle";

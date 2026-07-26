@@ -1,8 +1,28 @@
 import axios from 'axios';
 import { useAuthStore } from '@/store/useAuthStore';
 
-// Default to /ai-api/v1 (Works with Vite Proxy in dev, and Nginx in prod)
-const baseURL = import.meta.env.VITE_API_URL || '/ai-api/v1';
+const DEFAULT_API_BASE_URL = '/ai-api/v1';
+
+function normalizeApiBaseURL(value?: string): string {
+    const rawValue = value?.trim();
+    if (!rawValue || rawValue === '/v1' || rawValue === 'v1') {
+        return DEFAULT_API_BASE_URL;
+    }
+
+    try {
+        const url = new URL(rawValue);
+        if (url.pathname.replace(/\/+$/, '') === '/v1') {
+            url.pathname = DEFAULT_API_BASE_URL;
+            return url.toString().replace(/\/+$/, '');
+        }
+    } catch {
+        // 相对路径不是完整 URL，继续按路径规则处理。
+    }
+
+    return rawValue.replace(/\/+$/, '');
+}
+
+const baseURL = normalizeApiBaseURL(import.meta.env.VITE_API_URL);
 
 export const apiClient = axios.create({
     baseURL,
@@ -12,7 +32,6 @@ export const apiClient = axios.create({
     },
 });
 
-// Request Interceptor: Attach Token
 apiClient.interceptors.request.use(
     (config) => {
         const token = useAuthStore.getState().token;
@@ -24,18 +43,14 @@ apiClient.interceptors.request.use(
     (error) => Promise.reject(error)
 );
 
-// Response Interceptor: Error Handling
 apiClient.interceptors.response.use(
     (response) => {
-        // Backend returns standard Result { code: 200, msg: "...", data: ... }
         const res = response.data;
 
-        // If the API returns the Result wrapper
         if (res && typeof res.code === 'number') {
             if (res.code === 200) {
                 return res.data;
             } else {
-                // Business Logic Error (handled as promise rejection)
                 return Promise.reject({
                     response: {
                         data: { detail: res.msg || 'Error' }
@@ -44,11 +59,9 @@ apiClient.interceptors.response.use(
             }
         }
 
-        // Fallback for non-standard responses
         return res;
     },
     (error) => {
-        // 401: Unauthorized -> Logout
         if (error.response?.status === 401) {
             useAuthStore.getState().logout();
         }

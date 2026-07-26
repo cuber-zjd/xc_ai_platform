@@ -262,6 +262,10 @@ class InsightReportSubscriptionService:
         if not user_id:
             raise ValueError("报告计划缺少创建人，无法按权限执行")
         company_ids, data_source_ids = await self._resolve_runtime_scope(db, row, user_id=user_id)
+        period_start, period_end, period_prompt = self._report_period(row.schedule_frequency)
+        generation_prompt = "\n".join(
+            item for item in [row.generation_prompt, period_prompt] if item and item.strip()
+        )
         report = await insight_report_service.generate_report(
             db,
             InsightReportGenerateRequest(
@@ -272,7 +276,9 @@ class InsightReportSubscriptionService:
                 data_source_ids=data_source_ids,
                 folder_name=row.folder_name,
                 max_materials=row.max_materials,
-                generation_prompt=row.generation_prompt,
+                period_start=period_start,
+                period_end=period_end,
+                generation_prompt=generation_prompt,
             ),
             user_id=user_id,
             is_admin=False,
@@ -307,6 +313,19 @@ class InsightReportSubscriptionService:
             notification=notification,
             message=f"{triggered_by} 已生成报告并创建企业微信推送记录",
         )
+
+    def _report_period(self, frequency: str) -> tuple[datetime, datetime, str]:
+        period_end = datetime.now()
+        if frequency == "daily":
+            return (
+                period_end - timedelta(days=3),
+                period_end,
+                "这是日报：优先分析最近 24 小时新增情报；若当天素材不足，可用近 3 天内容补充背景，"
+                "但必须明确区分‘今日新增’与‘近三日延续信号’，不得把旧信息写成今日事件。",
+            )
+        if frequency == "weekly":
+            return period_end - timedelta(days=7), period_end, "这是周报，仅使用近 7 天素材并突出本周新增变化。"
+        return period_end - timedelta(days=30), period_end, "这是月报，仅使用近 30 天素材并突出月度趋势变化。"
 
     async def _resolve_runtime_scope(self, db: AsyncSession, row: InsightReportSubscription, *, user_id: int) -> tuple[list[int], list[int]]:
         return await self._validate_scope(

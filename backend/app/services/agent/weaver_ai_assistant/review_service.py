@@ -20,6 +20,7 @@ from app.schemas.agent.weaver_ai_assistant import (
     WeaverReviewRuleRead,
     WeaverReviewRuleUpdate,
 )
+from app.services.agent.weaver_ai_assistant.review_evidence_service import weaver_review_evidence_service
 
 
 class WeaverAiReviewService:
@@ -126,7 +127,12 @@ class WeaverAiReviewService:
         reviewer_user_id = self.text(payload.reviewer.user_id if payload.reviewer else None)
         rules = await self.load_enabled_rules(db, env, workflow_id, node_id, reviewer_user_id)
 
-        result = await self.invoke_review_model(payload, rules)
+        tool_evidence = await weaver_review_evidence_service.collect(payload, rules)
+        result = await self.invoke_review_model(payload, rules, tool_evidence)
+        result = self.merge_tool_evidence(result, tool_evidence)
+        form_snapshot = payload.model_dump(by_alias=True)
+        if tool_evidence:
+            form_snapshot["reviewEvidence"] = tool_evidence
         record = WeaverAiReviewRecord(
             env=env,
             workflow_id=workflow_id,
@@ -146,7 +152,7 @@ class WeaverAiReviewService:
             confidence=result.confidence,
             can_auto_approve=result.can_auto_approve,
             rule_snapshot=[rule.model_dump(by_alias=True) for rule in rules],
-            form_snapshot=payload.model_dump(by_alias=True),
+            form_snapshot=form_snapshot,
             review_result=result.model_dump(by_alias=True),
             status="completed",
         )
@@ -223,6 +229,7 @@ class WeaverAiReviewService:
         self,
         payload: WeaverReviewRequest,
         rules: list[WeaverReviewRuleRead],
+        tool_evidence: list[dict[str, Any]],
     ) -> WeaverReviewResult:
         prompt_payload = {
             "triggerType": payload.trigger_type,
@@ -235,6 +242,7 @@ class WeaverAiReviewService:
             "extra": payload.extra,
             "context": payload.context.model_dump(by_alias=True),
             "reviewRules": [rule.model_dump(by_alias=True) for rule in rules],
+            "toolEvidence": tool_evidence,
         }
         messages = [
             SystemMessage(
@@ -243,6 +251,9 @@ class WeaverAiReviewService:
                     "你必须根据当前表单字段、审批节点、审批人规则和历史上下文判断是否存在缺失材料、逻辑矛盾、金额/日期/权限/附件风险。"
                     "你不能声称已经审批、提交、退回或通过流程，也不能输出 JavaScript。"
                     "如果没有配置智审规则，也要基于表单内容做通用合规检查，但必须说明依据有限。"
+                    "toolEvidence 是平台只读工具取得的确定性业务证据，必须优先采用；不得把工具明确判定的不一致改写为通过。"
+                    "context.fields 为空或缺少字段只表示 ecode 未采集到页面组件，不能据此断言业务字段为空、材料缺失或数据不一致；"
+                    "若 toolEvidence 已从泛微流程数据库取得关联数据，应以该证据为准。不得编造工具证据和当前上下文中都不存在的合同、供应商、金额或字段缺失问题。"
                     "如果规则启用了 autoReviewMode=auto，也只能在风险等级 low、检查项无 fail、材料无缺失且置信度较高时把 canAutoApprove 设为 true。"
                     "输出必须是 JSON，不要 Markdown。字段："
                     "summary, riskLevel(low/medium/high/blocked), decisionSuggestion(approve/return/reject/supplement/manual_review), "
@@ -295,6 +306,86 @@ class WeaverAiReviewService:
             )
         return await model.ainvoke(messages)
 
+    def merge_tool_evidence(
+        self,
+        result: WeaverReviewResult,
+        evidence: list[dict[str, Any]],
+    ) -> WeaverReviewResult:
+        if not evidence:
+            return result
+
+        evidence_checks: list[dict[str, str]] = []
+        evidence_concerns: list[str] = []
+        comparison_tables: list[dict[str, Any]] = []
+        evidence_statuses: set[str] = set()
+        for item in evidence:
+            evidence_statuses.add(self.text(item.get("status")))
+            for check in item.get("checks") or []:
+                if isinstance(check, dict):
+                    evidence_checks.append(
+                        {
+                            "name": self.text(check.get("name")) or "外部数据核验",
+                            "status": self.choice(check.get("status"), {"pass", "warning", "fail", "unknown"}, "unknown"),
+                            "detail": self.text(check.get("detail")),
+                        }
+                    )
+            for concern in item.get("concerns") or []:
+                text = self.text(concern)
+                if text:
+                    evidence_concerns.append(text)
+            facts = item.get("facts") if isinstance(item.get("facts"), dict) else {}
+            comparison_rows = facts.get("comparisonRows") if isinstance(facts.get("comparisonRows"), list) else []
+            if comparison_rows:
+                comparison_tables.append(
+                    {
+                        "title": "发票与对账单明细对比",
+                        "reconciliationNumber": self.text(facts.get("reconciliationNumber")) or None,
+                        "invoiceNumbers": [self.text(value) for value in facts.get("invoiceNumbers") or [] if self.text(value)],
+                        "invoiceTotal": self.text(facts.get("invoiceTotal")) or None,
+                        "reconciliationTotal": self.text(facts.get("reconciliationTotal")) or None,
+                        "matchedCount": int(facts.get("matchedItemCount") or 0),
+                        "rows": comparison_rows,
+                    }
+                )
+
+        existing_checks = [item.model_dump() for item in result.checks]
+        deduplicated_checks: list[dict[str, str]] = []
+        seen_names: set[str] = set()
+        for check in evidence_checks + existing_checks:
+            name = self.text(check.get("name"))
+            if not name or name in seen_names:
+                continue
+            seen_names.add(name)
+            deduplicated_checks.append(check)
+
+        risk_level = result.risk_level
+        decision = result.decision_suggestion
+        can_auto_approve = result.can_auto_approve
+        if "fail" in evidence_statuses:
+            risk_level = "high"
+            decision = "manual_review"
+            can_auto_approve = False
+        elif "warning" in evidence_statuses:
+            if risk_level == "low":
+                risk_level = "medium"
+            if decision == "approve":
+                decision = "manual_review"
+            can_auto_approve = False
+
+        concerns = list(dict.fromkeys(evidence_concerns + result.concerns))[:20]
+        return WeaverReviewResult(
+            summary=result.summary,
+            riskLevel=risk_level,
+            decisionSuggestion=decision,
+            suggestedOpinion=result.suggested_opinion,
+            checks=deduplicated_checks[:20],
+            missingMaterials=result.missing_materials,
+            concerns=concerns,
+            comparisonTables=comparison_tables,
+            confidence=result.confidence,
+            canAutoApprove=can_auto_approve,
+        )
+
     def normalize_review_result(self, value: dict[str, Any], rules: list[WeaverReviewRuleRead]) -> WeaverReviewResult:
         auto_allowed = any(rule.auto_review_mode == "auto" for rule in rules)
         checks = value.get("checks") if isinstance(value.get("checks"), list) else []
@@ -333,6 +424,7 @@ class WeaverAiReviewService:
             ][:20],
             missingMaterials=[self.text(item) for item in missing if self.text(item)][:20] if isinstance(missing, list) else [],
             concerns=[self.text(item) for item in concerns if self.text(item)][:20] if isinstance(concerns, list) else [],
+            comparisonTables=[],
             confidence=confidence,
             canAutoApprove=can_auto_approve,
         )

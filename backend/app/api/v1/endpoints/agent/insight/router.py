@@ -58,6 +58,20 @@ from app.schemas.agent.insight.data_source import (
     InsightStaleTaskCleanupResponse,
 )
 from app.schemas.agent.insight.health import InsightHealthRead
+from app.schemas.agent.insight.feishu import (
+    InsightFeishuSyncOptionsRead,
+    InsightFeishuSyncRequest,
+    InsightFeishuSyncResponse,
+)
+from app.schemas.agent.insight.feishu_brief import (
+    InsightFeishuBriefDueRunResponse,
+    InsightFeishuBriefOptionsRead,
+    InsightFeishuBriefPlanCreate,
+    InsightFeishuBriefPlanRead,
+    InsightFeishuBriefPlanUpdate,
+    InsightFeishuBriefRunRead,
+    InsightFeishuBriefRunResponse,
+)
 from app.schemas.agent.insight.dictionary import (
     InsightDictionaryOverview,
     InsightIntelligenceTypeRead,
@@ -128,7 +142,7 @@ from app.schemas.agent.insight.role import (
 )
 from app.schemas.agent.insight.settings import InsightSettingsStatusRead
 from app.schemas.agent.insight.selector import InsightSelectorOption
-from app.schemas.agent.insight.task import InsightTaskRead
+from app.schemas.agent.insight.task import InsightSchedulerRunLogRead, InsightTaskRead
 from app.schemas.agent.insight.monitor_config import (
     InsightLegacySourceSyncResponse,
     InsightMonitorConfigCreate,
@@ -145,6 +159,8 @@ from app.services.agent.insight.channel_service import insight_channel_service
 from app.services.agent.insight.company_service import insight_company_service
 from app.services.agent.insight.data_source_service import insight_data_source_service
 from app.services.agent.insight.health_service import insight_health_service
+from app.services.agent.insight.feishu_bitable_service import insight_feishu_bitable_service
+from app.services.agent.insight.feishu_brief_service import insight_feishu_brief_service
 from app.services.agent.insight.dictionary_service import insight_dictionary_service
 from app.services.agent.insight.intelligence_service import insight_intelligence_service
 from app.services.agent.insight.intelligence_import_service import insight_intelligence_import_service
@@ -1345,6 +1361,115 @@ async def run_due_report_subscriptions(
     return Result.success(data=result, msg="到期定时报告已扫描")
 
 
+@router.get("/feishu-briefs/options", response_model=Result[InsightFeishuBriefOptionsRead])
+async def get_feishu_brief_options(
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[InsightFeishuBriefOptionsRead]:
+    _ensure_admin(current_user, "仅管理员可查看飞书简报配置")
+    return Result.success(data=insight_feishu_brief_service.get_options())
+
+
+@router.get("/feishu-briefs/plans", response_model=Result[Page[InsightFeishuBriefPlanRead]])
+async def list_feishu_brief_plans(
+    *,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+    page: int = 1,
+    size: int = 20,
+    status: str | None = None,
+) -> Result[Page[InsightFeishuBriefPlanRead]]:
+    _ensure_admin(current_user, "仅管理员可管理飞书简报计划")
+    result = await insight_feishu_brief_service.list_plans(db, page=page, size=size, status=status)
+    return Result.success(data=result)
+
+
+@router.post("/feishu-briefs/plans", response_model=Result[InsightFeishuBriefPlanRead])
+async def create_feishu_brief_plan(
+    *,
+    payload: InsightFeishuBriefPlanCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[InsightFeishuBriefPlanRead]:
+    _ensure_admin(current_user, "仅管理员可管理飞书简报计划")
+    try:
+        result = await insight_feishu_brief_service.create_plan(db, payload, user_id=current_user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Result.success(data=result, msg="飞书简报计划已保存")
+
+
+@router.put("/feishu-briefs/plans/{plan_id}", response_model=Result[InsightFeishuBriefPlanRead])
+async def update_feishu_brief_plan(
+    *,
+    plan_id: int,
+    payload: InsightFeishuBriefPlanUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[InsightFeishuBriefPlanRead]:
+    _ensure_admin(current_user, "仅管理员可管理飞书简报计划")
+    try:
+        result = await insight_feishu_brief_service.update_plan(db, plan_id, payload, user_id=current_user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Result.success(data=result, msg="飞书简报计划已更新")
+
+
+@router.delete("/feishu-briefs/plans/{plan_id}", response_model=Result[None])
+async def delete_feishu_brief_plan(
+    *,
+    plan_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[None]:
+    _ensure_admin(current_user, "仅管理员可管理飞书简报计划")
+    try:
+        await insight_feishu_brief_service.delete_plan(db, plan_id, user_id=current_user.id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return Result.success(data=None, msg="飞书简报计划已删除")
+
+
+@router.post("/feishu-briefs/plans/{plan_id}/run", response_model=Result[InsightFeishuBriefRunResponse])
+async def run_feishu_brief_plan(
+    *,
+    plan_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[InsightFeishuBriefRunResponse]:
+    _ensure_admin(current_user, "仅管理员可执行飞书简报计划")
+    try:
+        result = await insight_feishu_brief_service.run_plan(db, plan_id, trigger_type=f"user:{current_user.id}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Result.success(data=result, msg=result.message)
+
+
+@router.get("/feishu-briefs/runs", response_model=Result[Page[InsightFeishuBriefRunRead]])
+async def list_feishu_brief_runs(
+    *,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+    page: int = 1,
+    size: int = 20,
+    plan_id: int | None = None,
+) -> Result[Page[InsightFeishuBriefRunRead]]:
+    _ensure_admin(current_user, "仅管理员可查看飞书简报记录")
+    result = await insight_feishu_brief_service.list_runs(db, page=page, size=size, plan_id=plan_id)
+    return Result.success(data=result)
+
+
+@router.post("/feishu-briefs/run-due", response_model=Result[InsightFeishuBriefDueRunResponse])
+async def run_due_feishu_brief_plans(
+    *,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+    limit: int = 10,
+) -> Result[InsightFeishuBriefDueRunResponse]:
+    _ensure_admin(current_user, "仅管理员可执行飞书简报计划")
+    result = await insight_feishu_brief_service.run_due_plans(db, limit=limit, trigger_type="manual_due_scan")
+    return Result.success(data=result, msg="到期飞书简报已扫描")
+
+
 @router.get("/reports/templates", response_model=Result[list[InsightReportTemplateRead]])
 async def list_report_templates(
     *,
@@ -2013,6 +2138,33 @@ async def run_scheduler_once(
     return Result.success(data=result, msg="调度器已完成一次扫描")
 
 
+@router.get("/scheduler/logs", response_model=Result[Page[InsightSchedulerRunLogRead]])
+async def list_scheduler_logs(
+    *,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+    page: int = 1,
+    size: int = 20,
+    status: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> Result[Page[InsightSchedulerRunLogRead]]:
+    _ensure_admin(current_user, "仅管理员可查看定时任务日志")
+    parsed_from = _parse_datetime_param(date_from)
+    parsed_to = _parse_datetime_param(date_to)
+    if parsed_to and date_to and len(date_to.strip()) == 10:
+        parsed_to = parsed_to.replace(hour=23, minute=59, second=59, microsecond=999999)
+    result = await insight_scheduler_service.list_run_logs(
+        db,
+        page=page,
+        size=size,
+        status=status,
+        date_from=parsed_from,
+        date_to=parsed_to,
+    )
+    return Result.success(data=result)
+
+
 @router.post("/scheduler/start", response_model=Result[InsightSchedulerStatusRead])
 async def start_scheduler(
     current_user: SysUser = Depends(get_current_user),
@@ -2207,6 +2359,33 @@ async def list_intelligences(
         is_admin=_is_admin(current_user),
     )
     return Result.success(data=result)
+
+
+@router.get("/intelligence/feishu-sync/options", response_model=Result[InsightFeishuSyncOptionsRead])
+async def get_feishu_sync_options(
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[InsightFeishuSyncOptionsRead]:
+    _ = current_user
+    return Result.success(data=insight_feishu_bitable_service.get_options())
+
+
+@router.post("/intelligence/feishu-sync", response_model=Result[InsightFeishuSyncResponse])
+async def sync_intelligence_to_feishu(
+    *,
+    payload: InsightFeishuSyncRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[InsightFeishuSyncResponse]:
+    try:
+        result = await insight_feishu_bitable_service.sync_intelligences(
+            db,
+            payload,
+            user_id=current_user.id,
+            is_admin=_is_admin(current_user),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Result.success(data=result, msg="飞书多维表格同步完成")
 
 
 @router.post("/intelligence/bulk-action", response_model=Result[InsightIntelligenceBulkActionResponse])

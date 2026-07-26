@@ -54,16 +54,18 @@ class InsightSettingsService:
         return InsightSettingsStatusSection(
             key="scheduler",
             name="周期调度",
-            description="生产调度器开关、批量和失败暂停策略。",
+            description="生产调度器开关、定时触发、批量和失败暂停策略。",
             items=[
                 InsightSettingsStatusItem(
                     key="scheduler_enabled",
                     name="自动周期采集",
                     status="ok" if settings.INSIGHT_SCHEDULER_ENABLED else "disabled",
-                    description="控制 FastAPI 生命周期内置调度器是否自动运行。",
+                    description="控制 FastAPI 生命周期内置调度器是否进入定时等待。",
                     details=[
                         "已启用" if settings.INSIGHT_SCHEDULER_ENABLED else "未启用，需人工触发或通过接口启动",
-                        f"扫描间隔 {settings.INSIGHT_SCHEDULER_INTERVAL_SECONDS} 秒",
+                        f"自动启动 {'开启' if settings.INSIGHT_SCHEDULER_AUTO_START else '关闭'}",
+                        f"触发模式 {settings.INSIGHT_SCHEDULER_TRIGGER_MODE}",
+                        f"每日时间 {settings.INSIGHT_SCHEDULER_DAILY_TIME}（{settings.INSIGHT_SCHEDULER_TIMEZONE}）",
                         f"单批上限 {settings.INSIGHT_SCHEDULER_BATCH_LIMIT}",
                     ],
                 ),

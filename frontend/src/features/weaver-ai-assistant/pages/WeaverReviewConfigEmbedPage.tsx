@@ -14,6 +14,8 @@ interface ReviewRuleForm {
   ruleTitle: string;
   ruleContent: string;
   toolInstructions: string;
+  enableReconciliationInvoiceCheck: boolean;
+  reconciliationCustomId: string;
   nodeId: string;
   nodeName: string;
   reviewerUserId: string;
@@ -27,6 +29,8 @@ const emptyForm: ReviewRuleForm = {
   ruleTitle: "",
   ruleContent: "",
   toolInstructions: "",
+  enableReconciliationInvoiceCheck: false,
+  reconciliationCustomId: "186",
   nodeId: "",
   nodeName: "",
   reviewerUserId: "",
@@ -235,6 +239,34 @@ export default function WeaverReviewConfigEmbedPage() {
               />
             </label>
 
+            <div className="rounded-md border border-slate-200 bg-slate-50 p-4">
+              <label className="flex items-start gap-3">
+                <input
+                  type="checkbox"
+                  checked={form.enableReconciliationInvoiceCheck}
+                  onChange={(event) => setForm((current) => ({ ...current, enableReconciliationInvoiceCheck: event.target.checked }))}
+                  className="mt-0.5 h-4 w-4 accent-teal-700"
+                />
+                <span>
+                  <span className="block text-sm font-semibold text-slate-800">核对采购对账单与发票明细</span>
+                  <span className="mt-1 block text-xs leading-5 text-slate-500">
+                    系统会按当前流程的对账单号，读取建模账单明细和发票台账，核对商品、金额、税率与发票查验状态。
+                  </span>
+                </span>
+              </label>
+              {form.enableReconciliationInvoiceCheck ? (
+                <div className="mt-3 max-w-56">
+                  <Input
+                    label="采购账单查询 ID"
+                    type="number"
+                    value={form.reconciliationCustomId}
+                    placeholder="例如：186"
+                    onChange={(value) => setForm((current) => ({ ...current, reconciliationCustomId: value }))}
+                  />
+                </div>
+              ) : null}
+            </div>
+
             <label className="block">
               <span className="text-xs font-medium text-slate-600">工具 / 资料说明</span>
               <textarea
@@ -360,6 +392,19 @@ function buildPayload(
     ruleContent: form.ruleContent.trim(),
     toolConfig: {
       toolInstructions: form.toolInstructions.trim(),
+      tools: form.enableReconciliationInvoiceCheck
+        ? [
+            {
+              type: "weaver_reconciliation_invoice_match",
+              enabled: true,
+              customId: Number(form.reconciliationCustomId) || 186,
+              reconciliationFieldLabels: ["对账单号主表", "对账单号"],
+              invoiceFieldLabels: ["发票号码", "发票信息"],
+              amountTolerance: 0.1,
+              nameSimilarityThreshold: 0.78,
+            },
+          ]
+        : [],
     },
     autoReviewMode: form.autoReviewMode,
     enabled: form.enabled,
@@ -369,11 +414,17 @@ function buildPayload(
 
 function ruleToForm(rule: WeaverReviewRule): ReviewRuleForm {
   const toolConfig = rule.toolConfig || {};
+  const tools = Array.isArray(toolConfig.tools) ? toolConfig.tools : [];
+  const reconciliationTool = tools.find(
+    (item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && (item as Record<string, unknown>).type === "weaver_reconciliation_invoice_match",
+  );
   return {
     id: rule.id,
     ruleTitle: rule.ruleTitle,
     ruleContent: rule.ruleContent,
     toolInstructions: String(toolConfig.toolInstructions || ""),
+    enableReconciliationInvoiceCheck: Boolean(reconciliationTool && reconciliationTool.enabled !== false),
+    reconciliationCustomId: String(reconciliationTool?.customId || "186"),
     nodeId: rule.nodeId || "",
     nodeName: rule.nodeName || "",
     reviewerUserId: rule.reviewerUserId || "",

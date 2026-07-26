@@ -2,7 +2,7 @@
  * 泛微流程 AI 助手 ecode 完整脚本
  *
  * 使用方式：
- * 1. 将本文件整段复制到 ecode 前置加载脚本中。
+ * 1. 将本文件整段复制到流程发起页面可加载的 ecode 前置脚本中。
  * 2. 只修改“现场配置区”的 AI_PLATFORM_BASE_URL、AI_SIGN、WEAVER_ENV。
  * 3. 本脚本只负责悬浮入口、iframe、WfForm 上下文采集和结构化动作执行。
  */
@@ -13,10 +13,11 @@
   // 现场配置区
   // =========================
   var ENABLE_AI_FLOW_ASSISTANT = true;
+  var ENABLE_ON_PROCESS_PAGE = false;
   var AI_PLATFORM_BASE_URL = "http://192.168.8.79:5173";
+  var AI_ICON_URL = AI_PLATFORM_BASE_URL.replace(/\/$/, "") + "/ai/weaver-assistant/mascot-selected.png";
   var AI_SIGN = "xc-fw-1af7cc98-66ed-4d55-a4cc-c6240b1f1c3c";
   var WEAVER_ENV = "test";
-  var AI_ICON_URL = AI_PLATFORM_BASE_URL + "/weaver_ai_assistant.gif";
 
   // =========================
   // 内部状态
@@ -53,10 +54,50 @@
     }
   }
 
+  function getPageParam(name) {
+    var sources = [window.location.search || ""];
+    var hash = window.location.hash || "";
+    var queryIndex = hash.indexOf("?");
+    if (queryIndex >= 0) sources.push(hash.slice(queryIndex));
+    for (var i = 0; i < sources.length; i += 1) {
+      try {
+        var value = new URLSearchParams(sources[i]).get(name);
+        if (value !== null && value !== "") return value;
+      } catch (error) {}
+    }
+    return "";
+  }
+
+  function getWorkflowPageMode() {
+    var isCreate = String(getPageParam("iscreate") || getPageParam("isCreate") || "").toLowerCase();
+    if (isCreate === "1" || isCreate === "true") return "create";
+    if (isCreate === "0" || isCreate === "false") return "process";
+
+    var baseInfo = getBaseInfo();
+    var baseIsCreate = String(baseInfo.iscreate || baseInfo.isCreate || "").toLowerCase();
+    if (baseIsCreate === "1" || baseIsCreate === "true") return "create";
+    if (baseIsCreate === "0" || baseIsCreate === "false") return "process";
+
+    var requestId = String(
+      baseInfo.requestid ||
+        baseInfo.requestId ||
+        getPageParam("requestid") ||
+        getPageParam("requestId") ||
+        getPageParam("resourceid") ||
+        getPageParam("resourceId") ||
+        ""
+    );
+    if (requestId && requestId !== "0" && requestId !== "-1") return "process";
+    return "unknown";
+  }
+
   function isWorkflowReqPage() {
     var hash = window.location.hash || "";
     var pathname = window.location.pathname || "";
-    return hash.indexOf("#/main/workflow/req") === 0 || pathname.indexOf("/workflow/") >= 0;
+    var isRequestRoute = hash.indexOf("#/main/workflow/req") === 0 || pathname.indexOf("/workflow/") >= 0;
+    if (!isRequestRoute) return false;
+    var pageMode = getWorkflowPageMode();
+    return pageMode === "create" || (ENABLE_ON_PROCESS_PAGE && pageMode === "process");
   }
 
   function getBaseInfo() {
@@ -108,12 +149,13 @@
 
     aiFieldConfigLoading = true;
     aiFieldConfigError = "";
+    var fieldConfigStartedAt = Date.now();
 
     var params = new URLSearchParams();
     params.set("workflow_id", workflowId);
     params.set("env", WEAVER_ENV);
 
-    fetch(AI_PLATFORM_BASE_URL + "/api/v1/weaver/ai-assistant/field-config?" + params.toString(), {
+    fetch(AI_PLATFORM_BASE_URL + "/ai-api/v1/weaver/ai-assistant/field-config?" + params.toString(), {
       method: "GET",
       headers: {
         "ai-sign": safeAiSign
@@ -133,12 +175,16 @@
           env: data.env || WEAVER_ENV,
           workflowId: data.workflowId || workflowId,
           workflowName: data.workflowName,
-          fields: aiFieldConfig.length
+          fields: aiFieldConfig.length,
+          elapsedMs: Date.now() - fieldConfigStartedAt
         });
       })
       .catch(function (error) {
         aiFieldConfigError = error && error.message ? error.message : "字段配置加载失败";
-        aiWarn(aiFieldConfigError, error);
+        aiWarn(aiFieldConfigError, {
+          elapsedMs: Date.now() - fieldConfigStartedAt,
+          error: error
+        });
       })
       .finally(function () {
         aiFieldConfigLoading = false;
@@ -586,11 +632,52 @@
   }
 
   function buildAssistantUrl() {
-    var url = AI_PLATFORM_BASE_URL + "/weaver/assistant/embed";
+    var url = AI_PLATFORM_BASE_URL + "/ai/weaver/assistant/embed";
     var params = new URLSearchParams();
     params.set("ai_sign", AI_SIGN);
     params.set("target_origin", window.location.origin);
     return url + "?" + params.toString();
+  }
+
+  function animateAssistantPanel(panel, opening) {
+    var button = document.getElementById("ai-flow-float-button");
+    if (!panel || !button || typeof panel.animate !== "function") {
+      panel.style.display = opening ? "block" : "none";
+      button.style.opacity = opening ? "0" : "1";
+      button.style.pointerEvents = opening ? "none" : "auto";
+      return Promise.resolve();
+    }
+
+    if (opening) panel.style.display = "block";
+    var panelAnimation = panel.animate(
+      opening
+        ? [
+            { opacity: 0, transform: "translate(20px, 24px) scale(.14)", borderRadius: "48px", clipPath: "circle(10% at 92% 94%)" },
+            { opacity: 1, transform: "translate(0, 0) scale(1)", borderRadius: "16px", clipPath: "circle(150% at 92% 94%)" },
+          ]
+        : [
+            { opacity: 1, transform: "translate(0, 0) scale(1)", borderRadius: "16px", clipPath: "circle(150% at 92% 94%)" },
+            { opacity: 0, transform: "translate(20px, 24px) scale(.14)", borderRadius: "48px", clipPath: "circle(10% at 92% 94%)" },
+          ],
+      { duration: opening ? 560 : 380, easing: opening ? "cubic-bezier(.16,1,.3,1)" : "cubic-bezier(.7,0,.84,0)", fill: "forwards" }
+    );
+    button.animate(
+      opening
+        ? [{ opacity: 1, transform: "scale(1) rotate(0deg)" }, { opacity: 0, transform: "scale(.72) rotate(10deg)" }]
+        : [{ opacity: 0, transform: "scale(.72) rotate(10deg)" }, { opacity: 1, transform: "scale(1) rotate(0deg)" }],
+      { duration: opening ? 260 : 420, easing: "cubic-bezier(.16,1,.3,1)", fill: "forwards" }
+    );
+
+    button.style.pointerEvents = opening ? "none" : "auto";
+    return panelAnimation.finished.catch(function () {}).then(function () {
+      if (!opening) panel.style.display = "none";
+    });
+  }
+
+  function closeAiAssistant() {
+    var panel = document.getElementById("ai-flow-iframe-panel");
+    if (!panel || panel.style.display === "none") return;
+    animateAssistantPanel(panel, false);
   }
 
   function openAiAssistant() {
@@ -600,16 +687,16 @@
       panel.id = "ai-flow-iframe-panel";
       panel.style.position = "fixed";
       panel.style.right = "28px";
-      panel.style.bottom = "96px";
+      panel.style.bottom = "24px";
       panel.style.zIndex = "2147483647";
-      panel.style.width = "520px";
-      panel.style.maxWidth = "calc(100vw - 56px)";
+      panel.style.width = "500px";
+      panel.style.maxWidth = "calc(100vw - 32px)";
       panel.style.height = "80vh";
-      panel.style.maxHeight = "calc(100vh - 120px)";
-      panel.style.border = "1px solid #e5e7eb";
-      panel.style.borderRadius = "12px";
+      panel.style.maxHeight = "calc(100vh - 48px)";
+      panel.style.border = "1px solid rgba(96,165,250,.45)";
+      panel.style.borderRadius = "22px";
       panel.style.overflow = "hidden";
-      panel.style.boxShadow = "0 18px 48px rgba(15,23,42,.2)";
+      panel.style.boxShadow = "0 28px 72px rgba(15,42,104,.28), 0 0 32px rgba(59,130,246,.14)";
       panel.style.background = "#fff";
       panel.style.display = "none";
 
@@ -624,16 +711,65 @@
     }
 
     var willOpen = panel.style.display === "none" || panel.style.display === "";
-    panel.style.display = willOpen ? "block" : "none";
     if (willOpen) {
+      animateAssistantPanel(panel, true);
       postContextToIframe("WEAVER_AI_CONTEXT");
+    } else {
+      closeAiAssistant();
     }
+  }
+
+  function appendBlinkEyes(container) {
+    ["28.5%", "56.3%"].forEach(function (left) {
+      var eye = document.createElement("span");
+      eye.style.position = "absolute";
+      eye.style.left = left;
+      eye.style.top = "54.1%";
+      eye.style.zIndex = "2";
+      eye.style.width = "15.2%";
+      eye.style.height = "7.4%";
+      eye.style.borderRadius = "999px";
+      eye.style.overflow = "hidden";
+      eye.style.background = "#061945";
+      eye.style.pointerEvents = "none";
+      eye.style.transform = "scaleY(0)";
+      eye.style.transformOrigin = "center";
+
+      var closedLine = document.createElement("span");
+      closedLine.style.position = "absolute";
+      closedLine.style.left = "14%";
+      closedLine.style.right = "14%";
+      closedLine.style.top = "50%";
+      closedLine.style.height = "2px";
+      closedLine.style.borderRadius = "999px";
+      closedLine.style.background = "#67e8f9";
+      closedLine.style.boxShadow = "0 0 5px rgba(34,211,238,.95)";
+      closedLine.style.transform = "translateY(-50%)";
+      eye.appendChild(closedLine);
+      container.appendChild(eye);
+
+      if (eye.animate) {
+        eye.animate(
+          [
+            { transform: "scaleY(0)", offset: 0 },
+            { transform: "scaleY(0)", offset: 0.72 },
+            { transform: "scaleY(1)", offset: 0.76 },
+            { transform: "scaleY(1)", offset: 0.8 },
+            { transform: "scaleY(0)", offset: 0.84 },
+            { transform: "scaleY(0)", offset: 1 },
+          ],
+          { duration: 4600, iterations: Infinity, easing: "ease-in-out" }
+        );
+      }
+    });
   }
 
   function mountAiButton() {
     if (aiFlowAssistantMounted) return;
     if (!ENABLE_AI_FLOW_ASSISTANT || !isWorkflowReqPage() || !window.WfForm) return;
 
+    removeElementById("weaver-ai-review-button");
+    removeElementById("weaver-ai-review-panel");
     aiFlowAssistantMounted = true;
 
     var btn = document.createElement("button");
@@ -644,35 +780,70 @@
     btn.style.right = "28px";
     btn.style.bottom = "88px";
     btn.style.zIndex = "2147483647";
-    btn.style.width = "64px";
-    btn.style.height = "64px";
+    btn.style.width = "82px";
+    btn.style.height = "82px";
     btn.style.border = "0";
     btn.style.background = "transparent";
     btn.style.padding = "0";
     btn.style.cursor = "pointer";
+    btn.style.filter = "drop-shadow(0 7px 12px rgba(30,64,175,.28)) drop-shadow(0 0 8px rgba(96,165,250,.38))";
+    btn.style.transition = "filter .25s ease";
+
+    var visual = document.createElement("span");
+    visual.style.position = "absolute";
+    visual.style.inset = "0";
+    visual.style.display = "block";
+    visual.style.transform = "scale(1.08)";
+    visual.style.transition = "transform .22s ease";
 
     var icon = document.createElement("img");
     icon.src = AI_ICON_URL;
     icon.alt = "AI填单助手";
-    icon.style.width = "64px";
-    icon.style.height = "64px";
+    icon.style.display = "block";
+    icon.style.width = "100%";
+    icon.style.height = "100%";
     icon.style.objectFit = "contain";
     icon.style.pointerEvents = "none";
-    btn.appendChild(icon);
+    visual.appendChild(icon);
+    appendBlinkEyes(visual);
+    btn.appendChild(visual);
+
+    if (btn.animate) {
+      btn.animate(
+        [
+          { transform: "translateY(0) rotate(0deg)" },
+          { transform: "translateY(-6px) rotate(-1.5deg)" },
+          { transform: "translateY(0) rotate(0deg)" },
+          { transform: "translateY(-2px) rotate(1.5deg)" },
+          { transform: "translateY(0) rotate(0deg)" },
+        ],
+        { duration: 3200, iterations: Infinity, easing: "ease-in-out" }
+      );
+    }
+    btn.onmouseenter = function () {
+      btn.style.filter = "drop-shadow(0 10px 16px rgba(30,64,175,.36)) drop-shadow(0 0 12px rgba(96,165,250,.5))";
+      visual.style.transform = "scale(1.16)";
+    };
+    btn.onmouseleave = function () {
+      btn.style.filter = "drop-shadow(0 7px 12px rgba(30,64,175,.28)) drop-shadow(0 0 8px rgba(96,165,250,.38))";
+      visual.style.transform = "scale(1.08)";
+    };
 
     btn.onclick = openAiAssistant;
     document.body.appendChild(btn);
 
     loadFieldConfig();
-    aiLog("AI悬浮入口已挂载");
+    aiLog("AI填单入口已挂载", { pageMode: getWorkflowPageMode() });
+  }
+
+  function removeElementById(id) {
+    var element = document.getElementById(id);
+    if (element && element.parentNode) element.parentNode.removeChild(element);
   }
 
   function unmountAiAssistant() {
-    var btn = document.getElementById("ai-flow-float-button");
-    var panel = document.getElementById("ai-flow-iframe-panel");
-
-    if (btn && btn.parentNode) btn.parentNode.removeChild(btn);
-    if (panel && panel.parentNode) panel.parentNode.removeChild(panel);
+    removeElementById("ai-flow-float-button");
+    removeElementById("ai-flow-iframe-panel");
 
     aiFlowAssistantMounted = false;
     aiFieldConfigLoaded = false;
@@ -695,8 +866,7 @@
       applyAiActions(data.actions || []);
     }
     if (data.type === "WEAVER_AI_CLOSE") {
-      var panel = document.getElementById("ai-flow-iframe-panel");
-      if (panel) panel.style.display = "none";
+      closeAiAssistant();
     }
   });
 
@@ -724,7 +894,13 @@
   var lastHash = window.location.hash;
   window.setInterval(function () {
     var currentHash = window.location.hash;
-    if (currentHash === lastHash) return;
+    if (currentHash === lastHash) {
+      if (aiFlowAssistantMounted && !isWorkflowReqPage()) {
+        aiLog("检测到已离开发起页面，卸载 AI 填单入口", { pageMode: getWorkflowPageMode() });
+        unmountAiAssistant();
+      }
+      return;
+    }
 
     lastHash = currentHash;
     unmountAiAssistant();

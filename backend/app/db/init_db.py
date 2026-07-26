@@ -30,6 +30,7 @@ async def init_db():
         await _ensure_insight_company_columns(conn)
         await _ensure_insight_access_control_columns(conn)
         await _ensure_insight_report_template_columns(conn)
+        await _ensure_insight_feishu_brief_columns(conn)
         await _ensure_insight_crawler_channel_values(conn)
         await _ensure_weaver_ai_workflow_rule_indexes(conn)
     
@@ -417,6 +418,16 @@ async def _ensure_insight_report_template_columns(conn):
     await conn.execute(text("ALTER TABLE insight_report_template ADD COLUMN IF NOT EXISTS published_by_user_id INTEGER"))
     await conn.execute(text("ALTER TABLE insight_report_template ADD COLUMN IF NOT EXISTS owner_dept_id INTEGER"))
     await conn.execute(text("ALTER TABLE insight_report_template ADD COLUMN IF NOT EXISTS visibility_scope VARCHAR(30) DEFAULT 'private'"))
+
+
+async def _ensure_insight_feishu_brief_columns(conn):
+    """补齐飞书简报计划的独立素材周期。"""
+    await conn.execute(
+        text(
+            "ALTER TABLE insight_feishu_brief_plan "
+            "ADD COLUMN IF NOT EXISTS material_days INTEGER DEFAULT 7 NOT NULL"
+        )
+    )
 
 
 async def _ensure_insight_access_control_columns(conn):

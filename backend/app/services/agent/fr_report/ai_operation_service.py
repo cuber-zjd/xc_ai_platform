@@ -491,7 +491,7 @@ class FrReportAiOperationService:
         return (
             "你是 FineReport 报表设计器 AI 操作代理。"
             "你只能返回严格 JSON，不输出 Markdown。"
-            "你的主工作方式是像代码助手一样直接修改 CPT XML：读取 cptSourceContext 中的相关片段，返回 xml_patch。"
+            "你的主工作方式是直接编辑 CPT XML：读取 cptSourceContext 中的相关片段，返回兼容修改草稿。"
             "你需要把用户意图拆成可审计操作；operationType 只能使用 xml_patch。"
             "payload.patches 可声明 replace/insert_before/insert_after/delete/full_replace。"
             "样式 StyleList、填报 ReportWriteAttr/ReportWebAttr、脚本事件、参数栏、数据集、单元格都可以改；"
@@ -1085,11 +1085,6 @@ class FrReportAiOperationService:
             all_cte_names.update(cte_names)
             is_sql_text = bool(re.search(r"\bselect\b.+\bfrom\b", text, flags=re.S | re.I))
             candidates.extend(self._extract_sql_from_join_tables(text))
-            candidates.extend(
-                item
-                for item in re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*\b", text)
-                if len(item.split(".", 1)[0]) > 2
-            )
             if not is_sql_text:
                 candidates.extend(
                     item

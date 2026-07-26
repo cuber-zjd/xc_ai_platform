@@ -66,6 +66,13 @@ export interface WeaverFieldConfigResponse {
   billId?: string;
   mainTable?: string;
   fields: WeaverFieldConfigItem[];
+  nodes?: WeaverNodeConfigItem[];
+}
+
+export interface WeaverNodeConfigItem {
+  nodeId: string;
+  nodeName: string;
+  nodeType?: string | null;
 }
 
 export interface WeaverMessage {
@@ -158,6 +165,29 @@ export interface WeaverReviewCheckItem {
   detail: string;
 }
 
+export interface WeaverReviewComparisonRow {
+  reconciliationSequence?: string | null;
+  invoiceName?: string | null;
+  reconciliationName?: string | null;
+  invoiceAmount?: string | null;
+  reconciliationAmount?: string | null;
+  invoiceTaxRates: string[];
+  reconciliationTaxRates: string[];
+  similarity?: number | null;
+  status: "pass" | "warning" | "fail";
+  detail: string;
+}
+
+export interface WeaverReviewComparisonTable {
+  title: string;
+  reconciliationNumber?: string | null;
+  invoiceNumbers: string[];
+  invoiceTotal?: string | null;
+  reconciliationTotal?: string | null;
+  matchedCount: number;
+  rows: WeaverReviewComparisonRow[];
+}
+
 export interface WeaverReviewResult {
   summary: string;
   riskLevel: "low" | "medium" | "high" | "blocked";
@@ -166,6 +196,7 @@ export interface WeaverReviewResult {
   checks: WeaverReviewCheckItem[];
   missingMaterials: string[];
   concerns: string[];
+  comparisonTables: WeaverReviewComparisonTable[];
   confidence?: number | null;
   canAutoApprove: boolean;
 }

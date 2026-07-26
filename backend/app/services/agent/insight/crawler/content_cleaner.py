@@ -129,6 +129,12 @@ class InsightContentCleaner:
             parsed = self._parse_datetime(metadata.get(key))
             if parsed:
                 return parsed
+        for key in ("url", "sourceURL", "source_url", "original_url"):
+            parsed = self._parse_date_from_url(metadata.get(key))
+            if parsed:
+                return parsed
+        if self._is_ecommerce_metadata(metadata):
+            return None
         for key in keys:
             parsed = self._parse_datetime_from_text(metadata.get(key))
             if parsed:
@@ -171,6 +177,10 @@ class InsightContentCleaner:
         if news_message_time:
             return news_message_time
 
+        chinese_full_date = self._parse_chinese_full_date(text)
+        if chinese_full_date:
+            return chinese_full_date
+
         absolute_patterns = (
             r"(?<![\d.])(?P<year>20\d{2})[-/.年](?P<month>1[0-2]|0?[1-9])[-/.月](?P<day>3[01]|[12]\d|0?[1-9])(?:日)?(?![\d.])(?:\s+(?P<hour>[01]?\d|2[0-3]):(?P<minute>[0-5]\d))?",
             r"(?<![\d.])(?P<month>1[0-2]|0?[1-9])[-/.月](?P<day>3[01]|[12]\d|0?[1-9])(?:日)?(?![\d.])(?:\s+(?P<hour>[01]?\d|2[0-3]):(?P<minute>[0-5]\d))?",
@@ -200,7 +210,7 @@ class InsightContentCleaner:
             parsed = datetime(year, month, day, hour, minute)
         except ValueError:
             return None
-        if parsed > now + timedelta(days=2):
+        if parsed > now:
             if groupdict.get("year"):
                 return None
             try:
@@ -208,6 +218,49 @@ class InsightContentCleaner:
             except ValueError:
                 return None
         return parsed
+
+    def _parse_date_from_url(self, value: Any) -> datetime | None:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        try:
+            parsed_url = urlsplit(value.strip())
+        except ValueError:
+            return None
+        path = f"{parsed_url.path}?{parsed_url.query}"
+        now = datetime.now()
+        for match in finditer(r"(?<!\d)(?P<date>20\d{6})(?!\d)", path):
+            raw = match.group("date")
+            year = int(raw[:4])
+            month = int(raw[4:6])
+            day = int(raw[6:8])
+            try:
+                parsed = datetime(year, month, day)
+            except ValueError:
+                continue
+            if parsed <= now:
+                return parsed
+        return None
+
+    def _is_ecommerce_metadata(self, metadata: dict[str, Any]) -> bool:
+        joined = " ".join(str(metadata.get(key) or "") for key in ("url", "sourceURL", "source_url", "original_url", "title", "description", "keywords"))
+        lowered = joined.lower()
+        ecommerce_hosts = ("jd.com", "tmall.com", "taobao.com", "yangkeduo.com", "pinduoduo.com", "suning.com", "vip.com")
+        if any(host in lowered for host in ecommerce_hosts):
+            return True
+        return "【图片 价格 品牌 评论】" in joined or "加入购物车" in joined
+
+    def _parse_chinese_full_date(self, text: str) -> datetime | None:
+        for match in finditer(
+            r"(?<!\d)(?P<year>20\d{2})年(?P<month>1[0-2]|0?[1-9])月(?P<day>3[01]|[12]\d|0?[1-9])日?"
+            r"(?!\d)(?:\s*(?P<hour>[01]?\d|2[0-3]):(?P<minute>[0-5]\d))?",
+            text,
+        ):
+            if self._is_event_date_context(text, match):
+                continue
+            parsed = self._build_datetime_from_match(match)
+            if parsed:
+                return parsed
+        return None
 
     def _parse_leading_relative_datetime(self, text: str) -> datetime | None:
         head = text[:40]
@@ -230,7 +283,7 @@ class InsightContentCleaner:
                 parsed = datetime(now.year, int(match.group("month")), int(match.group("day")))
             except ValueError:
                 continue
-            if parsed > now + timedelta(days=2):
+            if parsed > now:
                 try:
                     parsed = parsed.replace(year=now.year - 1)
                 except ValueError:

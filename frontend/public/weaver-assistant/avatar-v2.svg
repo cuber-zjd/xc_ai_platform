@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" aria-label="小驰 AI 助手">
+  <defs>
+    <linearGradient id="shell" x1="20" y1="12" x2="76" y2="90" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ffffff"/>
+      <stop offset=".48" stop-color="#eaf8ff"/>
+      <stop offset="1" stop-color="#8ed4ff"/>
+    </linearGradient>
+    <linearGradient id="shell-edge" x1="18" y1="18" x2="76" y2="86" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ffffff"/>
+      <stop offset=".52" stop-color="#bdeaff"/>
+      <stop offset="1" stop-color="#3ba8ef"/>
+    </linearGradient>
+    <linearGradient id="face" x1="25" y1="28" x2="70" y2="75" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#123b74"/>
+      <stop offset=".42" stop-color="#061b45"/>
+      <stop offset="1" stop-color="#020a22"/>
+    </linearGradient>
+    <linearGradient id="eye" x1="30" y1="45" x2="66" y2="58" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#baf7ff"/>
+      <stop offset=".45" stop-color="#54e6ff"/>
+      <stop offset="1" stop-color="#27a9ff"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="3" stdDeviation="2.2" flood-color="#155e75" flood-opacity=".24"/>
+    </filter>
+    <filter id="eye-glow" x="-50%" y="-80%" width="200%" height="260%">
+      <feGaussianBlur stdDeviation="1.6" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <style>
+    .robot{transform-origin:48px 53px;animation:float 3.6s ease-in-out infinite}
+    .eyes{transform-origin:center;animation:blink 4.6s linear infinite}
+    .status{transform-origin:48px 82px;animation:pulse 2.2s ease-in-out infinite}
+    @keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-1.5px)}}
+    @keyframes blink{0%,43%,49%,100%{transform:scaleY(1)}46%{transform:scaleY(.12)}}
+    @keyframes pulse{0%,100%{opacity:.62}50%{opacity:1}}
+    @media(prefers-reduced-motion:reduce){.robot,.eyes,.status{animation:none}}
+  </style>
+  <g class="robot" filter="url(#shadow)">
+    <path d="M48 18V10" fill="none" stroke="#9fdcff" stroke-width="5" stroke-linecap="round"/>
+    <circle cx="48" cy="7" r="5.5" fill="url(#shell)" stroke="#ffffff" stroke-width="2"/>
+    <rect x="5" y="16" width="86" height="76" rx="31" fill="url(#shell-edge)"/>
+    <rect x="7.5" y="18.5" width="81" height="71" rx="28.5" fill="url(#shell)" stroke="#ffffff" stroke-width="2"/>
+    <path d="M17 30c10-11 51-15 69 6" fill="none" stroke="#ffffff" stroke-width="3.2" stroke-linecap="round" opacity=".72"/>
+    <rect x="15" y="29" width="66" height="47" rx="20" fill="url(#face)" stroke="#67cfff" stroke-width="2.2"/>
+    <path d="M20 39c12-9 43-11 57-1" fill="none" stroke="#77b8ef" stroke-width="2" stroke-linecap="round" opacity=".28"/>
+    <g class="eyes" filter="url(#eye-glow)">
+      <path d="M28 52c3.5-6.5 10.5-6.5 14 0" fill="none" stroke="url(#eye)" stroke-width="5.8" stroke-linecap="round"/>
+      <path d="M54 52c3.5-6.5 10.5-6.5 14 0" fill="none" stroke="url(#eye)" stroke-width="5.8" stroke-linecap="round"/>
+    </g>
+    <path d="M40 64c5 2.8 11 2.8 16 0" fill="none" stroke="#4ddfff" stroke-width="2.6" stroke-linecap="round" opacity=".9"/>
+    <path d="M25 80c13 7 33 7 46 0" fill="none" stroke="#54baf5" stroke-width="2.5" stroke-linecap="round" opacity=".72"/>
+    <circle class="status" cx="48" cy="83" r="2.6" fill="#0ea5e9" stroke="#dff8ff" stroke-width="1.2"/>
+  </g>
+</svg>

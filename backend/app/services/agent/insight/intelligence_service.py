@@ -1013,17 +1013,13 @@ class InsightIntelligenceService:
         )
         await db.commit()
         await db.refresh(candidate)
-        _, crawl_result = await self._get_candidate_with_crawl_result(
+        await self._get_candidate_with_crawl_result(
             db,
             candidate_id,
             user_id=user_id,
             is_admin=is_admin,
             permission="view",
         )
-        from app.services.agent.insight.asset_service import insight_asset_service
-
-        await insight_asset_service.upsert_candidate_asset(db, candidate, crawl_result)
-        await db.commit()
         return InsightCandidateReviewResponse(candidate=self._to_candidate_read(candidate), intelligence=None)
 
     async def _get_candidate_with_crawl_result(
@@ -1522,7 +1518,11 @@ class InsightIntelligenceService:
                 InsightIntelligenceSource.intelligence_id.in_(intelligence_ids),
                 InsightIntelligenceSource.is_deleted == 0,
             )
-            .order_by(InsightIntelligenceSource.create_time.asc())
+            .order_by(
+                InsightIntelligenceSource.credibility_score.desc(),
+                InsightIntelligenceSource.source_publish_time.asc().nullslast(),
+                InsightIntelligenceSource.create_time.asc(),
+            )
         )
         sources = list((await db.exec(statement)).all())
         result: dict[int, list[InsightIntelligenceSource]] = {}
@@ -1564,7 +1564,11 @@ class InsightIntelligenceService:
                 InsightIntelligenceSource.intelligence_id == intelligence_id,
                 InsightIntelligenceSource.is_deleted == 0,
             )
-            .order_by(InsightIntelligenceSource.create_time.asc())
+            .order_by(
+                InsightIntelligenceSource.credibility_score.desc(),
+                InsightIntelligenceSource.source_publish_time.asc().nullslast(),
+                InsightIntelligenceSource.create_time.asc(),
+            )
         )
         return list((await db.exec(statement)).all())
 

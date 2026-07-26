@@ -117,7 +117,7 @@ class SqlReActAgent:
                     "生成的列名应稳定映射到真实字段，方便 ReportDSL 布局映射；不要臆造城市字段。",
                 ],
             },
-            agent_name="SqlReActAgent",
+            agent_name="SqlRepairingQueryAgent",
         )
         if not result:
             return None
@@ -127,7 +127,7 @@ class SqlReActAgent:
     def _log_iteration(self, iteration: int, validation: SqlValidationResult) -> str:
         status = "通过" if validation.success else "失败"
         detail = "；".join(validation.errors or validation.warnings or [])
-        return f"SQL ReAct 第 {iteration} 轮校验{status}" + (f"：{detail}" if detail else "")
+        return f"SQL 生成第 {iteration} 轮校验{status}" + (f"：{detail}" if detail else "")
 
     def _apply_template_expectation(
         self,

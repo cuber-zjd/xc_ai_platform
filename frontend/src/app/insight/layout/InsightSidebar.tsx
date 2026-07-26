@@ -1,4 +1,4 @@
-import { BarChart3, Building2, ChevronDown, FileBarChart, FileText, Gauge, Home, LogOut, Settings, SlidersHorizontal, Tags } from "lucide-react";
+import { BarChart3, Bot, Building2, CalendarClock, ChevronDown, FileBarChart, FileText, Gauge, Home, LogOut, Settings, SlidersHorizontal, Tags } from "lucide-react";
 import { NavLink, useNavigate } from "react-router-dom";
 
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -14,6 +14,8 @@ const insightNavItems = [
     { label: "报告中心", path: "/insight/reports", icon: FileBarChart },
     { label: "经营智能", path: "/insight/operation-intelligence", icon: Gauge, adminOnly: true },
     { label: "质量运营", path: "/insight/quality", icon: BarChart3, adminOnly: true },
+    { label: "定时任务", path: "/insight/schedules", icon: CalendarClock, adminOnly: true },
+    { label: "飞书简报", path: "/insight/feishu-briefs", icon: Bot, adminOnly: true },
     { label: "系统设置", path: "/insight/settings", icon: Settings, adminOnly: true },
 ];
 

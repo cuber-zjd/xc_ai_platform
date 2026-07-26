@@ -185,6 +185,29 @@ class WeaverReviewCheckItem(BaseModel):
     detail: str = ""
 
 
+class WeaverReviewComparisonRow(BaseModel):
+    reconciliation_sequence: str | None = Field(default=None, alias="reconciliationSequence")
+    invoice_name: str | None = Field(default=None, alias="invoiceName")
+    reconciliation_name: str | None = Field(default=None, alias="reconciliationName")
+    invoice_amount: str | None = Field(default=None, alias="invoiceAmount")
+    reconciliation_amount: str | None = Field(default=None, alias="reconciliationAmount")
+    invoice_tax_rates: list[str] = Field(default_factory=list, alias="invoiceTaxRates")
+    reconciliation_tax_rates: list[str] = Field(default_factory=list, alias="reconciliationTaxRates")
+    similarity: float | None = None
+    status: Literal["pass", "warning", "fail"] = "pass"
+    detail: str = ""
+
+
+class WeaverReviewComparisonTable(BaseModel):
+    title: str
+    reconciliation_number: str | None = Field(default=None, alias="reconciliationNumber")
+    invoice_numbers: list[str] = Field(default_factory=list, alias="invoiceNumbers")
+    invoice_total: str | None = Field(default=None, alias="invoiceTotal")
+    reconciliation_total: str | None = Field(default=None, alias="reconciliationTotal")
+    matched_count: int = Field(default=0, alias="matchedCount")
+    rows: list[WeaverReviewComparisonRow] = Field(default_factory=list)
+
+
 class WeaverReviewResult(BaseModel):
     summary: str
     risk_level: Literal["low", "medium", "high", "blocked"] = Field(alias="riskLevel")
@@ -193,6 +216,7 @@ class WeaverReviewResult(BaseModel):
     checks: list[WeaverReviewCheckItem] = Field(default_factory=list)
     missing_materials: list[str] = Field(default_factory=list, alias="missingMaterials")
     concerns: list[str] = Field(default_factory=list)
+    comparison_tables: list[WeaverReviewComparisonTable] = Field(default_factory=list, alias="comparisonTables")
     confidence: float | None = None
     can_auto_approve: bool = Field(default=False, alias="canAutoApprove")
 

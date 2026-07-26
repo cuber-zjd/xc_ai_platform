@@ -83,13 +83,27 @@ class Settings(BaseSettings):
     INSIGHT_FIRECRAWL_BASE_URL: str = ""
     INSIGHT_FIRECRAWL_API_KEY: str = ""
     INSIGHT_FIRECRAWL_TIMEOUT_SECONDS: int = 30
+    INSIGHT_REVIEW_FULLTEXT_REQUIRED: bool = True
+    INSIGHT_REVIEW_FULLTEXT_TOP_N: int = 3
+    INSIGHT_REVIEW_FULLTEXT_CONCURRENCY: int = 6
     INSIGHT_BOCHA_API_KEY: str = ""
     INSIGHT_BOCHA_BASE_URL: str = "https://api.bocha.cn"
     INSIGHT_SEARCH_TIMEOUT_SECONDS: int = 30
     INSIGHT_OWN_BUSINESS_PROFILE: str = ""
     INSIGHT_SCHEDULER_ENABLED: bool = False
+    INSIGHT_SCHEDULER_AUTO_START: bool = False
+    INSIGHT_SCHEDULER_TRIGGER_MODE: str = "daily"
+    INSIGHT_SCHEDULER_DAILY_TIME: str = "01:00"
+    INSIGHT_SCHEDULER_TIMEZONE: str = "Asia/Shanghai"
     INSIGHT_SCHEDULER_INTERVAL_SECONDS: int = 300
     INSIGHT_SCHEDULER_BATCH_LIMIT: int = 5
+    INSIGHT_SCHEDULER_DAILY_DISCOVERY_ENABLED: bool = True
+    INSIGHT_SCHEDULER_DAILY_DISCOVERY_FRESHNESS: str = "3d"
+    INSIGHT_SCHEDULER_BAIDU_CONCURRENCY: int = 3
+    INSIGHT_SCHEDULER_BAIDU_COOLDOWN_MIN_SECONDS: float = 1.0
+    INSIGHT_SCHEDULER_BAIDU_COOLDOWN_MAX_SECONDS: float = 3.0
+    INSIGHT_SCHEDULER_GROUPED_BATCH_SIZE: int = 8
+    INSIGHT_SCHEDULER_GROUPED_BATCH_LIMIT: int = 100
     INSIGHT_SCHEDULER_STARTUP_DELAY_SECONDS: int = 15
     INSIGHT_SCHEDULER_ADVISORY_LOCK_ID: int = 2026060601
     INSIGHT_SCHEDULER_USER_ID: int = 1
@@ -102,13 +116,34 @@ class Settings(BaseSettings):
     INSIGHT_WECOM_TIMEOUT_SECONDS: int = 10
     INSIGHT_WECOM_RETRY_MAX_ATTEMPTS: int = 3
     INSIGHT_PUBLIC_BASE_URL: str = "https://ai.xiangchi.com"
+    FEISHU_APP_ID: str = ""
+    FEISHU_APP_SECRET: str = ""
+    FEISHU_BASE_URL: str = "https://open.feishu.cn"
+    FEISHU_TIMEOUT_SECONDS: int = 30
+    FEISHU_RETRY_MAX_ATTEMPTS: int = 3
+    INSIGHT_FEISHU_SYNC_ENABLED: bool = False
+    INSIGHT_FEISHU_DAILY_BRIEF_ENABLED: bool = False
+    INSIGHT_FEISHU_BITABLE_APP_TOKEN: str = ""
+    INSIGHT_FEISHU_BITABLE_TABLE_ID: str = ""
+    INSIGHT_FEISHU_DOC_FOLDER_TOKEN: str = ""
+    INSIGHT_FEISHU_DEFAULT_CHAT_ID: str = ""
+    INSIGHT_FEISHU_DEFAULT_RECEIVE_ID_TYPE: str = "chat_id"
+    INSIGHT_FEISHU_BRIEF_ENABLED: bool = False
+    INSIGHT_FEISHU_BRIEF_APP_ID: str = ""
+    INSIGHT_FEISHU_BRIEF_APP_SECRET: str = ""
+    INSIGHT_FEISHU_BRIEF_FOLDER_TOKEN: str = ""
+    INSIGHT_FEISHU_BRIEF_BOT_NAME: str = "市场洞察报告机器人"
+    INSIGHT_FEISHU_BRIEF_DEFAULT_RECIPIENTS_JSON: str = "[]"
+    INSIGHT_FEISHU_BRIEF_TIMEOUT_SECONDS: int = 30
+    INSIGHT_FEISHU_BRIEF_MAX_MATERIALS: int = 200
 
     # Weaver / E-cology
     WEAVER_DEFAULT_ENV: str = "default"  # 泛微默认环境 key，ecode 未传 env 时使用
-    WEAVER_DB_CONFIGS: str = "{}"  # 泛微 MySQL8 多环境连接配置，JSON：{"test":{"host":"...","port":3306,"database":"ecology","user":"...","password":"..."}}
+    WEAVER_DB_CONFIGS: str = "{}"  # 泛微 MySQL8 多环境连接配置；内网默认 ssl_disabled=true，需要 TLS 时显式设为 false 并配置 ssl_ca
     WEAVER_AI_MODEL_NAME: str = ""  # 泛微流程 AI 助手专用模型名；为空则按 WEAVER_AI_MODEL_CAPABILITY 选择
     WEAVER_AI_MODEL_CAPABILITY: str = "complex-reasoning"  # 泛微流程 AI 助手默认使用更强推理模型能力
     WEAVER_AI_ENABLE_REASONING: bool = False  # 模型支持 reasoning 时可开启；本地小模型建议保持关闭
+    WEAVER_AI_FIELD_CONFIG_CACHE_TTL_SECONDS: int = 600  # 泛微字段元数据缓存时长，减少重复连接泛微数据库
 
     # Security
     SECRET_KEY: str = "change_this_to_a_secure_random_string_in_production"

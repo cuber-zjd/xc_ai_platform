@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" aria-label="小驰 AI 助手">
+  <defs>
+    <linearGradient id="shell" x1="18" y1="12" x2="78" y2="84" gradientUnits="userSpaceOnUse"><stop stop-color="#fff"/><stop offset=".42" stop-color="#dff8ff"/><stop offset="1" stop-color="#76c7ff"/></linearGradient>
+    <linearGradient id="face" x1="28" y1="31" x2="69" y2="69" gradientUnits="userSpaceOnUse"><stop stop-color="#071c42"/><stop offset="1" stop-color="#020b22"/></linearGradient>
+    <radialGradient id="glow"><stop stop-color="#22d3ee" stop-opacity=".55"/><stop offset="1" stop-color="#22d3ee" stop-opacity="0"/></radialGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="170%"><feDropShadow dx="0" dy="5" stdDeviation="5" flood-color="#0f766e" flood-opacity=".22"/></filter>
+  </defs>
+  <style>
+    .bot{transform-origin:48px 52px;animation:float 3.8s ease-in-out infinite}.halo{transform-origin:48px 52px;animation:pulse 2.8s ease-in-out infinite}.eye{transform-box:fill-box;transform-origin:center;animation:blink 4.2s linear infinite}@media(prefers-reduced-motion:reduce){.bot,.halo,.eye{animation:none}}
+    @keyframes float{0%,100%{transform:translateY(0) rotate(0)}50%{transform:translateY(-2px) rotate(.7deg)}}@keyframes pulse{0%,100%{opacity:.45;transform:scale(.94)}50%{opacity:.82;transform:scale(1.04)}}@keyframes blink{0%,42%,50%,100%{transform:scaleY(1)}46%{transform:scaleY(.12)}}
+  </style>
+  <circle class="halo" cx="48" cy="52" r="42" fill="url(#glow)"/>
+  <g class="bot" filter="url(#shadow)">
+    <path d="M43 20c0-3.2 2.2-5.9 5-6.7V9.5" fill="none" stroke="#b9ebff" stroke-width="5" stroke-linecap="round"/><circle cx="48" cy="8" r="5" fill="url(#shell)" stroke="#fff" stroke-width="1.5"/>
+    <rect x="12" y="20" width="72" height="61" rx="27" fill="url(#shell)" stroke="#f7fdff" stroke-width="2"/><rect x="20" y="30" width="56" height="39" rx="17" fill="url(#face)" stroke="#8bdcff" stroke-width="1.5"/><path d="M20 59c8 12 48 14 56 0v3c0 10-8 18-18 18H38c-10 0-18-8-18-18v-3Z" fill="#66bfff" opacity=".16"/>
+    <path class="eye" d="M31 49c2.8-5.2 8.2-5.2 11 0" fill="none" stroke="#22d3ee" stroke-width="4.8" stroke-linecap="round"/><path class="eye" d="M54 49c2.8-5.2 8.2-5.2 11 0" fill="none" stroke="#22d3ee" stroke-width="4.8" stroke-linecap="round"/>
+  </g>
+</svg>

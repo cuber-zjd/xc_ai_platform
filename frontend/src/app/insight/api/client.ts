@@ -141,6 +141,20 @@ export const insightApi = {
         }),
     runDueReportSubscriptions: (params?: { limit?: number }) =>
         apiClient.post<InsightReportSubscriptionDueRunResponse, InsightReportSubscriptionDueRunResponse>(`${insightApiPrefix}/reports/subscriptions/run-due`, undefined, { params, timeout: 180000 }),
+    getFeishuBriefOptions: () =>
+        apiClient.get<InsightFeishuBriefOptionsRead, InsightFeishuBriefOptionsRead>(`${insightApiPrefix}/feishu-briefs/options`),
+    listFeishuBriefPlans: (params: { page: number; size: number; status?: string }) =>
+        apiClient.get<InsightPage<InsightFeishuBriefPlanRead>, InsightPage<InsightFeishuBriefPlanRead>>(`${insightApiPrefix}/feishu-briefs/plans`, { params }),
+    createFeishuBriefPlan: (payload: InsightFeishuBriefPlanCreate) =>
+        apiClient.post<InsightFeishuBriefPlanRead, InsightFeishuBriefPlanRead>(`${insightApiPrefix}/feishu-briefs/plans`, payload),
+    updateFeishuBriefPlan: (planId: number, payload: Partial<InsightFeishuBriefPlanCreate>) =>
+        apiClient.put<InsightFeishuBriefPlanRead, InsightFeishuBriefPlanRead>(`${insightApiPrefix}/feishu-briefs/plans/${planId}`, payload),
+    deleteFeishuBriefPlan: (planId: number) =>
+        apiClient.delete<void, void>(`${insightApiPrefix}/feishu-briefs/plans/${planId}`),
+    runFeishuBriefPlan: (planId: number) =>
+        apiClient.post<InsightFeishuBriefRunResponse, InsightFeishuBriefRunResponse>(`${insightApiPrefix}/feishu-briefs/plans/${planId}/run`, undefined, { timeout: 300000 }),
+    listFeishuBriefRuns: (params: { page: number; size: number; plan_id?: number }) =>
+        apiClient.get<InsightPage<InsightFeishuBriefRunRead>, InsightPage<InsightFeishuBriefRunRead>>(`${insightApiPrefix}/feishu-briefs/runs`, { params }),
     updateReport: (reportId: number, payload: InsightReportUpdateRequest) =>
         apiClient.put<InsightReportDetail, InsightReportDetail>(`${insightApiPrefix}/reports/${reportId}`, payload),
     listReportExports: (reportId: number) =>
@@ -168,12 +182,18 @@ export const insightApi = {
         apiClient.delete<void, void>(`${insightApiPrefix}/permissions/rules/${ruleId}`),
     getSchedulerStatus: () =>
         apiClient.get<InsightSchedulerStatusRead, InsightSchedulerStatusRead>(`${insightApiPrefix}/scheduler/status`),
+    listSchedulerLogs: (params: InsightSchedulerLogListParams) =>
+        apiClient.get<InsightPage<InsightSchedulerRunLogRead>, InsightPage<InsightSchedulerRunLogRead>>(`${insightApiPrefix}/scheduler/logs`, { params }),
     runSchedulerOnce: () =>
         apiClient.post<InsightDataSourceScheduleRunResponse, InsightDataSourceScheduleRunResponse>(`${insightApiPrefix}/scheduler/run-once`),
     startScheduler: () =>
         apiClient.post<InsightSchedulerStatusRead, InsightSchedulerStatusRead>(`${insightApiPrefix}/scheduler/start`),
     stopScheduler: () =>
         apiClient.post<InsightSchedulerStatusRead, InsightSchedulerStatusRead>(`${insightApiPrefix}/scheduler/stop`),
+    getFeishuSyncOptions: () =>
+        apiClient.get<InsightFeishuSyncOptionsRead, InsightFeishuSyncOptionsRead>(`${insightApiPrefix}/intelligence/feishu-sync/options`),
+    syncIntelligenceToFeishu: (payload: InsightFeishuSyncRequest) =>
+        apiClient.post<InsightFeishuSyncResponse, InsightFeishuSyncResponse>(`${insightApiPrefix}/intelligence/feishu-sync`, payload, { timeout: 180000 }),
     listDataSources: (params: InsightDataSourceListParams) =>
         apiClient.get<InsightPage<InsightDataSourceRead>, InsightPage<InsightDataSourceRead>>(`${insightApiPrefix}/data-sources`, { params }),
     listDataSourceGroups: (params: InsightDataSourceListParams) =>
@@ -1673,9 +1693,15 @@ export interface InsightDataSourceScheduleRunResponse {
 
 export interface InsightSchedulerStatusRead {
     enabled: boolean;
+    auto_start: boolean;
     running: boolean;
+    trigger_mode: string;
+    daily_time: string;
+    timezone: string;
     interval_seconds: number;
     batch_limit: number;
+    daily_discovery_enabled: boolean;
+    daily_discovery_freshness: string;
     startup_delay_seconds: number;
     advisory_lock_id: number;
     scheduler_user_id: number;
@@ -1688,6 +1714,84 @@ export interface InsightSchedulerStatusRead {
     next_tick_at?: string | null;
     last_error?: string | null;
     last_result?: Record<string, unknown> | null;
+}
+
+export interface InsightSchedulerLogListParams {
+    page: number;
+    size: number;
+    status?: string;
+    date_from?: string;
+    date_to?: string;
+}
+
+export interface InsightSchedulerRunLogRead {
+    id: number;
+    task_uid: string;
+    status: string;
+    triggered_by: string;
+    started_at?: string | null;
+    finished_at?: string | null;
+    duration_seconds: number;
+    discovery_checked_count: number;
+    discovery_hit_count: number;
+    discovery_candidate_count: number;
+    discovery_failed_count: number;
+    checked_count: number;
+    due_count: number;
+    executed_count: number;
+    failed_count: number;
+    report_executed_count: number;
+    report_failed_count: number;
+    feishu_created_count: number;
+    feishu_updated_count: number;
+    feishu_failed_count: number;
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+    model_call_count: number;
+    token_models: Array<{ model: string; input_tokens: number; output_tokens: number; total_tokens: number; call_count: number }>;
+    error_message?: string | null;
+    details: Record<string, unknown>;
+}
+
+export interface InsightFeishuFieldOption {
+    code: string;
+    label: string;
+    field_type: number;
+    required: boolean;
+    default_selected: boolean;
+}
+
+export interface InsightFeishuSyncOptionsRead {
+    configured: boolean;
+    enabled: boolean;
+    table_name: string;
+    fields: InsightFeishuFieldOption[];
+    warnings: string[];
+}
+
+export interface InsightFeishuSyncRequest {
+    scope: "selected" | "date_range";
+    intelligence_ids: number[];
+    date_from?: string;
+    date_to?: string;
+    field_codes: string[];
+    update_existing: boolean;
+    ensure_metadata: boolean;
+}
+
+export interface InsightFeishuSyncResponse {
+    task_id: number;
+    requested_count: number;
+    eligible_count: number;
+    created_count: number;
+    updated_count: number;
+    skipped_count: number;
+    failed_count: number;
+    metadata_created_fields: string[];
+    metadata_updated_fields: string[];
+    warnings: string[];
+    errors: Array<Record<string, unknown>>;
 }
 
 export interface InsightPage<T> {
@@ -2205,6 +2309,85 @@ export interface InsightDeepResearchResponse {
     citations: InsightAssistantCitation[];
     report_id?: number | null;
     generation_mode?: string;
+}
+
+export interface InsightFeishuBriefRecipient {
+    receive_id_type: "open_id" | "user_id" | "union_id" | "email" | "chat_id";
+    receive_id: string;
+    name?: string | null;
+}
+
+export interface InsightFeishuBriefOptionsRead {
+    enabled: boolean;
+    configured: boolean;
+    bot_name: string;
+    folder_configured: boolean;
+    app_configured: boolean;
+    default_recipient_count: number;
+    warnings: string[];
+    fixed_format: string[];
+    prompt_template: string;
+}
+
+export interface InsightFeishuBriefPlanCreate {
+    plan_name: string;
+    sys_company_id?: number | null;
+    schedule_frequency: "daily" | "weekly";
+    weekday?: number | null;
+    time_of_day: string;
+    material_days: number;
+    max_materials: number;
+    prompt_override?: string | null;
+    recipients: InsightFeishuBriefRecipient[];
+    status: "active" | "paused";
+}
+
+export interface InsightFeishuBriefPlanRead {
+    id: number;
+    plan_uid: string;
+    plan_name: string;
+    sys_company_id?: number | null;
+    sys_company_name?: string | null;
+    schedule_frequency: "daily" | "weekly";
+    weekday?: number | null;
+    time_of_day: string;
+    timezone: string;
+    material_days: number;
+    max_materials: number;
+    prompt_override?: string | null;
+    recipients: InsightFeishuBriefRecipient[];
+    next_run_time?: string | null;
+    last_run_time?: string | null;
+    last_run_id?: number | null;
+    last_status?: string | null;
+    last_error?: string | null;
+    status: "active" | "paused";
+    create_time: string;
+    update_time: string;
+}
+
+export interface InsightFeishuBriefRunRead {
+    id: number;
+    plan_id: number;
+    trigger_type: string;
+    status: string;
+    period_start: string;
+    period_end: string;
+    material_count: number;
+    report_title?: string | null;
+    document_id?: string | null;
+    document_url?: string | null;
+    pushed_count: number;
+    failed_push_count: number;
+    error_message?: string | null;
+    started_at?: string | null;
+    finished_at?: string | null;
+    create_time: string;
+}
+
+export interface InsightFeishuBriefRunResponse {
+    run: InsightFeishuBriefRunRead;
+    message: string;
 }
 
 export interface InsightManualUrlCrawlResponse {

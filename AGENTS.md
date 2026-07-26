@@ -169,7 +169,9 @@ pnpm build
 - Insight 后端服务位于 `backend/app/services/agent/insight/`，按 `crawler`、`intelligence`、`visibility`、`report` 等子域拆分。
 - Insight 数据模型位于 `backend/app/models/agent/insight/`，Schema 位于 `backend/app/schemas/agent/insight/`。
 - 第一阶段优先实现“通用联网采集”：本地 Firecrawl 通用网页抓取、百度搜索发现、Bocha/博查 API 多源查询、采集清洗、候选情报入库，再做情报权限、情报池和报告。
-- Insight 周期采集必须按生产级调度系统建设：优先使用 `backend/app/services/agent/insight/scheduler_service.py`，通过 `INSIGHT_SCHEDULER_ENABLED`、扫描间隔、单批上限、连续失败暂停阈值和 advisory lock 控制常驻调度，前端主入口使用 `/ai-api/v1/insight/scheduler/*` 状态、单次扫描、启停接口，并保留最近调度批次、单源失败次数、自动暂停原因和单源重试能力。
+- Insight 周期采集必须按生产级调度系统建设：优先使用 `backend/app/services/agent/insight/scheduler_service.py`，通过 `INSIGHT_SCHEDULER_ENABLED`、`INSIGHT_SCHEDULER_AUTO_START`、`INSIGHT_SCHEDULER_TRIGGER_MODE`、`INSIGHT_SCHEDULER_DAILY_TIME`、单批上限、连续失败暂停阈值和 advisory lock 控制调度。默认 `daily` 每日定时触发，后端重启只进入等待，不得立刻采集；`fixed_interval` 仅作兼容模式。前端主入口使用 `/ai-api/v1/insight/scheduler/*` 状态、单次扫描、启停接口，并保留最近调度批次、单源失败次数、自动暂停原因和单源重试能力。
+- Insight 正式每日调度分为“每日全覆盖发现、信号触发深挖、周期轮转补漏”三层。每日发现必须覆盖全部启用监测对象，不受 `INSIGHT_SCHEDULER_BATCH_LIMIT` 限制；百度资讯逐对象低并发执行，博查和豆包按同类对象合并查询。批量上限只限制较重的垂直渠道深挖，日报和飞书同步必须排在当日发现与深挖之后。
+- Insight 管理员定时任务页面固定为 `/insight/schedules`，仅管理员可见和访问；`GET /ai-api/v1/insight/scheduler/logs` 必须分页返回每轮监测、报告、飞书同步、失败信息、模型调用和 Token 用量，历史未采集 Token 的日志不得伪造估算值。
 - Insight 情报不固定绑定企业，必须支持企业、行业、市场、产品、政策、技术和自定义主题。
 - Insight 权限必须在后端完成过滤，不能返回全量情报后仅由前端隐藏。
 - Insight 监测配置、报告和报告模板都需要保留 `owner_user_id`、`owner_dept_id`、`visibility_scope` 和显式授权规则入口；列表接口必须先按当前用户权限过滤再分页或聚合。旧 `insight_data_source` 只作历史外键兼容，不再作为用户维护的数据源配置。
@@ -185,8 +187,12 @@ pnpm build
 - Insight 企业档案的“所属公司”必须从系统组织 `sys_company` 选择并保存 `sys_company_id`，不得做成前端自由文本。
 - Insight 默认搜索发现源当前包括“百度资讯”“博查搜索”和“豆包联网搜索”。三者都是独立渠道源：百度资讯作为低成本单对象探针，可对每个 active 监测对象每日执行，但必须保留随机冷却、批次限流和失败记录以降低反爬风险；博查作为结构化搜索 API 补充，豆包联网搜索通过火山方舟 Responses API 的 `web_search` 工具补充发现并保留搜索动作、引用标注和模型整理后的结构化线索。博查和豆包也需要每日覆盖，但必须按客户组、竞对组、行业主题、政策主题等合并监测对象后并发执行，再将命中结果反向归属到具体监测配置，禁止按模块、按关键词、按网站笛卡尔积重复调用。
 - Insight 采集结果主流程采用 AI 自动评审，不再以人工审核为主；AI 评审输出正式情报、候选情报或噪声归档，并同步写入评审记录、情报资产层、向量索引和轻量知识图谱。
+- Insight 多平台重复内容必须在完整 AI 评审前执行事件级归并：先按业务对象、发布时间窗、归一标题、摘要和事件动作做确定性匹配，边界情况再使用既有资产向量复核；命中后不得新增第二条正式情报，而是把 `insight_intelligence` 作为事件主体，将新报道追加到 `insight_intelligence_source`。情报中心、RAG、知识图谱和报告素材均按事件主体消费，多来源只作为交叉印证，不按 URL 重复计数。
+- Insight 搜索摘要只允许用于低成本预筛，不得直接作为普通来源转正式情报。百度、博查、豆包和站点搜索命中通过预筛后，必须按 `INSIGHT_REVIEW_FULLTEXT_TOP_N` 选取高价值结果并通过 Firecrawl、受控直接 HTTP 降级或适配器正文做最终摘要和 AI 评审；未取得至少 200 字有效正文的普通来源只能保留候选，政府、交易所、专利机构等可信结构化来源可例外。正文补抓统一受 `INSIGHT_REVIEW_FULLTEXT_CONCURRENCY` 限流，失败原因必须进入采集结果和任务统计；直接 HTTP 降级必须限制协议、响应体大小和重定向次数，并阻断本机、链路本地和 RFC1918 内网地址。
 - Insight 权限优先配置在企业档案和监测配置上，授权对象支持用户、部门、Insight 专用角色、所属公司和全员；角色必须维护在 `insight_role` / `insight_role_member`，不得复用平台通用 `sys_role`。内置 `insight_full_access` 为最高级只读数据角色，成员可查看市场洞察全部情报、资产、报告素材、企业和监测配置，但不自动获得编辑或系统管理权限。正式情报需要继承所属企业和监测配置的可见/编辑授权，避免逐条情报授权。普通用户列表、统计、资产检索和报告素材都必须按继承后的权限过滤。
 - Insight RAG 默认通过情报资产层检索，向量模型使用 `sys_model` 中 `model_type=embedding` 的配置，当前优先火山方舟 `doubao-embedding-vision-251215` 多模态向量接口，密钥继承现有火山配置。
+- Insight 正式情报同步飞书多维表格必须复用后端权限过滤，以情报 ID 作为幂等键；情报中心支持按已选情报或发布时间、按用户选择字段同步。缺失字段及受控单选/多选选项可通过飞书元数据接口自动补齐，前端不得提交任意字段结构；`INSIGHT_FEISHU_SYNC_ENABLED` 只控制调度器自动同步，配置完整时允许用户手动同步。
+- Insight 飞书日报/周报使用独立“飞书简报”模块，不写入报告中心：计划与执行记录保存于 `insight_feishu_brief_plan` / `insight_feishu_brief_run`，管理员入口为 `/insight/feishu-briefs`。文档必须由 `INSIGHT_FEISHU_BRIEF_*` 专用机器人应用创建，按领导固定版式输出总览、政策、竞对、客户、技术、原料和 7 条重点情报导读；计划的生成周期与素材周期独立配置，固定提示词需要在计划弹窗中可查看，接收人通过系统人员选择器维护并以飞书交互卡片推送；未配置专用应用、文件夹授权或启用开关时不得发布。
  
 ## 泛微流程AI助手约束
 
@@ -196,6 +202,7 @@ pnpm build
 - 后端接口统一挂载到 `/ai-api/v1/weaver/ai-assistant`，入口位于 `backend/app/ai-api/v1/endpoints/agent/weaver_ai_assistant.py`，服务层位于 `backend/app/services/agent/weaver_ai_assistant/`。
 - 流程规则保存在 `weaver_ai_workflow_rule` 表，聊天接口需要自动加载启用规则进入 AI 上下文，但仍不得突破字段可见、可写和安全边界。
 - 智审规则保存在 `weaver_ai_review_rule` 表，智审记录保存在 `weaver_ai_review_record` 表；初版只生成风险等级、检查项、建议结论和建议审批意见，不得直接保存、提交、审批、退回或越权替审。
+- 智审关联业务数据核验由 `review_evidence_service.py` 执行；规则只声明受控工具类型和建模查询 ID，服务端必须通过泛微元数据解析真实表字段、校验数据库标识符并使用参数化只读查询。工具明确判定的金额、税率、商品或材料不一致不得被模型覆盖为通过。
 - 泛微助手模型选择优先读取 `WEAVER_AI_MODEL_NAME`；未配置时按 `WEAVER_AI_MODEL_CAPABILITY` 选择模型，默认 `complex-reasoning`，用于提升流程特殊规则理解能力。
 - ecode 侧只保留悬浮图标、iframe 打开、`WfForm` 上下文采集和结构化动作执行；聊天面板、样式、AI 调用和业务逻辑由平台承载。
 - 该嵌入页不走平台登录态，接口必须通过 `ai-sign` 校验，生产环境必须配置非默认 `EXTERNAL_API_KEYS`。

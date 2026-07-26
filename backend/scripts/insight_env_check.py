@@ -138,13 +138,31 @@ class InsightEnvChecker:
         else:
             self.warn("调度器开关", "INSIGHT_SCHEDULER_ENABLED 未开启，生产环境不会自动周期采集。")
 
-        if settings.INSIGHT_SCHEDULER_INTERVAL_SECONDS < 60:
+        trigger_mode = settings.INSIGHT_SCHEDULER_TRIGGER_MODE.strip().lower()
+        if trigger_mode == "daily":
+            self.ok(
+                "定时触发",
+                "调度器按每日固定时间触发，不会因后端重启立即采集。",
+                daily_time=settings.INSIGHT_SCHEDULER_DAILY_TIME,
+                timezone=settings.INSIGHT_SCHEDULER_TIMEZONE,
+                auto_start=settings.INSIGHT_SCHEDULER_AUTO_START,
+            )
+        elif trigger_mode == "fixed_interval":
+            self.warn(
+                "定时触发",
+                "当前使用 fixed_interval 兼容模式，会按固定间隔循环扫描。",
+                interval_seconds=settings.INSIGHT_SCHEDULER_INTERVAL_SECONDS,
+            )
+        else:
+            self.fail("定时触发", "INSIGHT_SCHEDULER_TRIGGER_MODE 仅支持 daily 或 fixed_interval。", trigger_mode=trigger_mode)
+
+        if trigger_mode == "fixed_interval" and settings.INSIGHT_SCHEDULER_INTERVAL_SECONDS < 60:
             self.warn(
                 "调度间隔",
                 "调度扫描间隔小于 60 秒，生产环境容易造成频繁扫描。",
                 interval_seconds=settings.INSIGHT_SCHEDULER_INTERVAL_SECONDS,
             )
-        else:
+        elif trigger_mode == "fixed_interval":
             self.ok("调度间隔", "调度扫描间隔合理。", interval_seconds=settings.INSIGHT_SCHEDULER_INTERVAL_SECONDS)
 
         if settings.INSIGHT_SCHEDULER_BATCH_LIMIT <= 0:
@@ -208,8 +226,7 @@ class InsightEnvChecker:
                 where table_schema = 'public'
                   and table_name = any(:tables)
                 """
-            ),
-            {"tables": list(REQUIRED_TABLES)},
+            ).bindparams(tables=list(REQUIRED_TABLES)),
         )
         existing = {row[0] for row in result.all()}
         missing = [table for table in REQUIRED_TABLES if table not in existing]
@@ -223,17 +240,30 @@ class InsightEnvChecker:
             result = await db.exec(
                 text(
                     """
-                    select id, username
+                    select id, username, status, is_superuser
                     from sys_user
                     where id = :user_id and coalesce(is_deleted, 0) = 0
                     limit 1
                     """
-                ),
-                {"user_id": settings.INSIGHT_SCHEDULER_USER_ID},
+                ).bindparams(user_id=settings.INSIGHT_SCHEDULER_USER_ID),
             )
             row = result.first()
-            if row:
-                self.ok("调度用户", "调度用户存在。", user_id=row[0], username=row[1])
+            if row and int(row[2] or 0) == 1 and bool(row[3]):
+                self.ok(
+                    "调度用户",
+                    "调度用户已启用且具有管理员权限。",
+                    user_id=row[0],
+                    username=row[1],
+                )
+            elif row:
+                self.fail(
+                    "调度用户",
+                    "调度用户必须处于启用状态且具有管理员权限。",
+                    user_id=row[0],
+                    username=row[1],
+                    status=row[2],
+                    is_superuser=bool(row[3]),
+                )
             else:
                 self.fail("调度用户", "INSIGHT_SCHEDULER_USER_ID 对应用户不存在或已删除。", user_id=settings.INSIGHT_SCHEDULER_USER_ID)
         except Exception as exc:  # noqa: BLE001
@@ -248,8 +278,7 @@ class InsightEnvChecker:
                 where coalesce(is_deleted, 0) = 0
                   and channel_code = any(:codes)
                 """
-            ),
-            {"codes": list(REQUIRED_CHANNELS)},
+            ).bindparams(codes=list(REQUIRED_CHANNELS)),
         )
         rows = {row[0]: row for row in result.all()}
         missing = [code for code in REQUIRED_CHANNELS if code not in rows]
@@ -275,8 +304,10 @@ class InsightEnvChecker:
                     or model_name = :chat_model
                   )
                 """
+            ).bindparams(
+                embedding_model=REQUIRED_EMBEDDING_MODEL,
+                chat_model=RECOMMENDED_CHAT_MODEL,
             ),
-            {"embedding_model": REQUIRED_EMBEDDING_MODEL, "chat_model": RECOMMENDED_CHAT_MODEL},
         )
         rows = result.all()
         enabled_rows = [row for row in rows if bool(row[4]) and int(row[5] or 0) == 1]

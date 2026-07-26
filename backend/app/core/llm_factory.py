@@ -34,6 +34,7 @@ from langchain_core.messages import BaseMessage
 from langchain_openai import ChatOpenAI
 
 from app.core.config import settings
+from app.core.llm_usage import record_llm_usage
 from app.core.logger import logger
 
 # LangFuse 可观测性集成
@@ -857,6 +858,7 @@ class LLMFactory:
                     f"(级别={model_config.model_level}, 优先级={model_config.priority})"
                 )
                 response = await llm.ainvoke(messages, config=invoke_config) if invoke_config else await llm.ainvoke(messages)
+                record_llm_usage(model_config.model_name, response)
 
                 # 成功，重置熔断器
                 cb.record_success()

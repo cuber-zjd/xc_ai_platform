@@ -12,4 +12,6 @@ export { OperationIntelligencePage } from "./pages/OperationIntelligencePage";
 export { QualityOverviewPage } from "./pages/QualityOverviewPage";
 export { ReportCenterPage } from "./pages/ReportCenterPage";
 export { SettingsPage } from "./pages/SettingsPage";
+export { ScheduledTasksPage } from "./pages/ScheduledTasksPage";
+export { FeishuBriefPage } from "./pages/FeishuBriefPage";
 export { TagCategoryPage } from "./pages/TagCategoryPage";

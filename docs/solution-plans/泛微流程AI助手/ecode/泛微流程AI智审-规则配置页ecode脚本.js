@@ -13,14 +13,15 @@
   // 现场配置区
   // ========================
   var ENABLE_AI_REVIEW_CONFIG = true;
-  var AI_PLATFORM_BASE_URL = "http://localhost:5173";
-  var AI_SIGN = "change-me";
+  var AI_PLATFORM_BASE_URL = "http://192.168.8.79:5173";
+  var AI_SIGN = "xc-fw-1af7cc98-66ed-4d55-a4cc-c6240b1f1c3c";
   var WEAVER_ENV = "test";
 
   var mounted = false;
   var tabId = "weaver-ai-review-config-tab";
   var panelId = "weaver-ai-review-config-panel";
   var iframeId = "weaver-ai-review-config-iframe";
+  var observer = null;
 
   function aiLog() {
     if (!window.console || !console.log) return;
@@ -64,7 +65,7 @@
   function buildIframeUrl() {
     return (
       AI_PLATFORM_BASE_URL.replace(/\/$/, "") +
-      "/weaver/assistant/review-config?ai_sign=" +
+      "/ai/weaver/assistant/review-config?ai_sign=" +
       encodeURIComponent(AI_SIGN) +
       "&env=" +
       encodeURIComponent(WEAVER_ENV) +
@@ -81,6 +82,21 @@
       var text = (node.innerText || "").replace(/\s+/g, "");
       return text.indexOf("基础设置") >= 0 && text.indexOf("高级设置") >= 0 && node.querySelectorAll("span,div,li,a").length >= 4;
     });
+  }
+
+  function findAdvancedTab(tabBar) {
+    if (!tabBar) return null;
+    var nodes = Array.prototype.slice.call(tabBar.querySelectorAll("div,span,li,a,button"));
+    for (var i = 0; i < nodes.length; i += 1) {
+      var text = (nodes[i].textContent || "").replace(/\s+/g, "");
+      if (text !== "高级设置") continue;
+      var current = nodes[i];
+      while (current.parentElement && current.parentElement !== tabBar) {
+        current = current.parentElement;
+      }
+      return current;
+    }
+    return null;
   }
 
   function findContentHost(tabBar) {
@@ -114,13 +130,35 @@
     iframe.src = buildIframeUrl();
   }
 
+  function hidePanel() {
+    var panel = document.getElementById(panelId);
+    var tab = document.getElementById(tabId);
+    if (panel) panel.style.display = "none";
+    if (tab) {
+      tab.style.color = "#334155";
+      tab.style.borderBottom = "2px solid transparent";
+    }
+  }
+
+  function bindNativeTabClose(tabBar) {
+    if (!tabBar || tabBar.getAttribute("data-ai-review-close-bound") === "1") return;
+    tabBar.setAttribute("data-ai-review-close-bound", "1");
+    tabBar.addEventListener("click", function (event) {
+      var target = event.target;
+      if (target && target.closest && target.closest("#" + tabId)) return;
+      hidePanel();
+    }, true);
+  }
+
   function mount() {
     if (!ENABLE_AI_REVIEW_CONFIG || mounted || !isWorkflowSettingPage()) return;
     var tabBar = findPrimaryTabBar();
     if (!tabBar) {
+      aiLog("未找到流程设置一级页签，稍后重试");
       window.setTimeout(mount, 800);
       return;
     }
+    var advancedTab = findAdvancedTab(tabBar);
     mounted = true;
     aiLog("开始挂载 AI 智审规则页签", { workflowId: getWorkflowId() });
 
@@ -138,7 +176,12 @@
       "border-bottom:2px solid transparent",
     ].join(";");
     tab.onclick = showPanel;
-    tabBar.appendChild(tab);
+    if (advancedTab && advancedTab.parentElement) {
+      var insertAnchor = document.getElementById("weaver-ai-workflow-rule-tab") || advancedTab;
+      insertAnchor.parentElement.insertBefore(tab, insertAnchor.nextSibling);
+    } else {
+      tabBar.appendChild(tab);
+    }
 
     var host = findContentHost(tabBar);
     var panel = document.createElement("div");
@@ -163,11 +206,56 @@
     iframe.style.cssText = "width:100%;height:100%;border:0;background:#fff;";
     panel.appendChild(iframe);
     host.appendChild(panel);
+    bindNativeTabClose(tabBar);
+  }
+
+  function unmountIfNeeded() {
+    if (isWorkflowSettingPage()) return;
+    var tab = document.getElementById(tabId);
+    var panel = document.getElementById(panelId);
+    if (tab && tab.parentNode) tab.parentNode.removeChild(tab);
+    if (panel && panel.parentNode) panel.parentNode.removeChild(panel);
+    mounted = false;
+  }
+
+  function checkRoute() {
+    unmountIfNeeded();
+    window.setTimeout(mount, 300);
+  }
+
+  aiLog("脚本已加载", {
+    href: window.location.href,
+    hash: window.location.hash,
+    workflowId: getWorkflowId()
+  });
+
+  window.addEventListener("hashchange", checkRoute);
+
+  function startObserver() {
+    if (observer || !document.body) return;
+    observer = new MutationObserver(function () {
+      if (mounted && (!document.getElementById(tabId) || !document.getElementById(panelId))) {
+        mounted = false;
+      }
+      if (!mounted && isWorkflowSettingPage()) {
+        window.setTimeout(mount, 100);
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
   }
 
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", mount);
+    document.addEventListener("DOMContentLoaded", function () {
+      startObserver();
+      mount();
+    });
   } else {
+    startObserver();
     mount();
   }
+
+  window.setTimeout(mount, 500);
+  window.setTimeout(mount, 1500);
+  window.setTimeout(mount, 3000);
+  window.setTimeout(mount, 6000);
 })();

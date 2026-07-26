@@ -173,6 +173,7 @@ pnpm dev
 - Insight 配置类和列表类页面必须坚持“主信息优先”：默认展示筛选、列表、关键状态和主要操作；新增、编辑、详情、说明、调试信息等次要内容优先放入弹窗、抽屉、折叠区或独立详情页，不要把大表单常驻在列表上方挤压数据区。
 - Insight 页面应控制卡片层级、margin 和 padding，避免标题卡片、Tab 卡片、内容卡片多层嵌套导致小屏幕可视区域被容器占满；Tab 应优先采用紧凑工具条形态，长说明只在需要时展示。
 - Insight 系统设置只承载渠道库、执行源等管理员基础配置；监测配置放在普通菜单 `/insight/monitoring`，分类及标签维护放在普通菜单 `/insight/tags`，业务用户可维护 AI 评审可选的受控分类和标签。配置列表必须分页展示，新增和编辑使用弹窗，列表区域内部滚动，旧 `/insight/data-sources` 仅作为兼容跳转。
+- Insight 定时任务管理入口为 `/insight/schedules`，只对管理员展示并使用管理员路由保护；页面集中展示调度状态、运行日志、监测/报告/飞书执行数量和 Token 用量。情报中心正式情报工具栏提供飞书多维表格同步弹窗，范围、日期、字段和元数据维护均在弹窗中完成，不把同步配置常驻在列表上方。
  
 ## 泛微流程AI助手补充
 
@@ -182,5 +183,6 @@ pnpm dev
 - 该页面用于 iframe 嵌入泛微流程页，不经过 `ProtectedRoute`，通过 URL 中的 `ai_sign` 调用后端外部接口。
 - 页面与 ecode 父页面通过 `postMessage` 通讯：接收 `WEAVER_AI_CONTEXT`，发送 `WEAVER_AI_APPLY_ACTIONS` 和 `WEAVER_AI_CLOSE`。
 - 发送聊天前应通过 `WEAVER_AI_REQUEST_CONTEXT` 请求 ecode 回传最新表单状态；聊天回答使用 `/ai-api/v1/weaver/ai-assistant/chat/stream` SSE 流式展示，动作到达后才启用“写入表单”确认。
-- 悬浮图标资源优先使用 `frontend/public/ai_logo.svg`，正式环境通过平台前端域名访问 `/ai_logo.svg`。
+- 泛微助手悬浮入口与 iframe 头部统一使用 `frontend/public/weaver-assistant/avatar.svg`；透明位图和 Lottie 资源位于同目录。正式环境通过平台前端域名访问 `/weaver-assistant/*`，打开和关闭面板时优先使用可逆的共享形象转场，并保留旧浏览器直接显隐降级。
 - 智审页面只展示风险、建议和检查项，不提供直接审批、退回、提交按钮；如后续做 AI 替审，也必须通过后端审计和泛微 Action 白名单能力实现。
+- 智审确定性工具返回逐项核对证据时，结果区应展示可折叠的结构化明细对比表；表格内部滚动，保留双方原始名称、金额、税率、匹配度和状态，异常行使用低饱和风险色突出，不把明细压缩成一段模型描述。

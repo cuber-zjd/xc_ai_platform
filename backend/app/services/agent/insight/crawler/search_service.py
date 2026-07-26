@@ -82,7 +82,7 @@ class InsightSearchDiscoveryService:
             status=InsightTaskStatus.RUNNING,
             progress=10,
             started_at=datetime.now(),
-            input_payload=request.model_dump() | {"user_id": user_id},
+            input_payload=request.model_dump(mode="json") | {"user_id": user_id},
             create_by=str(user_id) if user_id else None,
             update_by=str(user_id) if user_id else None,
         )
@@ -165,6 +165,7 @@ class InsightSearchDiscoveryService:
                 "llm_filter_applied": trace.llm_filter_applied,
                 "llm_filter_message": trace.llm_filter_message,
                 "hit_ai_analysis_applied": bool(request.create_candidate_from_hits and request.crawl_top_n == 0 and candidates),
+                "fulltext_summary": self._fulltext_summary(discovered_results),
                 "filter_summary": {
                     "source_hit_count": trace.collected_count,
                     "time_window_kept_count": trace.time_window_kept_count,
@@ -230,7 +231,7 @@ class InsightSearchDiscoveryService:
             status=InsightTaskStatus.RUNNING,
             progress=10,
             started_at=datetime.now(),
-            input_payload=request.model_dump() | {"user_id": user_id, "external_hits": True},
+            input_payload=request.model_dump(mode="json") | {"user_id": user_id, "external_hits": True},
             create_by=str(user_id) if user_id else None,
             update_by=str(user_id) if user_id else None,
         )
@@ -264,6 +265,7 @@ class InsightSearchDiscoveryService:
                 "llm_filter_applied": trace.llm_filter_applied,
                 "llm_filter_message": trace.llm_filter_message,
                 "hit_ai_analysis_applied": bool(candidates),
+                "fulltext_summary": self._fulltext_summary(discovered_results),
                 "filter_summary": {
                     "source_hit_count": trace.collected_count,
                     "time_window_kept_count": trace.time_window_kept_count,
@@ -556,27 +558,44 @@ class InsightSearchDiscoveryService:
         hits: list[InsightSearchHit],
         request: InsightSearchDiscoveryRequest,
     ) -> tuple[list[InsightSearchHit], list[dict[str, Any]]]:
-        cutoff = self._freshness_cutoff(request.freshness)
-        if cutoff is None:
+        cutoff = request.published_start or self._freshness_cutoff(request.freshness)
+        upper_bound = request.published_end
+        if cutoff is None and upper_bound is None:
             return hits, []
 
         filtered: list[InsightSearchHit] = []
         rejected: list[dict[str, Any]] = []
         for hit in hits:
-            if hit.published_at is None or hit.published_at >= cutoff:
+            if hit.published_at is None:
                 filtered.append(hit)
                 continue
-            rejected.append(
-                self._rejection_item(
-                    hit,
-                    "time_window",
-                    f"发布时间早于本次时间窗（{cutoff:%Y-%m-%d} 之后）",
+            if cutoff is not None and hit.published_at < cutoff:
+                rejected.append(
+                    self._rejection_item(
+                        hit,
+                        "time_window",
+                        f"发布时间早于本次时间窗（{cutoff:%Y-%m-%d %H:%M} 之后）",
+                    )
                 )
-            )
+                continue
+            if upper_bound is not None and hit.published_at > upper_bound:
+                rejected.append(
+                    self._rejection_item(
+                        hit,
+                        "time_window",
+                        f"发布时间晚于本次时间窗（{upper_bound:%Y-%m-%d %H:%M} 之前）",
+                    )
+                )
+                continue
+            filtered.append(hit)
         return filtered, rejected
 
     def _freshness_cutoff(self, freshness: str | None) -> datetime | None:
         value = (freshness or "").strip().lower()
+        day_match = re.fullmatch(r"(\d+)\s*d", value)
+        if day_match:
+            days = max(int(day_match.group(1)), 1)
+            return datetime.now() - timedelta(days=days)
         if value in {"halfmonth", "half_month", "15d", "recent15d", "recent_15d"}:
             return datetime.now() - timedelta(days=15)
         if value in {"oneweek", "one_week", "week", "7d"}:
@@ -832,6 +851,7 @@ class InsightSearchDiscoveryService:
     ) -> InsightCrawlResult:
         normalized_url = self._normalize_url_key(hit.url)
         dedupe_text = f"search_url\n{normalized_url or hit.url}"
+        raw_content = self._content_from_hit_raw(hit.raw)
         return InsightCrawlResult(
             task_id=task_id,
             data_source_id=request.data_source_id,
@@ -842,6 +862,7 @@ class InsightSearchDiscoveryService:
             source_url=self._truncate(hit.url, 1000) or hit.url[:1000],
             source_title=self._truncate(hit.title, 500),
             snippet=self._truncate(hit.snippet, 2000),
+            markdown_content=raw_content,
             published_at=hit.published_at,
             dedupe_hash=sha256(dedupe_text.encode("utf-8")).hexdigest(),
             crawl_metadata={
@@ -855,7 +876,7 @@ class InsightSearchDiscoveryService:
                     "llm_filter_configured": bool(request.enable_llm_filter and request.filter_prompt),
                 },
             },
-            status=InsightCrawlStatus.DISCOVERED,
+            status=InsightCrawlStatus.PARSED if raw_content else InsightCrawlStatus.DISCOVERED,
             create_by=str(user_id) if user_id else None,
             update_by=str(user_id) if user_id else None,
         )
@@ -865,6 +886,94 @@ class InsightSearchDiscoveryService:
             return None
         text = str(value)
         return text if len(text) <= limit else text[: limit - 1]
+
+    async def _enrich_fulltext_for_review(
+        self,
+        db: AsyncSession,
+        discovered_results: list[InsightCrawlResult],
+        analyses: dict[int, dict[str, Any]],
+        request: InsightSearchDiscoveryRequest,
+    ) -> None:
+        if request.fulltext_top_n <= 0:
+            return
+        min_score = request.llm_min_score if request.llm_min_score is not None else 0.45
+        eligible: list[tuple[float, InsightCrawlResult]] = []
+        for result in discovered_results:
+            if self._has_fulltext(result):
+                continue
+            metadata = result.crawl_metadata if isinstance(result.crawl_metadata, dict) else {}
+            if isinstance(metadata.get("crawl_fallback"), dict):
+                continue
+            analysis = analyses.get(result.id or 0, {})
+            if not bool(analysis.get("keep", True)):
+                continue
+            score = self._float_value(
+                analysis.get("relevance_score"),
+                self._float_value(analysis.get("confidence"), 0.58),
+            )
+            if score >= min_score:
+                eligible.append((score, result))
+        eligible.sort(key=lambda item: item[0], reverse=True)
+        selected_ids = {item.id for _, item in eligible[: request.fulltext_top_n] if item.id}
+
+        metadata_changed = False
+        for _, result in eligible:
+            if result.id not in selected_ids:
+                metadata = dict(result.crawl_metadata or {})
+                metadata["fulltext_fetch"] = {
+                    "status": "skipped",
+                    "reason": "超出本轮评审前正文补抓额度",
+                    "fulltext_top_n": request.fulltext_top_n,
+                }
+                result.crawl_metadata = metadata
+                result.update_time = datetime.now()
+                db.add(result)
+                metadata_changed = True
+                continue
+            try:
+                await insight_crawl_service.enrich_discovered_result(db, result)
+            except Exception as exc:
+                await insight_crawl_service.mark_fulltext_failure(db, result, exc)
+                logger.warning(
+                    "Insight 评审前正文补抓失败: crawl_result_id={} url={} error={}",
+                    result.id,
+                    result.source_url,
+                    str(exc)[:300],
+                )
+        if metadata_changed:
+            await db.commit()
+
+    def _has_fulltext(self, result: InsightCrawlResult) -> bool:
+        content = insight_content_cleaner.clean_readable_excerpt(result.markdown_content) or ""
+        return len(content) >= 200 and "页面需要安全验证" not in content
+
+    def _content_from_hit_raw(self, raw: dict[str, Any] | None) -> str | None:
+        if not isinstance(raw, dict):
+            return None
+        values: list[Any] = [raw.get("markdown"), raw.get("content"), raw.get("text")]
+        data = raw.get("data")
+        if isinstance(data, dict):
+            values.extend([data.get("markdown"), data.get("content"), data.get("text")])
+        for value in values:
+            if not isinstance(value, str):
+                continue
+            content = insight_content_cleaner.clean_text(value)
+            readable = insight_content_cleaner.clean_readable_excerpt(content) or ""
+            if len(readable) >= 200:
+                return content
+        return None
+
+    def _fulltext_summary(self, results: list[InsightCrawlResult]) -> dict[str, Any]:
+        statuses: dict[str, int] = {"success": 0, "failed": 0, "skipped": 0, "not_attempted": 0}
+        for result in results:
+            if self._has_fulltext(result):
+                statuses["success"] += 1
+                continue
+            metadata = result.crawl_metadata if isinstance(result.crawl_metadata, dict) else {}
+            fulltext = metadata.get("fulltext_fetch") if isinstance(metadata, dict) else None
+            status = str(fulltext.get("status") or "not_attempted") if isinstance(fulltext, dict) else "not_attempted"
+            statuses[status if status in statuses else "not_attempted"] += 1
+        return {"total": len(results), **statuses}
 
     async def _create_candidates_from_hits(
         self,
@@ -902,8 +1011,23 @@ class InsightSearchDiscoveryService:
                 company = (await db.exec(select(InsightCompany).where(InsightCompany.id == data_source.company_id))).first()
 
         analyses = await self._analyze_search_hit_candidates(discovered_results, request)
+        if request.enrich_fulltext_before_review:
+            await self._enrich_fulltext_for_review(db, discovered_results, analyses, request)
         candidates: list[InsightIntelligenceCandidate] = []
         for result in discovered_results:
+            if not self._result_matches_exact_window(result, request):
+                metadata = dict(result.crawl_metadata or {})
+                metadata["post_fulltext_time_filter"] = {
+                    "status": "rejected",
+                    "reason": "正文补抓后发布时间不在精确补采时间窗内，或仍无法确认发布时间",
+                    "published_at": result.published_at.isoformat() if result.published_at else None,
+                    "published_start": request.published_start.isoformat() if request.published_start else None,
+                    "published_end": request.published_end.isoformat() if request.published_end else None,
+                }
+                result.crawl_metadata = metadata
+                result.update_time = datetime.now()
+                db.add(result)
+                continue
             existing = (
                 await db.exec(
                     select(InsightIntelligenceCandidate).where(
@@ -918,16 +1042,27 @@ class InsightSearchDiscoveryService:
 
             title = result.source_title or request.query
             analysis = analyses.get(result.id or 0, {})
+            fulltext_analysis = None
+            if self._has_fulltext(result):
+                fulltext_analysis = await insight_crawl_service.summarize_fulltext_candidate(
+                    title,
+                    result.source_url,
+                    result.markdown_content or "",
+                )
+            effective_analysis = fulltext_analysis or analysis
             summary = (
-                str(analysis.get("summary") or "").strip()
+                str(effective_analysis.get("summary") or "").strip()
                 or result.snippet
                 or f"搜索发现与“{request.query}”相关的公开信息，等待后续正文抓取和 AI 深化。"
             )
-            confidence = self._float_value(analysis.get("confidence"), 0.58)
+            confidence = self._float_value(effective_analysis.get("confidence"), 0.58)
             relevance_score = self._float_value(analysis.get("relevance_score"), confidence)
             keep = bool(analysis.get("keep", True))
-            intelligence_type = str(analysis.get("intelligence_type") or "").strip() or self._infer_type_from_query(request.query)
-            llm_tags = [{"name": item[:30], "source": "llm"} for item in self._string_items(analysis.get("tags"))[:6]]
+            intelligence_type = str(effective_analysis.get("intelligence_type") or "").strip() or self._infer_type_from_query(request.query)
+            llm_tags = [
+                {"name": item[:30], "source": "llm"}
+                for item in self._string_items(effective_analysis.get("tags"))[:6]
+            ]
             if not llm_tags:
                 llm_tags = [{"name": "搜索发现", "source": "search_hit"}]
             crawl_fallback = (result.crawl_metadata or {}).get("crawl_fallback") if isinstance(result.crawl_metadata, dict) else None
@@ -943,6 +1078,21 @@ class InsightSearchDiscoveryService:
                 if isinstance(crawl_fallback, dict)
                 else []
             )
+            fulltext_metadata = (result.crawl_metadata or {}).get("fulltext_fetch")
+            fulltext_tags = []
+            if not self._has_fulltext(result):
+                failure_reason = (
+                    str(fulltext_metadata.get("error") or "")[:300]
+                    if isinstance(fulltext_metadata, dict)
+                    else "未进入本轮正文补抓额度"
+                )
+                fulltext_tags.append(
+                    {
+                        "name": "正文抓取待补",
+                        "source": "fulltext_gate",
+                        "reason": failure_reason,
+                    }
+                )
             candidate = InsightIntelligenceCandidate(
                 crawl_result_id=result.id or 0,
                 candidate_title=title[:500],
@@ -954,17 +1104,22 @@ class InsightSearchDiscoveryService:
                 suggested_tags=[
                     *llm_tags,
                     *fallback_tags,
+                    *fulltext_tags,
                     {"name": self._enum_value(result.channel), "source": "search_channel"},
                     {
                         "name": "AI搜索初筛",
                         "source": "llm_analysis",
-                        "sentiment": self._sentiment_value(analysis.get("sentiment")),
-                        "sentiment_reason": str(analysis.get("sentiment_reason") or analysis.get("reason") or "").strip()[:500],
-                        "opportunities": self._string_items(analysis.get("opportunities"))[:6],
-                        "risks": self._string_items(analysis.get("risks"))[:6],
+                        "sentiment": self._sentiment_value(effective_analysis.get("sentiment")),
+                        "sentiment_reason": str(
+                            effective_analysis.get("sentiment_reason")
+                            or effective_analysis.get("reason")
+                            or ""
+                        ).strip()[:500],
+                        "opportunities": self._string_items(effective_analysis.get("opportunities"))[:6],
+                        "risks": self._string_items(effective_analysis.get("risks"))[:6],
                         "keep": keep,
                         "relevance_score": round(relevance_score, 4),
-                        "analysis_scope": "search_hit",
+                        "analysis_scope": "fulltext" if fulltext_analysis else "search_hit",
                     },
                 ],
                 confidence=min(max(confidence, 0), 1),
@@ -989,6 +1144,19 @@ class InsightSearchDiscoveryService:
         for candidate in candidates:
             await db.refresh(candidate)
         return candidates
+
+    def _result_matches_exact_window(
+        self,
+        result: InsightCrawlResult,
+        request: InsightSearchDiscoveryRequest,
+    ) -> bool:
+        if request.published_start is None and request.published_end is None:
+            return True
+        if result.published_at is None:
+            return False
+        if request.published_start is not None and result.published_at < request.published_start:
+            return False
+        return request.published_end is None or result.published_at <= request.published_end
 
     async def _analyze_search_hit_candidates(
         self,

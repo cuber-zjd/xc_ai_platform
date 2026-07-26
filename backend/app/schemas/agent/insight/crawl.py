@@ -45,8 +45,12 @@ class InsightSearchDiscoveryRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=500)
     channels: list[str] = Field(default_factory=lambda: ["baidu"])
     freshness: str | None = Field(default="noLimit", max_length=50)
+    published_start: datetime | None = None
+    published_end: datetime | None = None
     max_results: int = Field(default=8, ge=1, le=50)
     crawl_top_n: int = Field(default=3, ge=0, le=50)
+    enrich_fulltext_before_review: bool = True
+    fulltext_top_n: int = Field(default=3, ge=0, le=20)
     data_source_id: int | None = None
     monitor_config_id: int | None = None
     source_channel_id: int | None = None

@@ -1487,17 +1487,17 @@ function SchedulerStatusCard({
             <div className="flex flex-wrap items-start justify-between gap-4">
                 <div className="min-w-0">
                     <h2 className="text-xl font-black text-slate-900">调度器</h2>
-                    <p className="mt-1 text-xs font-semibold leading-5 text-slate-500">后台按数据源周期扫描到期任务，统一写入执行日志。</p>
+                    <p className="mt-1 text-xs font-semibold leading-5 text-slate-500">后台按每日定时时间执行到期任务，统一写入执行日志。</p>
                 </div>
                 {loading || refreshing ? <Loader2 className="size-5 animate-spin text-blue-600" /> : <CalendarClock className="size-5 text-blue-600" />}
             </div>
             <div className="mt-4 grid gap-3 sm:grid-cols-2">
                 <ResultMetric label="运行状态" value={status?.running ? "运行中" : "已停止"} />
                 <ResultMetric label="启用状态" value={status?.enabled ? "已启用" : "未启用"} />
-                <ResultMetric label="扫描间隔" value={status ? `${status.interval_seconds} 秒` : "-"} />
+                <ResultMetric label="触发模式" value={status?.trigger_mode === "daily" ? "每日定时" : "固定间隔"} />
+                <ResultMetric label="触发时间" value={status ? `${status.daily_time} ${status.timezone}` : "-"} />
                 <ResultMetric label="单批上限" value={status ? `${status.batch_limit} 个` : "-"} />
                 <ResultMetric label="失败暂停阈值" value={status ? `${status.failure_pause_threshold} 次` : "-"} />
-                <ResultMetric label="互斥锁 ID" value={status ? String(status.advisory_lock_id) : "-"} />
             </div>
             {status ? (
                 <div className={`mt-4 rounded-xl border px-3 py-3 text-xs font-semibold leading-5 ${status.config_health === "ready" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-orange-200 bg-orange-50 text-orange-700"}`}>
@@ -1515,9 +1515,9 @@ function SchedulerStatusCard({
                 </div>
             ) : null}
             <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-xs font-semibold leading-5 text-slate-600">
-                <div>上次扫描：{formatDateTime(status?.last_tick_at)}</div>
+                <div>上次执行：{formatDateTime(status?.last_tick_at)}</div>
                 <div>上次成功：{formatDateTime(status?.last_success_at)}</div>
-                <div>下次扫描：{formatDateTime(status?.next_tick_at)}</div>
+                <div>下次执行：{formatDateTime(status?.next_tick_at)}</div>
                 {status?.last_error ? <FriendlyErrorBox error={status.last_error} context="上次调度错误" className="mt-2" /> : null}
                 {skippedReason ? <div className="text-orange-600">跳过原因：{skippedReason}</div> : null}
                 {checkedCount !== null || dueCount !== null || executedCount !== null || failedCount !== null ? (

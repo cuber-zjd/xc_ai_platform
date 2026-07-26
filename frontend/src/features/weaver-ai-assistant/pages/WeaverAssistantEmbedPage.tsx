@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import { fetchWeaverFieldConfig, streamWeaverAssistantMessage } from "../api";
+import { WeaverAssistantAvatar } from "../components/WeaverAssistantAvatar";
 import type { WeaverAssistantAction, WeaverFieldConfigItem, WeaverFormContext, WeaverMessage } from "../types";
 
 const makeMessageId = () => `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -229,27 +230,36 @@ export default function WeaverAssistantEmbedPage() {
 
   return (
     <div className="flex h-screen min-h-0 flex-col bg-white text-slate-950">
-      <header className="flex h-14 shrink-0 items-center justify-between border-b border-slate-200 bg-slate-50 px-4">
-        <div className="flex min-w-0 items-center gap-3">
-          <img src="/ai_logo.svg" alt="AI填单助手" className="h-8 w-8 shrink-0 object-contain" />
+      <header className="relative flex h-[108px] shrink-0 items-center justify-between overflow-hidden border-b border-blue-950 bg-[#071b50] px-5">
+        <div className="flex min-w-0 items-center gap-4">
+          <WeaverAssistantAvatar
+            className="h-[76px] w-[86px] overflow-visible"
+            mode={loading ? "thinking" : pendingActions.length ? "success" : "idle"}
+            title="AI 填单助手"
+            glow
+          />
           <div className="min-w-0">
-            <div className="truncate text-sm font-semibold">泛微流程 AI 助手</div>
-            <div className="truncate text-xs text-slate-500">流程 ID：{workflowId}</div>
+            <div className="truncate text-lg font-semibold text-white">泛微流程 AI 助手</div>
+            <div className="mt-1 flex items-center gap-2 text-xs text-blue-100">
+              <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.9)]" />
+              {loading ? "正在思考" : "在线 · 随时为你服务"}
+            </div>
+            <div className="mt-1 truncate text-[11px] text-blue-200/80">流程 ID：{workflowId}</div>
           </div>
         </div>
         <button
           type="button"
-          className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-500 transition hover:bg-slate-200 hover:text-slate-900"
+          className="inline-flex h-9 w-9 items-center justify-center rounded-full text-blue-100 transition hover:bg-white/10 hover:text-white"
           onClick={handleClose}
           title="关闭"
         >
-          <X className="h-4 w-4" />
+          <X className="h-5 w-5" />
         </button>
       </header>
 
       <section className="border-b border-slate-200 bg-white px-4 py-3">
-        <div className="flex items-center gap-2 text-xs font-medium text-slate-600">
-          <Sparkles className="h-3.5 w-3.5 text-teal-600" />
+        <div className="flex items-center gap-2 text-xs font-medium text-slate-700">
+          <Sparkles className="h-3.5 w-3.5 text-blue-600" />
           当前可写字段
         </div>
         <div className="mt-2 flex gap-2 overflow-x-auto pb-1">
@@ -257,7 +267,7 @@ export default function WeaverAssistantEmbedPage() {
             writableFieldList.slice(0, 8).map((field) => (
               <span
                 key={field.fieldId}
-                className="shrink-0 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-600"
+                className="shrink-0 rounded-full border border-blue-100 bg-blue-50 px-2.5 py-1 text-xs text-blue-800"
               >
                 {field.label || field.fieldId}
               </span>
@@ -270,28 +280,41 @@ export default function WeaverAssistantEmbedPage() {
         </div>
       </section>
 
-      <main className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-        <div className="flex flex-col gap-3">
+      <main className="min-h-0 flex-1 overflow-y-auto bg-[#f8faff] px-4 py-5">
+        <div className="flex flex-col gap-4">
           {messages.map((message) => (
             <div
               key={message.id}
               className={
                 message.role === "user"
-                  ? "ml-10 rounded-lg bg-teal-50 px-3 py-2 text-sm leading-6 text-teal-950"
-                  : "mr-8 rounded-lg bg-slate-100 px-3 py-2 text-sm leading-6 text-slate-800"
+                  ? "ml-12 self-end rounded-[18px_18px_5px_18px] bg-blue-600 px-4 py-3 text-sm leading-6 text-white shadow-[0_8px_20px_rgba(37,99,235,0.16)]"
+                  : "flex max-w-[94%] items-start gap-2.5"
               }
             >
-              <MessageContent content={message.content} />
+              {message.role === "assistant" ? (
+                <>
+                  <WeaverAssistantAvatar
+                    className="mt-1 h-8 w-9"
+                    mode={loading && message.id === messages[messages.length - 1]?.id ? "thinking" : "idle"}
+                    title="AI 助手"
+                  />
+                  <div className="min-w-0 rounded-[5px_18px_18px_18px] border border-slate-100 bg-white px-4 py-3 text-sm leading-6 text-slate-700 shadow-[0_8px_24px_rgba(15,23,42,0.06)]">
+                    <MessageContent content={message.content} />
+                  </div>
+                </>
+              ) : (
+                <MessageContent content={message.content} />
+              )}
             </div>
           ))}
         </div>
       </main>
 
-      <footer className="shrink-0 border-t border-slate-200 bg-white p-3">
+      <footer className="shrink-0 border-t border-slate-200 bg-white p-4">
         {pendingActions.length ? (
-          <div className="mb-3 rounded-lg border border-teal-100 bg-teal-50/70 px-3 py-2">
-            <div className="text-xs font-medium text-teal-950">待写入表单</div>
-            <div className="mt-1 space-y-1 text-xs leading-5 text-teal-900">
+          <div className="mb-3 rounded-lg border border-blue-100 bg-blue-50/70 px-3 py-2">
+            <div className="text-xs font-medium text-blue-950">待写入表单</div>
+            <div className="mt-1 space-y-1 text-xs leading-5 text-blue-900">
               {pendingActions.map((action, index) => (
                 <div key={`${action.type}-${action.field || action.detail || index}`}>
                   {formatActionLabel(action, index)}
@@ -300,18 +323,25 @@ export default function WeaverAssistantEmbedPage() {
             </div>
           </div>
         ) : null}
-        <textarea
-          value={input}
-          onChange={(event) => setInput(event.target.value)}
-          className="h-20 w-full resize-none rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none transition placeholder:text-slate-400 focus:border-teal-500 focus:ring-2 focus:ring-teal-500/15"
-          placeholder="例如：帮我把请假原因写得正式一点，并补全标题"
-        />
-        <div className="mt-2 flex items-center justify-end gap-2">
+        <div className="rounded-xl border border-blue-100 bg-white p-2 shadow-[0_8px_24px_rgba(30,64,175,0.08)] transition focus-within:border-blue-300 focus-within:ring-2 focus-within:ring-blue-100">
+          <textarea
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                void handleSend();
+              }
+            }}
+            className="h-16 w-full resize-none border-0 bg-transparent px-2 py-1 text-sm outline-none placeholder:text-slate-400"
+            placeholder="输入你的问题或填单要求..."
+          />
+          <div className="flex items-center justify-end gap-2">
           <button
             type="button"
             disabled={!pendingActions.length}
             onClick={handleApply}
-            className="inline-flex h-9 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex h-9 items-center gap-2 rounded-full border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 transition hover:border-blue-200 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-45"
           >
             <ClipboardCheck className="h-4 w-4" />
             确认写入
@@ -320,12 +350,14 @@ export default function WeaverAssistantEmbedPage() {
             type="button"
             disabled={loading || !input.trim()}
             onClick={handleSend}
-            className="inline-flex h-9 items-center gap-2 rounded-md bg-teal-700 px-3 text-sm font-medium text-white transition hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-55"
+              className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-blue-600 text-white shadow-[0_6px_16px_rgba(37,99,235,0.3)] transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-45"
+              title={loading ? "处理中" : "发送"}
           >
             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-            {loading ? "处理中" : "发送"}
           </button>
+          </div>
         </div>
+        <div className="mt-2 text-center text-[11px] text-slate-400">Enter 发送，Shift + Enter 换行</div>
       </footer>
     </div>
   );

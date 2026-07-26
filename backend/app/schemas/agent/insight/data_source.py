@@ -285,9 +285,15 @@ class InsightDataSourceScheduleRunResponse(BaseModel):
 
 class InsightSchedulerStatusRead(BaseModel):
     enabled: bool
+    auto_start: bool = False
     running: bool
+    trigger_mode: str = "daily"
+    daily_time: str = "01:00"
+    timezone: str = "Asia/Shanghai"
     interval_seconds: int
     batch_limit: int
+    daily_discovery_enabled: bool = True
+    daily_discovery_freshness: str = "3d"
     startup_delay_seconds: int
     advisory_lock_id: int
     scheduler_user_id: int
