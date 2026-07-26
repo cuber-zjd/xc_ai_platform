@@ -204,10 +204,22 @@ class InsightFeishuMonthlyReportService:
             )
         final_score = self._review_score(final_reviews)
         blocking = self._blocking_issues(final_reviews)
-        if blocking or final_score < 82:
+        deterministic_errors = self._validate_monthly_markdown(final_markdown, approved)
+        if blocking or deterministic_errors or final_score < 82:
+            repair_reviews = list(final_reviews)
+            if deterministic_errors:
+                repair_reviews.append(
+                    {
+                        "review_role": "确定性格式检查",
+                        "blocking_issues": deterministic_errors,
+                        "revision_advice": [
+                            "只针对列出的模板或引用问题修订，保留原有事实和已审批链接。"
+                        ],
+                    }
+                )
             final_markdown = await self._repair_final(
                 markdown=final_markdown,
-                reviews=final_reviews,
+                reviews=repair_reviews,
                 company_name=company_name,
                 period_start=period_start,
                 period_end=period_end,
