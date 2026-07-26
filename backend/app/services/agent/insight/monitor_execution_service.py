@@ -261,13 +261,24 @@ class InsightMonitorExecutionService:
             "baidu_success_count": sum(1 for item in baidu_logs if item.get("status") == "success"),
             "baidu_failed_count": sum(1 for item in baidu_logs if item.get("status") == "failed"),
             "grouped_batch_count": len(grouped_logs),
-            "grouped_failed_count": sum(1 for item in grouped_logs if item.get("status") == "failed"),
+            "grouped_failed_count": sum(1 for item in grouped_logs if item.get("status") != "success"),
+            "grouped_partial_count": sum(1 for item in grouped_logs if item.get("status") == "partial"),
+            "grouped_retry_count": sum(int(item.get("retry_count") or 0) for item in grouped_logs),
+            "fulltext_summary": {
+                "success": sum(int((item.get("fulltext_summary") or {}).get("success") or 0) for item in grouped_logs),
+                "failed": sum(int((item.get("fulltext_summary") or {}).get("failed") or 0) for item in grouped_logs),
+                "skipped": sum(int((item.get("fulltext_summary") or {}).get("skipped") or 0) for item in grouped_logs),
+                "not_attempted": sum(
+                    int((item.get("fulltext_summary") or {}).get("not_attempted") or 0)
+                    for item in grouped_logs
+                ),
+            },
             "hit_count": sum(int(item.get("hits") or 0) for item in baidu_logs) + grouped_hit_count,
             "candidate_count": sum(int(item.get("candidates") or 0) for item in baidu_logs)
             + grouped_candidate_count,
             "signal_monitor_config_ids": sorted(signal_ids),
             "errors": [item for item in baidu_logs if item.get("status") == "failed"][:50]
-            + [item for item in grouped_logs if item.get("status") == "failed"][:50],
+            + [item for item in grouped_logs if item.get("status") != "success"][:50],
             "grouped_batches": grouped_logs,
         }
 
@@ -591,6 +602,9 @@ class InsightMonitorExecutionService:
         batch_logs: list[dict[str, Any]] = []
         semaphore = asyncio.Semaphore(self.grouped_search_concurrency)
         ai_semaphore = asyncio.Semaphore(self.grouped_ai_search_concurrency)
+        ingest_semaphore = asyncio.Semaphore(
+            max(settings.INSIGHT_SCHEDULER_GROUPED_INGEST_CONCURRENCY, 1)
+        )
 
         async def run_one(
             batch: GroupedDiscoveryBatch,
@@ -601,9 +615,10 @@ class InsightMonitorExecutionService:
             current_semaphore = ai_semaphore if handler_code == "doubao_web_search" else semaphore
             async with current_semaphore:
                 try:
-                    raw_hits = await asyncio.wait_for(
-                        self._search_grouped_channel(batch, handler_code, freshness_override=freshness),
-                        timeout=self.channel_timeout_seconds,
+                    raw_hits, search_meta = await self._search_grouped_channel_with_retry(
+                        batch,
+                        handler_code,
+                        freshness_override=freshness,
                     )
                 except Exception as exc:
                     return {
@@ -612,12 +627,14 @@ class InsightMonitorExecutionService:
                         "query": batch.query,
                         "status": "failed",
                         "error": f"{exc.__class__.__name__}: {str(exc) or '渠道请求超时或未返回'}"[:500],
+                        "retry_count": 1 if handler_code == "doubao_web_search" else 0,
                     }
 
             assigned = self._assign_grouped_hits(batch.rows, raw_hits)
             hit_count = 0
             candidate_count = 0
             ingest_errors: list[dict[str, Any]] = []
+            fulltext_summary = {"success": 0, "failed": 0, "skipped": 0, "not_attempted": 0}
             for row, hits in assigned.values():
                 if not hits or not row.id:
                     continue
@@ -642,14 +659,15 @@ class InsightMonitorExecutionService:
                     run_type=self._run_type(row),
                 )
                 try:
-                    async with async_session() as ingest_db:
-                        response = await insight_search_discovery_service.ingest_search_hits(
-                            ingest_db,
-                            request,
-                            hits,
-                            user_id=user_id,
-                            is_admin=True,
-                        )
+                    async with ingest_semaphore:
+                        async with async_session() as ingest_db:
+                            response = await insight_search_discovery_service.ingest_search_hits(
+                                ingest_db,
+                                request,
+                                hits,
+                                user_id=user_id,
+                                is_admin=True,
+                            )
                 except Exception as exc:
                     ingest_errors.append(
                         {
@@ -663,19 +681,26 @@ class InsightMonitorExecutionService:
                 row_candidate_count = len(response.candidates)
                 hit_count += row_hit_count
                 candidate_count += row_candidate_count
+                response_fulltext = (response.task.output_payload or {}).get("fulltext_summary") or {}
+                for key in fulltext_summary:
+                    fulltext_summary[key] += int(response_fulltext.get(key) or 0)
                 by_monitor[row.id]["hits"] += row_hit_count
                 by_monitor[row.id]["candidates"] += row_candidate_count
+            search_errors = list(search_meta.get("retry_errors") or [])
             return {
                 "group_key": batch.group_key,
                 "group_name": batch.group_name,
                 "channel_code": channel.channel_code,
                 "query": batch.query,
-                "status": "partial" if ingest_errors else "success",
+                "status": "partial" if ingest_errors or search_errors else "success",
                 "raw_hits": len(raw_hits),
                 "assigned_monitor_count": len(assigned),
                 "hits": hit_count,
                 "candidates": candidate_count,
                 "ingest_errors": ingest_errors[:20],
+                "retry_count": int(search_meta.get("retry_count") or 0),
+                "retry_errors": search_errors[:10],
+                "fulltext_summary": fulltext_summary,
             }
 
         tasks: list[asyncio.Task] = []
@@ -703,6 +728,71 @@ class InsightMonitorExecutionService:
             "by_monitor_config_id": {str(key): value for key, value in by_monitor.items()},
             "batches": batch_logs,
         }
+
+    async def _search_grouped_channel_with_retry(
+        self,
+        batch: GroupedDiscoveryBatch,
+        handler_code: str,
+        *,
+        freshness_override: str | None = None,
+    ) -> tuple[list[InsightSearchHit], dict[str, Any]]:
+        timeout = (
+            max(settings.INSIGHT_SCHEDULER_GROUPED_AI_TIMEOUT_SECONDS, 30)
+            if handler_code == "doubao_web_search"
+            else self.channel_timeout_seconds
+        )
+        try:
+            hits = await asyncio.wait_for(
+                self._search_grouped_channel(batch, handler_code, freshness_override=freshness_override),
+                timeout=timeout,
+            )
+            return hits, {"retry_count": 0, "retry_errors": []}
+        except Exception:
+            if handler_code != "doubao_web_search" or len(batch.rows) <= 1:
+                raise
+
+        retry_batch_size = max(1, settings.INSIGHT_SCHEDULER_GROUPED_AI_RETRY_BATCH_SIZE)
+        retry_hits: list[InsightSearchHit] = []
+        retry_errors: list[dict[str, Any]] = []
+        retry_count = 0
+        for index in range(0, len(batch.rows), retry_batch_size):
+            retry_rows = batch.rows[index : index + retry_batch_size]
+            retry_batch = GroupedDiscoveryBatch(
+                group_key=f"{batch.group_key}:retry:{index // retry_batch_size + 1}",
+                group_name=self._group_name(retry_rows),
+                rows=retry_rows,
+                query=self._build_group_query(retry_rows),
+            )
+            retry_count += 1
+            try:
+                retry_hits.extend(
+                    await asyncio.wait_for(
+                        self._search_grouped_channel(
+                            retry_batch,
+                            handler_code,
+                            freshness_override=freshness_override,
+                        ),
+                        timeout=timeout,
+                    )
+                )
+            except Exception as exc:
+                retry_errors.append(
+                    {
+                        "group_key": retry_batch.group_key,
+                        "query": retry_batch.query,
+                        "error": f"{exc.__class__.__name__}: {str(exc) or '重试未返回'}"[:500],
+                    }
+                )
+        deduped_hits: list[InsightSearchHit] = []
+        seen_urls: set[str] = set()
+        for hit in retry_hits:
+            if hit.url in seen_urls:
+                continue
+            seen_urls.add(hit.url)
+            deduped_hits.append(hit)
+        if not deduped_hits and retry_errors:
+            raise RuntimeError(f"豆包联网搜索拆分重试失败：{retry_errors[0]['error']}")
+        return deduped_hits, {"retry_count": retry_count, "retry_errors": retry_errors}
 
     async def _search_grouped_channel(
         self,

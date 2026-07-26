@@ -12,10 +12,13 @@ DATABASE_URL = str(settings.sqlalchemy_database_uri)
 
 engine = create_async_engine(
     DATABASE_URL,
-    echo=True,
+    echo=settings.DATABASE_ECHO,
     future=True,
     pool_pre_ping=True,
     pool_recycle=1800,
+    pool_size=max(settings.DATABASE_POOL_SIZE, 1),
+    max_overflow=max(settings.DATABASE_MAX_OVERFLOW, 0),
+    pool_timeout=max(settings.DATABASE_POOL_TIMEOUT_SECONDS, 1),
 )
 
 async_session = sessionmaker(

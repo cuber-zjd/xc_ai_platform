@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from hashlib import sha256
 from typing import Any
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -898,8 +899,21 @@ class InsightSearchDiscoveryService:
             return
         min_score = request.llm_min_score if request.llm_min_score is not None else 0.45
         eligible: list[tuple[float, InsightCrawlResult]] = []
+        metadata_changed = False
         for result in discovered_results:
             if self._has_fulltext(result):
+                continue
+            unsupported_reason = self._unsupported_fulltext_reason(result.source_url)
+            if unsupported_reason:
+                metadata = dict(result.crawl_metadata or {})
+                metadata["fulltext_fetch"] = {
+                    "status": "skipped",
+                    "reason": unsupported_reason,
+                }
+                result.crawl_metadata = metadata
+                result.update_time = datetime.now()
+                db.add(result)
+                metadata_changed = True
                 continue
             metadata = result.crawl_metadata if isinstance(result.crawl_metadata, dict) else {}
             if isinstance(metadata.get("crawl_fallback"), dict):
@@ -916,7 +930,6 @@ class InsightSearchDiscoveryService:
         eligible.sort(key=lambda item: item[0], reverse=True)
         selected_ids = {item.id for _, item in eligible[: request.fulltext_top_n] if item.id}
 
-        metadata_changed = False
         for _, result in eligible:
             if result.id not in selected_ids:
                 metadata = dict(result.crawl_metadata or {})
@@ -942,6 +955,12 @@ class InsightSearchDiscoveryService:
                 )
         if metadata_changed:
             await db.commit()
+
+    def _unsupported_fulltext_reason(self, url: str) -> str | None:
+        path = urlsplit(url).path.lower()
+        if path.endswith(".pdf"):
+            return "当前正文抽取链路暂不解析 PDF，保留搜索摘要为候选线索"
+        return None
 
     def _has_fulltext(self, result: InsightCrawlResult) -> bool:
         content = insight_content_cleaner.clean_readable_excerpt(result.markdown_content) or ""

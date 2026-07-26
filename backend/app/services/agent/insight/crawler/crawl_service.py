@@ -46,6 +46,9 @@ class InsightCrawlService:
     ) -> InsightCrawlResult:
         """在原搜索记录上补全正文，不重复创建采集任务和候选。"""
 
+        reused = await self._reuse_existing_fulltext(db, crawl_result)
+        if reused:
+            return reused
         async with self._fulltext_semaphore:
             firecrawl_data = await firecrawl_client.scrape_url_with_fallback(crawl_result.source_url)
         metadata = firecrawl_data.get("metadata") or {}
@@ -93,6 +96,63 @@ class InsightCrawlService:
         crawl_result.crawl_metadata = crawl_metadata
         quality_report = await self._assess_crawl_quality(db, crawl_result)
         crawl_result.crawl_metadata = crawl_metadata | {"quality_report": quality_report}
+        crawl_result.update_time = datetime.now()
+        db.add(crawl_result)
+        await db.commit()
+        await db.refresh(crawl_result)
+        return crawl_result
+
+    async def _reuse_existing_fulltext(
+        self,
+        db: AsyncSession,
+        crawl_result: InsightCrawlResult,
+    ) -> InsightCrawlResult | None:
+        existing = (
+            await db.exec(
+                select(InsightCrawlResult)
+                .where(
+                    InsightCrawlResult.id != (crawl_result.id or 0),
+                    InsightCrawlResult.is_deleted == 0,
+                    InsightCrawlResult.source_url == crawl_result.source_url,
+                    InsightCrawlResult.markdown_content.is_not(None),
+                )
+                .order_by(InsightCrawlResult.update_time.desc().nullslast())
+                .limit(1)
+            )
+        ).first()
+        if not existing:
+            return None
+        markdown = insight_content_cleaner.clean_text(existing.markdown_content)
+        readable = insight_content_cleaner.clean_readable_excerpt(markdown) or ""
+        if len(readable) < 200 or "页面需要安全验证" in readable:
+            return None
+        crawl_result.source_title = insight_content_cleaner.clean_title(
+            existing.source_title,
+            crawl_result.source_title,
+            crawl_result.source_url,
+        )
+        crawl_result.snippet = existing.snippet or insight_content_cleaner.clean_summary(markdown, 500)
+        crawl_result.markdown_content = markdown
+        crawl_result.published_at = existing.published_at or crawl_result.published_at
+        crawl_result.dedupe_hash = insight_content_cleaner.build_dedupe_hash(
+            crawl_result.source_url,
+            crawl_result.source_title,
+            markdown,
+        )
+        crawl_result.status = InsightCrawlStatus.PARSED
+        crawl_result.error_message = None
+        metadata = dict(crawl_result.crawl_metadata or {})
+        metadata["fulltext_fetch"] = {
+            "status": "success",
+            "provider": "existing_crawl_result",
+            "reused_from_crawl_result_id": existing.id,
+            "fetched_at": datetime.now().isoformat(),
+            "markdown_length": len(markdown),
+            "readable_length": len(readable),
+        }
+        crawl_result.crawl_metadata = metadata
+        quality_report = await self._assess_crawl_quality(db, crawl_result)
+        crawl_result.crawl_metadata = metadata | {"quality_report": quality_report}
         crawl_result.update_time = datetime.now()
         db.add(crawl_result)
         await db.commit()
