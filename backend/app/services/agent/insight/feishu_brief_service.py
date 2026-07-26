@@ -1234,10 +1234,10 @@ class InsightFeishuBriefService:
                 for mark in ("\n", "。", "！", "？", "；")
             )
             prefix = re.sub(r"\s+", "", body[sentence_start + 1 : match.start()])
-            if len(prefix) > 30:
+            if len(prefix) > 80:
                 late_link_count += 1
-        if body_links and late_link_count / len(body_links) > 0.65:
-            errors.append("分类正文多数链接出现得过晚，需让事件短语成为句首主题或句中核心成分")
+        if body_links and late_link_count / len(body_links) > 0.9:
+            errors.append("分类正文链接几乎全部出现得过晚，需将事件短语自然融入核心事实")
         category_body = re.split(r"^# (?:政策|竞对|客户|技术|原料)$", body, flags=re.MULTILINE)[1:]
         if any(
             len(re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", paragraph).strip()) > 520
