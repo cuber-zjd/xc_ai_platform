@@ -774,6 +774,7 @@ class LLMFactory:
         json_mode: bool = False,
         enable_reasoning: bool = False,
         max_retries: int = 3,
+        invocation_timeout_seconds: float | None = None,
         langfuse_trace_context: dict[str, str] | None = None,
         langfuse_run_name: str | None = None,
         langfuse_metadata: dict[str, Any] | None = None,
@@ -868,7 +869,16 @@ class LLMFactory:
                     f"尝试调用模型: {model_config.model_name} "
                     f"(级别={model_config.model_level}, 优先级={model_config.priority})"
                 )
-                response = await llm.ainvoke(messages, config=invoke_config) if invoke_config else await llm.ainvoke(messages)
+                invocation = (
+                    llm.ainvoke(messages, config=invoke_config)
+                    if invoke_config
+                    else llm.ainvoke(messages)
+                )
+                response = (
+                    await asyncio.wait_for(invocation, timeout=invocation_timeout_seconds)
+                    if invocation_timeout_seconds
+                    else await invocation
+                )
                 response_metadata = getattr(response, "response_metadata", None)
                 if isinstance(response_metadata, dict):
                     response_metadata["selected_model_name"] = model_config.model_name

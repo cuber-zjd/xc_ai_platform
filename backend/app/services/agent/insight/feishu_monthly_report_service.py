@@ -331,6 +331,8 @@ class InsightFeishuMonthlyReportService:
                 prompt=prompt,
                 preferred_model=model_names[batch_index % len(model_names)],
                 stage_trace=stage_trace,
+                enable_reasoning=False,
+                invocation_timeout_seconds=120,
             )
 
         batch_results = await asyncio.gather(
@@ -479,6 +481,8 @@ class InsightFeishuMonthlyReportService:
 """,
                 preferred_model=model_names[index % len(model_names)],
                 stage_trace=stage_trace,
+                enable_reasoning=False,
+                invocation_timeout_seconds=120,
             )
             return markdown, used_model
 
@@ -771,6 +775,8 @@ facts_to_recheck、strengths。
         prompt: str,
         preferred_model: str,
         stage_trace: list[dict[str, Any]],
+        enable_reasoning: bool = True,
+        invocation_timeout_seconds: float = 180,
     ) -> tuple[dict[str, Any], str]:
         started = datetime.now()
         response = await LLMFactory.safe_invoke(
@@ -779,8 +785,9 @@ facts_to_recheck、strengths。
             preferred_model_names=[preferred_model],
             temperature=0,
             json_mode=True,
-            enable_reasoning=True,
+            enable_reasoning=enable_reasoning,
             max_retries=3,
+            invocation_timeout_seconds=invocation_timeout_seconds,
             langfuse_run_name=f"insight_monthly_{stage}",
             langfuse_tags=["insight", "feishu_monthly", stage],
         )
@@ -813,6 +820,7 @@ facts_to_recheck、strengths。
             temperature=0.12,
             enable_reasoning=True,
             max_retries=3,
+            invocation_timeout_seconds=300,
             langfuse_run_name=f"insight_monthly_{stage}",
             langfuse_tags=["insight", "feishu_monthly", stage],
         )
