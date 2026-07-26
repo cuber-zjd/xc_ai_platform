@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
+from loguru import logger
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
@@ -481,15 +482,40 @@ class InsightFeishuMonthlyReportService:
 """,
                 preferred_model=model_names[index % len(model_names)],
                 stage_trace=stage_trace,
+                enable_langfuse_callbacks=False,
             )
             return markdown, used_model
 
-        parts = await asyncio.gather(
-            *[
-                build_section(index, role_name, roles, headings)
-                for index, (role_name, roles, headings) in enumerate(section_specs)
-            ]
-        )
+        tasks = {
+            asyncio.create_task(
+                build_section(index, role_name, roles, headings),
+                name=f"monthly-section-{index + 1}",
+            ): (index, role_name, roles, headings)
+            for index, (role_name, roles, headings) in enumerate(section_specs)
+        }
+        done, pending = await asyncio.wait(tasks, timeout=330)
+        completed_parts: dict[int, tuple[str, str]] = {}
+        for task in done:
+            index, role_name, _roles, _headings = tasks[task]
+            try:
+                completed_parts[index] = task.result()
+                logger.info("月报分章节生成完成: {}", role_name)
+            except Exception as exc:
+                logger.warning("月报分章节生成失败，将单独补写: {} - {}", role_name, exc)
+
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+            logger.warning("月报分章节并发收束超时，待补写章节数: {}", len(pending))
+
+        for task, (index, role_name, roles, headings) in tasks.items():
+            if index in completed_parts:
+                continue
+            logger.info("开始单独补写月报章节: {}", role_name)
+            completed_parts[index] = await build_section(index, role_name, roles, headings)
+
+        parts = [completed_parts[index] for index in range(len(section_specs))]
         title_block = self._header(company_name, period_start, period_end, len(materials))
         markdown = title_block + "\n\n" + "\n\n".join(part[0] for part in parts)
         markdown = self._order_sections(markdown)
@@ -811,6 +837,7 @@ facts_to_recheck、strengths。
         prompt: str,
         preferred_model: str,
         stage_trace: list[dict[str, Any]],
+        enable_langfuse_callbacks: bool = True,
     ) -> tuple[str, str]:
         started = datetime.now()
         response = await LLMFactory.safe_invoke(
@@ -821,6 +848,7 @@ facts_to_recheck、strengths。
             enable_reasoning=True,
             max_retries=3,
             invocation_timeout_seconds=300,
+            enable_langfuse_callbacks=enable_langfuse_callbacks,
             langfuse_run_name=f"insight_monthly_{stage}",
             langfuse_tags=["insight", "feishu_monthly", stage],
         )

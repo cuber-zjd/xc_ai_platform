@@ -775,6 +775,7 @@ class LLMFactory:
         enable_reasoning: bool = False,
         max_retries: int = 3,
         invocation_timeout_seconds: float | None = None,
+        enable_langfuse_callbacks: bool = True,
         langfuse_trace_context: dict[str, str] | None = None,
         langfuse_run_name: str | None = None,
         langfuse_metadata: dict[str, Any] | None = None,
@@ -856,7 +857,10 @@ class LLMFactory:
                     streaming=False,  # safe_invoke 不使用流式
                     json_mode=json_mode,
                     enable_reasoning=enable_reasoning,
-                    enable_langfuse_callbacks=not bool(langfuse_trace_context),
+                    enable_langfuse_callbacks=(
+                        enable_langfuse_callbacks
+                        and not bool(langfuse_trace_context)
+                    ),
                 )
                 callbacks = cls.create_langfuse_callbacks_for_trace(langfuse_trace_context) if langfuse_trace_context else []
                 invoke_config = None
