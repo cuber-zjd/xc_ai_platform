@@ -163,27 +163,40 @@ class InsightFeishuMonthlyReportService:
             ]
         )
         candidates.sort(key=lambda item: item.score, reverse=True)
-        logger.info("月报候选稿审校完成，开始综合选优")
-        final_markdown, selection = await self._synthesize_final(
-            candidates=candidates,
-            company_name=company_name,
-            period_start=period_start,
-            period_end=period_end,
-            materials=approved,
-            prompt_override=prompt_override,
-            model_names=model_pool,
-            stage_trace=stage_trace,
-        )
-        final_reviews = await self._run_review_panel(
-            markdown=final_markdown,
-            company_name=company_name,
-            period_start=period_start,
-            period_end=period_end,
-            materials=approved,
-            model_names=model_pool,
-            stage_trace=stage_trace,
-            stage_prefix="final_review",
-        )
+        if len(candidates) == 1:
+            selected = candidates[0]
+            logger.info("单候选实验直接进入终审，不执行无意义的二次选优改写")
+            final_markdown = selected.markdown
+            final_reviews = selected.reviews
+            selection = {
+                "judge_model": None,
+                "editor_model": None,
+                "selected_strategy": selected.strategy_code,
+                "selected_strategy_name": selected.strategy_name,
+                "judgment": {"reason": "独立策略实验仅有一个候选，直接进入发布门禁。"},
+            }
+        else:
+            logger.info("月报候选稿审校完成，开始综合选优")
+            final_markdown, selection = await self._synthesize_final(
+                candidates=candidates,
+                company_name=company_name,
+                period_start=period_start,
+                period_end=period_end,
+                materials=approved,
+                prompt_override=prompt_override,
+                model_names=model_pool,
+                stage_trace=stage_trace,
+            )
+            final_reviews = await self._run_review_panel(
+                markdown=final_markdown,
+                company_name=company_name,
+                period_start=period_start,
+                period_end=period_end,
+                materials=approved,
+                model_names=model_pool,
+                stage_trace=stage_trace,
+                stage_prefix="final_review",
+            )
         final_score = self._review_score(final_reviews)
         blocking = self._blocking_issues(final_reviews)
         if blocking or final_score < 82:
@@ -937,14 +950,38 @@ facts_to_recheck、strengths。
         return self._order_sections(markdown)
 
     def _order_sections(self, markdown: str) -> str:
-        header_end = markdown.find("# ")
-        header = markdown[:header_end].strip() if header_end >= 0 else markdown.strip()
+        def normalize_heading(value: str) -> str:
+            value = re.sub(r"[*_`#\s]+", "", value)
+            return value.strip("：:。.")
+
+        canonical = {
+            normalize_heading(section): section
+            for section in MONTHLY_SECTIONS
+        }
+        section_matches: list[tuple[re.Match[str], str]] = []
+        for match in re.finditer(r"^#{1,3}\s+(.+)$", markdown, flags=re.MULTILINE):
+            normalized = normalize_heading(match.group(1))
+            section = canonical.get(normalized)
+            if section:
+                section_matches.append((match, section))
+
+        # 无法识别任何主章节时保留模型原稿，让确定性校验明确报错，
+        # 不得把已有正文破坏性替换为“暂无信息”。
+        if not section_matches:
+            return markdown.strip()
+
+        header = markdown[: section_matches[0][0].start()].strip()
         section_map: dict[str, str] = {}
-        matches = list(re.finditer(r"^#\s+(.+)$", markdown, flags=re.MULTILINE))
-        for index, match in enumerate(matches):
-            heading = match.group(1).strip()
-            end = matches[index + 1].start() if index + 1 < len(matches) else len(markdown)
-            section_map[heading] = markdown[match.start() : end].strip()
+        for index, (match, section) in enumerate(section_matches):
+            end = (
+                section_matches[index + 1][0].start()
+                if index + 1 < len(section_matches)
+                else len(markdown)
+            )
+            body_start = match.end()
+            body = markdown[body_start:end].strip()
+            section_map[section] = f"# {section}\n\n{body}".strip()
+
         parts = [header]
         for section in MONTHLY_SECTIONS:
             parts.append(section_map.get(section) or f"# {section}\n\n本月暂无经审批后可用于该章节的新增信息。")

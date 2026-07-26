@@ -54,6 +54,19 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
         errors = self.service._validate_monthly_markdown(value, self.materials)
         self.assertIn("报告正文包含内部技术或编号表达", errors)
 
+    def test_section_order_accepts_bold_h2_headings(self) -> None:
+        body = ["管理层月度市场信息报告｜2026年7月1日至26日｜生成时间：2026年7月26日"]
+        for section in MONTHLY_SECTIONS:
+            body.extend([f"## **{section}**", "该章节有真实正文。"])
+        ordered = self.service._order_sections("\n\n".join(body))
+        for section in MONTHLY_SECTIONS:
+            self.assertIn(f"# {section}", ordered)
+        self.assertNotIn("暂无经审批后可用于该章节", ordered)
+
+    def test_section_order_preserves_unrecognized_draft(self) -> None:
+        draft = "管理层月度市场信息报告\n\n正文存在，但主章节格式异常。"
+        self.assertEqual(self.service._order_sections(draft), draft)
+
     def test_blocking_issue_reduces_review_score(self) -> None:
         review = {
             "review_role": "事实与幻觉核验员",

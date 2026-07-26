@@ -110,12 +110,23 @@ async def _ensure_fr_report_database_connection_columns(conn):
 
 async def _ensure_sys_model_columns(conn):
     """补齐模型配置的多模态能力标记。"""
-    await conn.execute(
+    column_exists = await conn.scalar(
         text(
-            "ALTER TABLE sys_model "
-            "ADD COLUMN IF NOT EXISTS is_multimodal BOOLEAN DEFAULT FALSE"
+            "SELECT EXISTS ("
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_schema = current_schema() "
+            "AND table_name = 'sys_model' "
+            "AND column_name = 'is_multimodal'"
+            ")"
         )
     )
+    if not column_exists:
+        await conn.execute(
+            text(
+                "ALTER TABLE sys_model "
+                "ADD COLUMN is_multimodal BOOLEAN DEFAULT FALSE"
+            )
+        )
     await conn.execute(
         text(
             "UPDATE sys_model "
