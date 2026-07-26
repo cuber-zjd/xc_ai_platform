@@ -177,6 +177,7 @@ uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - 质量运营基础接口为 `GET /ai-api/v1/insight/quality/overview`，服务层位于 `backend/app/services/agent/insight/quality_service.py`，只能聚合真实任务、采集、候选审核和质量规则数据，不得返回样例指标。
 - 经营智能基础接口为 `GET /ai-api/v1/insight/operation/overview` 和 `GET /ai-api/v1/insight/operation/customer-lifecycle`，服务层位于 `backend/app/services/agent/insight/operation_intelligence_service.py`，当前以 FineReport SQL Server 只读连接聚合健源公司销量利润、客户流失、采购库存、经营净头寸、套保风险，以及新客户质量、90 天挽回窗口、沉默客户分层、应收叠加和高价值行动清单；接口仅管理员可访问，不新增持久化表，不得返回伪造样例指标。
 - Firecrawl、Bocha/博查、豆包联网搜索等外部服务地址、模型配置和密钥不得硬编码在业务代码中，应进入配置、环境变量或 `sys_model`。
+- Insight 飞书月报编排位于 `backend/app/services/agent/insight/feishu_monthly_report_service.py`。月报必须先审批资料，再保留单模型、分章节并行和多智能体候选，通过事实、相关度和管理表达审校后择优合成；发布前还要执行章节、链接白名单、裸网址、引用覆盖和内部技术词确定性检查。模型从 `sys_model` 动态选择，实际模型、评分、审校意见和阶段耗时写入简报运行记录。
 ## SAP 助手 Agent 状态约束补充
 
 - SAP 助手聊天入口固定走 `backend/app/services/agent/sap_assistant/deep_agent_service.py`，并复用 `SapToolService -> SapRfcClient` 调用 SAP 侧 `ZFM_AI_*` RFC；该入口按 deepagents 源码思路组装 SAP 专用 Agent，保留摘要压缩、工具调用修复和提示缓存中间件，但禁用 deepagents 默认 todo、文件、shell 和 subagent 工具；历史 LangGraph 和自定义 ReAct 实现已移除。

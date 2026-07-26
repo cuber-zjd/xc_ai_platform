@@ -33,9 +33,11 @@ const emptyForm: InsightFeishuBriefPlanCreate = {
     sys_company_id: null,
     schedule_frequency: "weekly",
     weekday: 0,
+    day_of_month: 1,
     time_of_day: "09:00",
     material_days: 7,
     max_materials: 200,
+    generation_strategy: "auto",
     prompt_override: "",
     recipients: [],
     status: "active",
@@ -87,7 +89,7 @@ export function FeishuBriefPage() {
         onError: () => toast.error("保存失败，请检查填写内容"),
     });
     const runMutation = useMutation({
-        mutationFn: insightApi.runFeishuBriefPlan,
+        mutationFn: (planId: number) => insightApi.runFeishuBriefPlan(planId),
         onSuccess: (result) => {
             toast.success(result.message);
             refresh();
@@ -119,9 +121,11 @@ export function FeishuBriefPage() {
             sys_company_id: item.sys_company_id,
             schedule_frequency: item.schedule_frequency,
             weekday: item.weekday,
+            day_of_month: item.day_of_month,
             time_of_day: item.time_of_day,
             material_days: item.material_days,
             max_materials: item.max_materials,
+            generation_strategy: item.generation_strategy,
             prompt_override: item.prompt_override,
             recipients: item.recipients,
             status: item.status,
@@ -145,7 +149,7 @@ export function FeishuBriefPage() {
                                 </Badge>
                             </div>
                             <div className="mt-0.5 truncate text-xs font-semibold text-slate-500">
-                                {options?.bot_name || "市场洞察报告机器人"} · 独立生成日报和周报，不进入报告中心
+                                {options?.bot_name || "市场洞察报告机器人"} · 独立生成日报、周报和月报，不进入报告中心
                             </div>
                         </div>
                     </div>
@@ -191,8 +195,12 @@ export function FeishuBriefPage() {
                                             <div className="mt-1 text-xs text-slate-500">{item.sys_company_name || "全部业务公司"}</div>
                                         </TableCell>
                                         <TableCell className="text-sm font-semibold text-slate-700">
-                                            <div>{item.schedule_frequency === "daily" ? "每日" : `每${weekdayOptions[item.weekday ?? 0]?.label}`} {item.time_of_day}</div>
-                                            <div className="mt-1 text-xs font-medium text-slate-500">素材近 {item.material_days} 天 · 推送 {item.recipients.length} 人</div>
+                                            <div>{scheduleLabel(item)} {item.time_of_day}</div>
+                                            <div className="mt-1 text-xs font-medium text-slate-500">
+                                                素材近 {item.material_days} 天
+                                                {item.schedule_frequency === "monthly" ? ` · ${strategyLabel(item.generation_strategy)}` : ""}
+                                                {" "}· 推送 {item.recipients.length} 人
+                                            </div>
                                         </TableCell>
                                         <TableCell className="text-xs font-semibold text-slate-600">{formatDateTime(item.next_run_time)}</TableCell>
                                         <TableCell>
@@ -250,6 +258,29 @@ export function FeishuBriefPage() {
                                                 打开云文档 <ExternalLink className="size-3" />
                                             </a>
                                         ) : null}
+                                        {(item.output_payload.artifacts?.length ?? 0) > 0 ? (
+                                            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                                                {item.output_payload.artifacts?.map((artifact, index) => (
+                                                    <a
+                                                        key={`${artifact.artifact_type}-${artifact.strategy_code || index}`}
+                                                        className="rounded-lg border border-slate-200 bg-slate-50 p-2.5 transition hover:border-blue-200 hover:bg-blue-50"
+                                                        href={artifact.document_url || undefined}
+                                                        target="_blank"
+                                                        rel="noreferrer"
+                                                        aria-disabled={!artifact.document_url}
+                                                    >
+                                                        <div className="flex items-center justify-between gap-2">
+                                                            <span className="truncate text-xs font-bold text-slate-800">{artifact.strategy_name || artifact.title}</span>
+                                                            {typeof artifact.score === "number" ? <Badge variant="outline">{artifact.score.toFixed(1)} 分</Badge> : null}
+                                                        </div>
+                                                        {artifact.models?.length ? <div className="mt-1 truncate text-[11px] text-slate-500">{artifact.models.join(" / ")}</div> : null}
+                                                    </a>
+                                                ))}
+                                            </div>
+                                        ) : null}
+                                        {typeof item.output_payload.final_score === "number" ? (
+                                            <div className="mt-2 text-xs font-bold text-emerald-700">最终审校评分 {item.output_payload.final_score.toFixed(1)} 分</div>
+                                        ) : null}
                                     </div>
                                 ))}
                                 {!runs.length ? <div className="py-20 text-center text-sm font-semibold text-slate-400">暂无执行记录</div> : null}
@@ -274,9 +305,25 @@ export function FeishuBriefPage() {
                                     <Input value={form.plan_name} placeholder="如：御馨市场信息周报" onChange={(event) => setForm((old) => ({ ...old, plan_name: event.target.value }))} />
                                 </div>
                                 <InsightSelect label="所属公司" value={form.sys_company_id ? String(form.sys_company_id) : ""} options={companyOptions} onChange={(value) => setForm((old) => ({ ...old, sys_company_id: value ? Number(value) : null }))} />
-                                <InsightSelect label="生成周期" value={form.schedule_frequency} options={[{ value: "daily", label: "日报" }, { value: "weekly", label: "周报" }]} onChange={(value) => setForm((old) => ({ ...old, schedule_frequency: value as "daily" | "weekly" }))} />
+                                <InsightSelect
+                                    label="生成周期"
+                                    value={form.schedule_frequency}
+                                    options={[{ value: "daily", label: "日报" }, { value: "weekly", label: "周报" }, { value: "monthly", label: "月报" }]}
+                                    onChange={(value) => setForm((old) => ({
+                                        ...old,
+                                        schedule_frequency: value as "daily" | "weekly" | "monthly",
+                                        material_days: value === "daily" ? 1 : value === "weekly" ? 7 : 31,
+                                    }))}
+                                />
                                 {form.schedule_frequency === "weekly" ? (
                                     <InsightSelect label="每周执行日" value={String(form.weekday ?? 0)} options={weekdayOptions} onChange={(value) => setForm((old) => ({ ...old, weekday: Number(value) }))} />
+                                ) : form.schedule_frequency === "monthly" ? (
+                                    <InsightSelect
+                                        label="每月执行日"
+                                        value={String(form.day_of_month ?? 1)}
+                                        options={Array.from({ length: 28 }, (_, index) => ({ value: String(index + 1), label: `${index + 1} 日` }))}
+                                        onChange={(value) => setForm((old) => ({ ...old, day_of_month: Number(value) }))}
+                                    />
                                 ) : <div />}
                                 <div className="space-y-2">
                                     <Label>执行时间</Label>
@@ -291,6 +338,7 @@ export function FeishuBriefPage() {
                                         { value: "7", label: "近 7 天" },
                                         { value: "15", label: "近 15 天" },
                                         { value: "30", label: "近 30 天" },
+                                        { value: "31", label: "近 31 天" },
                                     ]}
                                     onChange={(value) => setForm((old) => ({ ...old, material_days: Number(value) }))}
                                 />
@@ -299,6 +347,24 @@ export function FeishuBriefPage() {
                                     <Input type="number" min={20} max={500} value={form.max_materials} onChange={(event) => setForm((old) => ({ ...old, max_materials: Number(event.target.value) }))} />
                                 </div>
                                 <InsightSelect label="状态" value={form.status} options={[{ value: "active", label: "启用" }, { value: "paused", label: "暂停" }]} onChange={(value) => setForm((old) => ({ ...old, status: value as "active" | "paused" }))} />
+                                {form.schedule_frequency === "monthly" ? (
+                                    <div className="md:col-span-2">
+                                        <InsightSelect
+                                            label="月报生成策略"
+                                            value={form.generation_strategy}
+                                            options={[
+                                                { value: "auto", label: "多策略择优（推荐）" },
+                                                { value: "single_model", label: "单模型整篇生成" },
+                                                { value: "section_parallel", label: "分章节并行生成" },
+                                                { value: "multi_agent_ensemble", label: "多智能体协作生成" },
+                                            ]}
+                                            onChange={(value) => setForm((old) => ({ ...old, generation_strategy: value as InsightFeishuBriefPlanCreate["generation_strategy"] }))}
+                                        />
+                                        <div className="mt-2 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-800">
+                                            多策略择优会同时保留单模型稿、分章节稿和多智能体稿，由事实、相关度、管理表达三个审校角色评分，再合成最终版本。
+                                        </div>
+                                    </div>
+                                ) : null}
                             </div>
                         </section>
 
@@ -409,4 +475,19 @@ function statusClass(value?: string | null) {
 function formatDateTime(value?: string | null) {
     if (!value) return "--";
     return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(value));
+}
+
+function scheduleLabel(item: InsightFeishuBriefPlanRead) {
+    if (item.schedule_frequency === "daily") return "每日";
+    if (item.schedule_frequency === "monthly") return `每月 ${item.day_of_month ?? 1} 日`;
+    return `每${weekdayOptions[item.weekday ?? 0]?.label}`;
+}
+
+function strategyLabel(value: InsightFeishuBriefPlanRead["generation_strategy"]) {
+    return ({
+        auto: "多策略择优",
+        single_model: "单模型",
+        section_parallel: "分章节",
+        multi_agent_ensemble: "多智能体",
+    } as const)[value];
 }

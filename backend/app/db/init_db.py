@@ -421,11 +421,23 @@ async def _ensure_insight_report_template_columns(conn):
 
 
 async def _ensure_insight_feishu_brief_columns(conn):
-    """补齐飞书简报计划的独立素材周期。"""
+    """补齐飞书简报计划的周期和生成策略字段。"""
     await conn.execute(
         text(
             "ALTER TABLE insight_feishu_brief_plan "
             "ADD COLUMN IF NOT EXISTS material_days INTEGER DEFAULT 7 NOT NULL"
+        )
+    )
+    await conn.execute(
+        text(
+            "ALTER TABLE insight_feishu_brief_plan "
+            "ADD COLUMN IF NOT EXISTS day_of_month INTEGER DEFAULT 1"
+        )
+    )
+    await conn.execute(
+        text(
+            "ALTER TABLE insight_feishu_brief_plan "
+            "ADD COLUMN IF NOT EXISTS generation_strategy VARCHAR(40) DEFAULT 'auto' NOT NULL"
         )
     )
 

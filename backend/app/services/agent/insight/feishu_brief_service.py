@@ -25,10 +25,14 @@ from app.schemas.agent.insight.feishu_brief import (
     InsightFeishuBriefPlanUpdate,
     InsightFeishuBriefRecipient,
     InsightFeishuBriefRunRead,
+    InsightFeishuBriefRunRequest,
     InsightFeishuBriefRunResponse,
 )
 from app.schemas.page import Page
 from app.services.agent.insight.feishu_bitable_service import insight_feishu_bitable_service
+from app.services.agent.insight.feishu_monthly_report_service import (
+    insight_feishu_monthly_report_service,
+)
 
 
 FIXED_FORMAT = [
@@ -220,12 +224,19 @@ class InsightFeishuBriefService:
             sys_company_id=payload.sys_company_id,
             schedule_frequency=payload.schedule_frequency,
             weekday=payload.weekday,
+            day_of_month=payload.day_of_month,
             time_of_day=payload.time_of_day,
             material_days=payload.material_days,
             max_materials=payload.max_materials,
+            generation_strategy=payload.generation_strategy,
             prompt_override=payload.prompt_override,
             recipients_json=[item.model_dump(mode="json") for item in payload.recipients],
-            next_run_time=self._next_run_time(payload.schedule_frequency, payload.time_of_day, payload.weekday),
+            next_run_time=self._next_run_time(
+                payload.schedule_frequency,
+                payload.time_of_day,
+                payload.weekday,
+                payload.day_of_month,
+            ),
             status=payload.status,
             create_by=str(user_id),
             update_by=str(user_id),
@@ -251,7 +262,12 @@ class InsightFeishuBriefService:
             data["recipients_json"] = data.pop("recipients")
         for key, value in data.items():
             setattr(row, key, value)
-        row.next_run_time = self._next_run_time(row.schedule_frequency, row.time_of_day, row.weekday)
+        row.next_run_time = self._next_run_time(
+            row.schedule_frequency,
+            row.time_of_day,
+            row.weekday,
+            row.day_of_month,
+        )
         row.update_by = str(user_id)
         row.update_time = datetime.now()
         db.add(row)
@@ -275,20 +291,26 @@ class InsightFeishuBriefService:
         plan_id: int,
         *,
         trigger_type: str = "manual",
+        run_request: InsightFeishuBriefRunRequest | None = None,
     ) -> InsightFeishuBriefRunResponse:
         plan = await self._require_plan(db, plan_id)
         options = self.get_options()
         if not options.configured:
             raise ValueError("独立飞书简报机器人尚未配置完整")
-        now = datetime.now()
-        period_start = now - timedelta(days=plan.material_days)
+        now = run_request.period_end if run_request and run_request.period_end else datetime.now()
+        period_start, period_end = self._period_bounds(
+            plan,
+            now=now,
+            trigger_type=trigger_type,
+            requested_start=run_request.period_start if run_request else None,
+        )
         run = InsightFeishuBriefRun(
             run_uid=f"feishu_brief_run_{uuid4().hex}",
             plan_id=plan.id or 0,
             trigger_type=trigger_type,
             status="running",
             period_start=period_start,
-            period_end=now,
+            period_end=period_end,
             started_at=now,
         )
         db.add(run)
@@ -302,34 +324,90 @@ class InsightFeishuBriefService:
                 db,
                 sys_company_id=plan.sys_company_id,
                 period_start=period_start,
-                period_end=now,
+                period_end=period_end,
                 limit=min(plan.max_materials, settings.INSIGHT_FEISHU_BRIEF_MAX_MATERIALS),
             )
-            if len(materials) < 7:
+            minimum_materials = 10 if plan.schedule_frequency == "monthly" else 7
+            if len(materials) < minimum_materials:
                 raise ValueError(f"当前周期只有 {len(materials)} 条可用正式情报，不足以生成固定 7 条导读")
-            selected_materials, selection_audit = await self._select_materials(
-                company_name=company.name if company else "香驰控股",
-                period_start=period_start,
-                period_end=now,
-                materials=materials,
-            )
-            if len(selected_materials) < 7:
-                raise ValueError(
-                    f"当前周期有 {len(materials)} 条正式情报，但仅 {len(selected_materials)} 条"
-                    "通过简报相关性审校，不足以生成固定 7 条导读"
+            pipeline_output: dict[str, Any]
+            if plan.schedule_frequency == "monthly":
+                monthly_result = await insight_feishu_monthly_report_service.generate(
+                    db,
+                    company_name=company.name if company else "香驰控股",
+                    period_start=period_start,
+                    period_end=period_end,
+                    materials=materials,
+                    prompt_override=plan.prompt_override,
+                    generation_strategy=plan.generation_strategy,
                 )
-            title, markdown = await self._generate_markdown(
-                company_name=company.name if company else "香驰控股",
-                frequency=plan.schedule_frequency,
-                period_start=period_start,
-                period_end=now,
-                materials=selected_materials,
-                original_material_count=len(materials),
-                prompt_override=plan.prompt_override,
-            )
+                title = monthly_result.title
+                markdown = monthly_result.markdown
+                publish_candidates = not run_request or run_request.publish_candidate_documents
+                artifacts: list[dict[str, Any]] = []
+                if publish_candidates:
+                    for index, candidate in enumerate(monthly_result.candidates, 1):
+                        candidate_title = f"【候选方案{index}】{title}｜{candidate.strategy_name}"
+                        candidate.document_id, candidate.document_url = await self._create_document(
+                            candidate_title,
+                            candidate.markdown,
+                        )
+                        artifacts.append(
+                            {
+                                "artifact_type": "candidate",
+                                "strategy_code": candidate.strategy_code,
+                                "strategy_name": candidate.strategy_name,
+                                "title": candidate_title,
+                                "document_id": candidate.document_id,
+                                "document_url": candidate.document_url,
+                                "score": candidate.score,
+                                "models": candidate.models,
+                            }
+                        )
+                    audit_title = f"【生成与审校记录】{title}"
+                    audit_document_id, audit_document_url = await self._create_document(
+                        audit_title,
+                        monthly_result.audit_markdown,
+                    )
+                    artifacts.append(
+                        {
+                            "artifact_type": "audit",
+                            "title": audit_title,
+                            "document_id": audit_document_id,
+                            "document_url": audit_document_url,
+                        }
+                    )
+                pipeline_output = monthly_result.output_payload | {"artifacts": artifacts}
+            else:
+                selected_materials, selection_audit = await self._select_materials(
+                    company_name=company.name if company else "香驰控股",
+                    period_start=period_start,
+                    period_end=period_end,
+                    materials=materials,
+                )
+                if len(selected_materials) < 7:
+                    raise ValueError(
+                        f"当前周期有 {len(materials)} 条正式情报，但仅 {len(selected_materials)} 条"
+                        "通过简报相关性审校，不足以生成固定 7 条导读"
+                    )
+                title, markdown = await self._generate_markdown(
+                    company_name=company.name if company else "香驰控股",
+                    frequency=plan.schedule_frequency,
+                    period_start=period_start,
+                    period_end=period_end,
+                    materials=selected_materials,
+                    original_material_count=len(materials),
+                    prompt_override=plan.prompt_override,
+                )
+                pipeline_output = {"material_selection": selection_audit}
             document_id, document_url = await self._create_document(title, markdown)
             recipients = self._recipients(plan)
-            push_result = await self._push_document(title, document_url, recipients)
+            should_push = not run_request or run_request.push_final
+            push_result = (
+                await self._push_document(title, document_url, recipients)
+                if should_push
+                else {"success_count": 0, "failed_count": 0, "results": []}
+            )
             finished = datetime.now()
             run.status = "success" if push_result["failed_count"] == 0 else "partial"
             run.material_count = len(materials)
@@ -342,14 +420,20 @@ class InsightFeishuBriefService:
             run.output_payload = {
                 "push_results": push_result["results"],
                 "bot_name": options.bot_name,
-                "material_selection": selection_audit,
+                **pipeline_output,
             }
             run.finished_at = finished
             plan.last_run_time = finished
             plan.last_run_id = run.id
             plan.last_status = run.status
             plan.last_error = None
-            plan.next_run_time = self._next_run_time(plan.schedule_frequency, plan.time_of_day, plan.weekday, base=finished)
+            plan.next_run_time = self._next_run_time(
+                plan.schedule_frequency,
+                plan.time_of_day,
+                plan.weekday,
+                plan.day_of_month,
+                base=finished,
+            )
             db.add(run)
             db.add(plan)
             await db.commit()
@@ -376,6 +460,7 @@ class InsightFeishuBriefService:
                     failed_plan.schedule_frequency,
                     failed_plan.time_of_day,
                     failed_plan.weekday,
+                    failed_plan.day_of_month,
                 )
                 db.add(failed_plan)
             await db.commit()
@@ -453,6 +538,7 @@ class InsightFeishuBriefService:
             ).all()
         )
         export_rows = await insight_feishu_bitable_service.build_export_rows(db, rows)
+        intelligence_by_id = {int(item.id): item for item in rows if item.id is not None}
         company = await self._require_company(db, sys_company_id)
         company_name = company.name if company else None
         result: list[dict[str, Any]] = []
@@ -471,6 +557,11 @@ class InsightFeishuBriefService:
                     "id": item["intelligence_id"],
                     "title": item["title"],
                     "summary": values.get("summary"),
+                    "content": (
+                        intelligence_by_id.get(int(item["intelligence_id"])).content
+                        if intelligence_by_id.get(int(item["intelligence_id"]))
+                        else None
+                    ),
                     "publish_time": self._json_value(values.get("publish_time")),
                     "subject_name": values.get("subject_name"),
                     "category": values.get("category"),
@@ -1082,7 +1173,9 @@ class InsightFeishuBriefService:
             elif line.startswith("> "):
                 flush()
                 blocks.append(self._text_block(2, "text", line[2:].strip()))
-            elif not blocks and line.startswith("管理层情报简报｜"):
+            elif not blocks and line.startswith(
+                ("管理层情报简报｜", "管理层月度市场信息报告｜", "月报生成与审校记录｜")
+            ):
                 flush()
                 blocks.append(self._text_block(2, "text", line, align=2))
             elif (
@@ -1269,6 +1362,7 @@ class InsightFeishuBriefService:
         frequency: str,
         time_of_day: str,
         weekday: int | None,
+        day_of_month: int | None,
         *,
         base: datetime | None = None,
     ) -> datetime:
@@ -1280,12 +1374,39 @@ class InsightFeishuBriefService:
         if frequency == "daily":
             if candidate <= now:
                 candidate += timedelta(days=1)
-        else:
+        elif frequency == "weekly":
             target = weekday if weekday is not None else 0
             candidate += timedelta(days=(target - candidate.weekday()) % 7)
             if candidate <= now:
                 candidate += timedelta(days=7)
+        else:
+            target_day = min(max(day_of_month or 1, 1), 28)
+            candidate = candidate.replace(day=target_day)
+            if candidate <= now:
+                if candidate.month == 12:
+                    candidate = candidate.replace(year=candidate.year + 1, month=1)
+                else:
+                    candidate = candidate.replace(month=candidate.month + 1)
         return candidate.replace(tzinfo=None)
+
+    def _period_bounds(
+        self,
+        plan: InsightFeishuBriefPlan,
+        *,
+        now: datetime,
+        trigger_type: str,
+        requested_start: datetime | None,
+    ) -> tuple[datetime, datetime]:
+        if requested_start:
+            return requested_start, now
+        if plan.schedule_frequency != "monthly":
+            return now - timedelta(days=plan.material_days), now
+        if trigger_type in {"scheduler", "manual_due_scan"}:
+            current_month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            previous_month_end = current_month_start - timedelta(microseconds=1)
+            previous_month_start = previous_month_end.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            return previous_month_start, previous_month_end
+        return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0), now
 
     async def _require_plan(self, db: AsyncSession, plan_id: int) -> InsightFeishuBriefPlan:
         row = await db.get(InsightFeishuBriefPlan, plan_id)
@@ -1316,10 +1437,12 @@ class InsightFeishuBriefService:
             sys_company_name=company_name,
             schedule_frequency=row.schedule_frequency,
             weekday=row.weekday,
+            day_of_month=row.day_of_month,
             time_of_day=row.time_of_day,
             timezone=row.timezone,
             material_days=row.material_days,
             max_materials=row.max_materials,
+            generation_strategy=row.generation_strategy,
             prompt_override=row.prompt_override,
             recipients=[InsightFeishuBriefRecipient.model_validate(item) for item in row.recipients_json or []],
             next_run_time=row.next_run_time,
@@ -1347,6 +1470,7 @@ class InsightFeishuBriefService:
             pushed_count=row.pushed_count,
             failed_push_count=row.failed_push_count,
             error_message=row.error_message,
+            output_payload=row.output_payload or {},
             started_at=row.started_at,
             finished_at=row.finished_at,
             create_time=row.create_time,

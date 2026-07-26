@@ -13,11 +13,18 @@ class InsightFeishuBriefRecipient(BaseModel):
 class InsightFeishuBriefPlanCreate(BaseModel):
     plan_name: str = Field(min_length=1, max_length=160)
     sys_company_id: int | None = None
-    schedule_frequency: Literal["daily", "weekly"] = "weekly"
+    schedule_frequency: Literal["daily", "weekly", "monthly"] = "weekly"
     weekday: int | None = Field(default=0, ge=0, le=6)
+    day_of_month: int | None = Field(default=1, ge=1, le=28)
     time_of_day: str = Field(default="09:00", pattern=r"^\d{2}:\d{2}$")
     material_days: int = Field(default=7, ge=1, le=90)
     max_materials: int = Field(default=200, ge=20, le=500)
+    generation_strategy: Literal[
+        "auto",
+        "single_model",
+        "section_parallel",
+        "multi_agent_ensemble",
+    ] = "auto"
     prompt_override: str | None = None
     recipients: list[InsightFeishuBriefRecipient] = Field(default_factory=list)
     status: Literal["active", "paused"] = "active"
@@ -33,11 +40,18 @@ class InsightFeishuBriefPlanCreate(BaseModel):
 class InsightFeishuBriefPlanUpdate(BaseModel):
     plan_name: str | None = Field(default=None, min_length=1, max_length=160)
     sys_company_id: int | None = None
-    schedule_frequency: Literal["daily", "weekly"] | None = None
+    schedule_frequency: Literal["daily", "weekly", "monthly"] | None = None
     weekday: int | None = Field(default=None, ge=0, le=6)
+    day_of_month: int | None = Field(default=None, ge=1, le=28)
     time_of_day: str | None = Field(default=None, pattern=r"^\d{2}:\d{2}$")
     material_days: int | None = Field(default=None, ge=1, le=90)
     max_materials: int | None = Field(default=None, ge=20, le=500)
+    generation_strategy: Literal[
+        "auto",
+        "single_model",
+        "section_parallel",
+        "multi_agent_ensemble",
+    ] | None = None
     prompt_override: str | None = None
     recipients: list[InsightFeishuBriefRecipient] | None = None
     status: Literal["active", "paused"] | None = None
@@ -51,10 +65,12 @@ class InsightFeishuBriefPlanRead(BaseModel):
     sys_company_name: str | None
     schedule_frequency: str
     weekday: int | None
+    day_of_month: int | None
     time_of_day: str
     timezone: str
     material_days: int
     max_materials: int
+    generation_strategy: str
     prompt_override: str | None
     recipients: list[InsightFeishuBriefRecipient]
     next_run_time: datetime | None
@@ -81,6 +97,7 @@ class InsightFeishuBriefRunRead(BaseModel):
     pushed_count: int
     failed_push_count: int
     error_message: str | None
+    output_payload: dict[str, Any] = Field(default_factory=dict)
     started_at: datetime | None
     finished_at: datetime | None
     create_time: datetime
@@ -89,6 +106,19 @@ class InsightFeishuBriefRunRead(BaseModel):
 class InsightFeishuBriefRunResponse(BaseModel):
     run: InsightFeishuBriefRunRead
     message: str
+
+
+class InsightFeishuBriefRunRequest(BaseModel):
+    period_start: datetime | None = None
+    period_end: datetime | None = None
+    publish_candidate_documents: bool = True
+    push_final: bool = True
+
+    @model_validator(mode="after")
+    def validate_period(self) -> "InsightFeishuBriefRunRequest":
+        if self.period_start and self.period_end and self.period_start >= self.period_end:
+            raise ValueError("素材开始时间必须早于结束时间")
+        return self
 
 
 class InsightFeishuBriefOptionsRead(BaseModel):

@@ -769,6 +769,7 @@ class LLMFactory:
         messages: list[BaseMessage],
         capability: str = "general",
         model_type: str = "chat",
+        preferred_model_names: list[str] | None = None,
         temperature: float | None = None,
         json_mode: bool = False,
         enable_reasoning: bool = False,
@@ -805,12 +806,22 @@ class LLMFactory:
         tried_names: list[str] = []
         last_error: Exception | None = None
 
-        # 构建候选模型列表：先匹配能力，再按级别排序
+        # 构建候选模型列表：显式偏好、能力匹配、其他模型依次降级。
         candidates = []
+
+        preferred_names = [
+            name.strip()
+            for name in (preferred_model_names or [])
+            if name and name.strip()
+        ]
+        for name in preferred_names:
+            for model in all_models:
+                if model.model_name == name and model not in candidates:
+                    candidates.append(model)
 
         # 1. 优先匹配能力标签的模型
         for m in all_models:
-            if m.capability == capability:
+            if m.capability == capability and m not in candidates:
                 candidates.append(m)
 
         # 2. 加入其他模型作为降级候选（按级别排序）
@@ -858,6 +869,10 @@ class LLMFactory:
                     f"(级别={model_config.model_level}, 优先级={model_config.priority})"
                 )
                 response = await llm.ainvoke(messages, config=invoke_config) if invoke_config else await llm.ainvoke(messages)
+                response_metadata = getattr(response, "response_metadata", None)
+                if isinstance(response_metadata, dict):
+                    response_metadata["selected_model_name"] = model_config.model_name
+                    response_metadata["selected_model_provider"] = model_config.provider
                 record_llm_usage(model_config.model_name, response)
 
                 # 成功，重置熔断器

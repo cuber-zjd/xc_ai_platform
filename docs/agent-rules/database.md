@@ -54,6 +54,7 @@
 - 当前项目启动时会通过 `SQLModel.metadata.create_all` 创建表。
 - 泛微流程 AI 智审使用 `weaver_ai_review_rule` 保存规则，使用 `weaver_ai_review_record` 保存每次预审的表单快照、规则快照和模型结论；当前随 `SQLModel.metadata.create_all` 创建。
 - Insight 定时报告计划使用 `insight_report_subscription`，保存报告模板、素材范围、周期、下次执行时间、上次生成报告、上次企业微信通知和接收人 JSON；该表已通过模型包入口注册，随 `SQLModel.metadata.create_all` 创建。
+- Insight 独立飞书简报计划使用 `insight_feishu_brief_plan`，日报、周报和月报共用该表；月报新增 `day_of_month` 和 `generation_strategy`，老库通过 `init_db.py` 的 `ADD COLUMN IF NOT EXISTS` 幂等补列。候选方案、审校记录、模型、评分、阶段耗时和云文档地址写入 `insight_feishu_brief_run.output_payload`。
 - Insight 底层配置以 `insight_monitor_config` 为调度主表，渠道库使用 `insight_channel` 表；旧 `insight_data_source` 不再作为用户配置或调度主概念，仅为历史任务、抓取结果和正式情报外键兼容保留，启动迁移会把旧执行源状态汇总回监测配置并软删除旧执行源。
 - Insight 全渠道适配器运行审计使用 `insight_channel_adapter_run`，记录渠道、监测配置、关键词、运行类型、状态、耗时、命中/去重/候选/正式/向量化数量、错误类型、错误信息、请求载荷、响应摘要、HTML/截图/原始输出路径和重试次数；该表已通过模型包入口注册，随 `SQLModel.metadata.create_all` 创建。
 - Insight 采集任务和抓取结果需要直接保存 `monitor_config_id`，AI 自动评审、资产化、报告和 RAG 优先按监测配置获取业务对象、模块、关键词和审批提示词；旧 `data_source_id` 只作为历史兼容字段。

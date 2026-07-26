@@ -151,8 +151,20 @@ export const insightApi = {
         apiClient.put<InsightFeishuBriefPlanRead, InsightFeishuBriefPlanRead>(`${insightApiPrefix}/feishu-briefs/plans/${planId}`, payload),
     deleteFeishuBriefPlan: (planId: number) =>
         apiClient.delete<void, void>(`${insightApiPrefix}/feishu-briefs/plans/${planId}`),
-    runFeishuBriefPlan: (planId: number) =>
-        apiClient.post<InsightFeishuBriefRunResponse, InsightFeishuBriefRunResponse>(`${insightApiPrefix}/feishu-briefs/plans/${planId}/run`, undefined, { timeout: 300000 }),
+    runFeishuBriefPlan: (
+        planId: number,
+        payload?: {
+            period_start?: string | null;
+            period_end?: string | null;
+            publish_candidate_documents?: boolean;
+            push_final?: boolean;
+        },
+    ) =>
+        apiClient.post<InsightFeishuBriefRunResponse, InsightFeishuBriefRunResponse>(
+            `${insightApiPrefix}/feishu-briefs/plans/${planId}/run`,
+            payload,
+            { timeout: 1800000 },
+        ),
     listFeishuBriefRuns: (params: { page: number; size: number; plan_id?: number }) =>
         apiClient.get<InsightPage<InsightFeishuBriefRunRead>, InsightPage<InsightFeishuBriefRunRead>>(`${insightApiPrefix}/feishu-briefs/runs`, { params }),
     updateReport: (reportId: number, payload: InsightReportUpdateRequest) =>
@@ -2332,11 +2344,13 @@ export interface InsightFeishuBriefOptionsRead {
 export interface InsightFeishuBriefPlanCreate {
     plan_name: string;
     sys_company_id?: number | null;
-    schedule_frequency: "daily" | "weekly";
+    schedule_frequency: "daily" | "weekly" | "monthly";
     weekday?: number | null;
+    day_of_month?: number | null;
     time_of_day: string;
     material_days: number;
     max_materials: number;
+    generation_strategy: "auto" | "single_model" | "section_parallel" | "multi_agent_ensemble";
     prompt_override?: string | null;
     recipients: InsightFeishuBriefRecipient[];
     status: "active" | "paused";
@@ -2348,12 +2362,14 @@ export interface InsightFeishuBriefPlanRead {
     plan_name: string;
     sys_company_id?: number | null;
     sys_company_name?: string | null;
-    schedule_frequency: "daily" | "weekly";
+    schedule_frequency: "daily" | "weekly" | "monthly";
     weekday?: number | null;
+    day_of_month?: number | null;
     time_of_day: string;
     timezone: string;
     material_days: number;
     max_materials: number;
+    generation_strategy: "auto" | "single_model" | "section_parallel" | "multi_agent_ensemble";
     prompt_override?: string | null;
     recipients: InsightFeishuBriefRecipient[];
     next_run_time?: string | null;
@@ -2380,6 +2396,20 @@ export interface InsightFeishuBriefRunRead {
     pushed_count: number;
     failed_push_count: number;
     error_message?: string | null;
+    output_payload: {
+        pipeline_version?: string;
+        final_score?: number;
+        artifacts?: Array<{
+            artifact_type: "candidate" | "audit";
+            strategy_code?: string;
+            strategy_name?: string;
+            title: string;
+            document_url?: string | null;
+            score?: number;
+            models?: string[];
+        }>;
+        [key: string]: unknown;
+    };
     started_at?: string | null;
     finished_at?: string | null;
     create_time: string;

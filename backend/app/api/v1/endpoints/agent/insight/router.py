@@ -70,6 +70,7 @@ from app.schemas.agent.insight.feishu_brief import (
     InsightFeishuBriefPlanRead,
     InsightFeishuBriefPlanUpdate,
     InsightFeishuBriefRunRead,
+    InsightFeishuBriefRunRequest,
     InsightFeishuBriefRunResponse,
 )
 from app.schemas.agent.insight.dictionary import (
@@ -1433,12 +1434,18 @@ async def delete_feishu_brief_plan(
 async def run_feishu_brief_plan(
     *,
     plan_id: int,
+    payload: InsightFeishuBriefRunRequest | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: SysUser = Depends(get_current_user),
 ) -> Result[InsightFeishuBriefRunResponse]:
     _ensure_admin(current_user, "仅管理员可执行飞书简报计划")
     try:
-        result = await insight_feishu_brief_service.run_plan(db, plan_id, trigger_type=f"user:{current_user.id}")
+        result = await insight_feishu_brief_service.run_plan(
+            db,
+            plan_id,
+            trigger_type=f"user:{current_user.id}",
+            run_request=payload,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return Result.success(data=result, msg=result.message)
