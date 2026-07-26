@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
+from datetime import datetime
+from unittest.mock import AsyncMock, patch
 
 from app.services.agent.insight.feishu_monthly_report_service import (
     MONTHLY_SECTIONS,
@@ -64,6 +67,31 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
             "blocking_issues": ["存在资料外数字"],
         }
         self.assertEqual(self.service._review_score([review]), 70)
+
+    def test_section_parallel_uses_markdown_interface(self) -> None:
+        materials = [
+            {
+                **item,
+                "title": f"情报 {item['id']}",
+                "approval": {"role": "竞对" if item["id"] % 2 else "客户"},
+            }
+            for item in self.materials
+        ]
+        invoke = AsyncMock(return_value=("# 一、竞对市场信息导读\n\n正文", "mock-model"))
+        with patch.object(self.service, "_invoke_markdown", invoke):
+            candidate = asyncio.run(
+                self.service._generate_section_parallel(
+                    company_name="山东御馨生物科技股份有限公司",
+                    period_start=datetime(2026, 7, 1),
+                    period_end=datetime(2026, 7, 27),
+                    materials=materials,
+                    prompt_override=None,
+                    model_names=["model-a", "model-b", "model-c"],
+                    stage_trace=[],
+                )
+            )
+        self.assertEqual(invoke.await_count, 3)
+        self.assertEqual(candidate.strategy_code, "section_parallel")
 
 
 if __name__ == "__main__":

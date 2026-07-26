@@ -481,8 +481,6 @@ class InsightFeishuMonthlyReportService:
 """,
                 preferred_model=model_names[index % len(model_names)],
                 stage_trace=stage_trace,
-                enable_reasoning=False,
-                invocation_timeout_seconds=120,
             )
             return markdown, used_model
 
@@ -661,6 +659,8 @@ facts_to_recheck、strengths。
 """,
                 preferred_model=model_names[index % len(model_names)],
                 stage_trace=stage_trace,
+                enable_reasoning=False,
+                invocation_timeout_seconds=120,
             )
             payload["model"] = used_model
             payload["review_role"] = role
