@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime, timedelta
+from difflib import SequenceMatcher
 from typing import Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -1461,16 +1462,44 @@ class InsightFeishuBriefService:
             if item.get("title")
         }
 
+        material_links = [
+            (
+                self._normalize_title(str(item.get("title") or "")),
+                str(item.get("source_url") or "").strip(),
+            )
+            for item in materials
+            if item.get("title") and item.get("source_url")
+        ]
+        allowed_urls = {url for _title, url in material_links}
+
         def replace(match: re.Match[str]) -> str:
             label = match.group(1).strip()
-            if len(label) <= 22 or self._normalize_title(label) not in source_titles:
-                return match.group(0)
-            cleaned = re.sub(r"^\[[^\]]{1,8}\]\s*", "", label)
-            cleaned = re.split(r"(?:--|__|_新浪|[-|｜]\s*(?:36氪|新浪|东方财富|中国咖啡网))", cleaned)[0]
-            cleaned = re.sub(r"[，,:：；;。！？?!…]+$", "", cleaned).strip()
-            if len(cleaned) > 22:
-                cleaned = cleaned[:22].rstrip("，,:：；;。！？?!… ")
-            return f"[{cleaned or label[:22]}]({match.group(2)})"
+            normalized_label = self._normalize_title(label)
+            if len(label) > 22 and normalized_label in source_titles:
+                cleaned = re.sub(r"^\[[^\]]{1,8}\]\s*", "", label)
+                cleaned = re.split(
+                    r"(?:--|__|_新浪|[-|｜]\s*(?:36氪|新浪|东方财富|中国咖啡网))",
+                    cleaned,
+                )[0]
+                cleaned = re.sub(r"[，,:：；;。！？?!…]+$", "", cleaned).strip()
+                if len(cleaned) > 22:
+                    cleaned = cleaned[:22].rstrip("，,:：；;。！？?!… ")
+                label = cleaned or label[:22]
+                normalized_label = self._normalize_title(label)
+
+            url = match.group(2).strip()
+            if url not in allowed_urls:
+                best_url = ""
+                best_score = 0.0
+                for normalized_title, source_url in material_links:
+                    score = SequenceMatcher(None, normalized_label, normalized_title).ratio()
+                    if score > best_score:
+                        best_score = score
+                        best_url = source_url
+                if best_score < 0.42:
+                    return label
+                url = best_url
+            return f"[{label}]({url})"
 
         return re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", replace, markdown)
 
