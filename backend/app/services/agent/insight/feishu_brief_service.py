@@ -243,11 +243,11 @@ class InsightFeishuBriefService:
         user_id: int,
     ) -> InsightFeishuBriefPlanRead:
         row = await self._require_plan(db, plan_id)
-        data = payload.model_dump(exclude_unset=True)
+        data = payload.model_dump(exclude_unset=True, mode="json")
         if "sys_company_id" in data:
             await self._require_company(db, data["sys_company_id"])
         if "recipients" in data:
-            data["recipients_json"] = [item.model_dump(mode="json") for item in data.pop("recipients")]
+            data["recipients_json"] = data.pop("recipients")
         for key, value in data.items():
             setattr(row, key, value)
         row.next_run_time = self._next_run_time(row.schedule_frequency, row.time_of_day, row.weekday)
