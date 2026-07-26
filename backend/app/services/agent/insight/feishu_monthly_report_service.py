@@ -119,6 +119,7 @@ class InsightFeishuMonthlyReportService:
                     stage_trace=stage_trace,
                 )
             )
+            logger.info("月报候选策略完成: single_model")
         if "section_parallel" in strategies:
             candidates.append(
                 await self._generate_section_parallel(
@@ -131,6 +132,7 @@ class InsightFeishuMonthlyReportService:
                     stage_trace=stage_trace,
                 )
             )
+            logger.info("月报候选策略完成: section_parallel")
         if "multi_agent" in strategies or "multi_agent_ensemble" in strategies:
             candidates.append(
                 await self._generate_multi_agent(
@@ -143,7 +145,9 @@ class InsightFeishuMonthlyReportService:
                     stage_trace=stage_trace,
                 )
             )
+            logger.info("月报候选策略完成: multi_agent")
 
+        logger.info("开始并行审校月报候选稿，候选数: {}", len(candidates))
         await asyncio.gather(
             *[
                 self._review_candidate(
@@ -159,6 +163,7 @@ class InsightFeishuMonthlyReportService:
             ]
         )
         candidates.sort(key=lambda item: item.score, reverse=True)
+        logger.info("月报候选稿审校完成，开始综合选优")
         final_markdown, selection = await self._synthesize_final(
             candidates=candidates,
             company_name=company_name,
