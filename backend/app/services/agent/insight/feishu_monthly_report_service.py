@@ -611,10 +611,17 @@ facts_to_recheck、strengths。
             preferred_model=model_names[0],
             stage_trace=stage_trace,
         )
+        revised = self._ensure_monthly_header(
+            self._sanitize_markdown(revised, materials),
+            company_name=company_name,
+            period_start=period_start,
+            period_end=period_end,
+            material_count=len(materials),
+        )
         return MonthlyCandidate(
             strategy_code="multi_agent",
             strategy_name="多智能体研究与编辑",
-            markdown=self._sanitize_markdown(revised, materials),
+            markdown=revised,
             models=list(dict.fromkeys([planner_model, writer_model, critic_model, editor_model])),
             stage_notes=[
                 "研究总监先制定问题与证据计划。",
@@ -680,6 +687,11 @@ facts_to_recheck、strengths。
                 stage=f"{stage_prefix}_{index + 1}",
                 system=f"你是{role}，独立审查，不为原稿辩护，只输出 JSON。",
                 prompt=f"""
+当前系统日期：{datetime.now():%Y年%m月%d日}。这是闭卷证据审核：
+- 已审批资料是本次审核的事实基准，即使其日期晚于模型训练知识截止时间，也不得因此判为未来、虚构或不可核实。
+- 不调用模型记忆或外部常识否定资料中的事件，只核对报告是否忠实表达给定资料。
+- 只有报告出现资料中不存在、与资料冲突或把计划写成既成结果的内容，才属于事实/幻觉问题。
+
 目标公司：{company_name}
 报告周期：{self._period_text(period_start, period_end)}
 职责：{instruction}
@@ -809,7 +821,13 @@ facts_to_recheck、strengths。
             preferred_model=model_name,
             stage_trace=stage_trace,
         )
-        return self._sanitize_markdown(repaired, materials)
+        return self._ensure_monthly_header(
+            self._sanitize_markdown(repaired, materials),
+            company_name=company_name,
+            period_start=period_start,
+            period_end=period_end,
+            material_count=len(materials),
+        )
 
     async def _invoke_json(
         self,
@@ -959,7 +977,7 @@ facts_to_recheck、strengths。
             for section in MONTHLY_SECTIONS
         }
         section_matches: list[tuple[re.Match[str], str]] = []
-        for match in re.finditer(r"^#{1,3}\s+(.+)$", markdown, flags=re.MULTILINE):
+        for match in re.finditer(r"^(?:#{1,3}\s+)?(.+)$", markdown, flags=re.MULTILINE):
             normalized = normalize_heading(match.group(1))
             section = canonical.get(normalized)
             if section:
@@ -986,6 +1004,23 @@ facts_to_recheck、strengths。
         for section in MONTHLY_SECTIONS:
             parts.append(section_map.get(section) or f"# {section}\n\n本月暂无经审批后可用于该章节的新增信息。")
         return "\n\n".join(part for part in parts if part).strip()
+
+    def _ensure_monthly_header(
+        self,
+        markdown: str,
+        *,
+        company_name: str,
+        period_start: datetime,
+        period_end: datetime,
+        material_count: int,
+    ) -> str:
+        if markdown.startswith("管理层月度市场信息报告｜"):
+            return markdown
+        return (
+            self._header(company_name, period_start, period_end, material_count)
+            + "\n\n"
+            + markdown.lstrip()
+        )
 
     def _validate_monthly_markdown(
         self,
