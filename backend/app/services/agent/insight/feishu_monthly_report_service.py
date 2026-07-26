@@ -17,34 +17,39 @@ from app.models.system.sys_model import SysModel
 
 
 MONTHLY_SECTIONS = [
-    "一、竞对市场信息导读",
-    "二、客户市场信息导读",
-    "三、月度关键趋势研判",
-    "四、重点事项跟踪",
-    "五、竞对市场信息明细",
-    "六、客户市场信息明细",
-    "七、其他重要行业与政策信息",
+    "一、月度核心总览",
+    "二、五大维度月度趋势",
+    "三、月度关键市场信息解读",
+    "四、下月跟踪重点与风险提示",
 ]
 
 MONTHLY_TEMPLATE_PROMPT = """
-这是领导确认的月度报告口径，必须沿用“导读在前、明细在后、按企业归并”的结构。正文不得展示生成过程。
+这是领导确认的月度报告模板，必须严格沿用以下结构和分析逻辑。正文不得展示生成过程，
+不得增加竞对明细、客户明细、方法说明、资料清单等模板之外的主章节。
 
 固定结构：
-1. 竞对市场信息导读：先写本月竞对总体变化，再按重点竞对归并其资本、产能、产品、技术、渠道、
-   供应链、经营和风险动态。不能按新闻标题逐条拼接。
-2. 客户市场信息导读：先写客户总体趋势，再按重点客户归并新品、配方、采购、产能、渠道、经营和
-   合作变化。没有采购证据时，不得把客户动作写成确定的原料需求。
-3. 月度关键趋势研判：只写由多条材料交叉支持的趋势，说明趋势形成依据、影响范围、确定性和分歧。
-4. 重点事项跟踪：列出未来一个月值得持续观察的事项，写清已知事实、待确认信息和判断触发条件，
-   不能把建议伪装成事实。
-5. 竞对市场信息明细、客户市场信息明细：按企业分组，保留时间、主体、动作、数字、业务背景和原文链接。
-6. 其他重要行业与政策信息：只保留会实质影响目标公司产品、原料、客户或合规的信息。
+1. 月度核心总览：只写一段，开门见山概括当月行业核心主线，提炼 1-2 条最关键的变化结论，
+   不铺垫细节，不罗列新闻。
+2. 五大维度月度趋势：固定包含“1.政策、2.竞对、3.客户、4.技术、5.原料”五个二级标题。
+   每个维度严格遵循“趋势判断（变化）→核心佐证→业务影响”：
+   - 趋势判断：一句话概括本月方向和相对变化；
+   - 核心佐证：选 2-3 个最有代表性的事实并嵌入原文链接；
+   - 业务影响：直接落到目标公司的合规、经营、产品、销售、研发、采购、成本或毛利。
+   政策确无合格资料时可以明确写“本月未发现足以改变经营判断的新政策信号”，不得用旧闻凑数。
+3. 月度关键市场信息解读：只选 1-3 条最具标志性、具有中长期影响的事件，不重复复述新闻。
+   每条以“事件名称｜类别标签”为二级标题，并固定写清：
+   - 事件本质：一句话定性其行业意义；
+   - 传导逻辑：说明如何影响产业链、需求、竞争格局或成本；
+   - 业务启示：给出对目标公司的直接参考和应对方向。
+4. 下月跟踪重点与风险提示：
+   - 重点跟踪方向：列出下月需持续关注的 3-4 个核心变量，写清观察信号；
+   - 风险预警：列出 2-3 个有资料基础的潜在风险，标明影响范围和触发条件。
 
 写作要求：
 - 只使用给定的已审批资料，不使用模型记忆补数字、日期、企业动作或链接。
 - 相同事件合并，多来源只用于交叉印证，不重复计算。
 - 链接挂在自然的事件短语上，不显示裸网址，不复制冗长新闻标题。
-- 竞对与客户导读要有月度纵深：说明连续动作、变化方向、相互关联和不确定性。
+- 强调“本月发生了什么变化、为何重要、如何传导、公司应关注什么”，不能写成信息汇编。
 - 重要数字必须保留主体、口径和时间，不得把计划、预测、传闻写成已实现结果。
 - 弱相关、广告、榜单、通用专利、旧闻重发和无法确认日期的材料不得用于核心结论。
 - 报告允许写审慎研判，但必须区分“已确认事实、较强信号、待验证线索”。
@@ -467,17 +472,47 @@ class InsightFeishuMonthlyReportService:
         model_names: list[str],
         stage_trace: list[dict[str, Any]],
     ) -> MonthlyCandidate:
+        all_roles = ["竞对", "客户", "原料", "技术", "政策", "行业"]
         section_specs = [
-            ("竞对研究员", ["竞对"], ["一、竞对市场信息导读", "五、竞对市场信息明细"]),
-            ("客户研究员", ["客户"], ["二、客户市场信息导读", "六、客户市场信息明细"]),
             (
-                "行业研究员",
-                ["原料", "技术", "政策", "行业"],
-                ["三、月度关键趋势研判", "四、重点事项跟踪", "七、其他重要行业与政策信息"],
+                "月度总览研究员",
+                all_roles,
+                ["一、月度核心总览"],
+                "只写一段，提炼本月 1-2 条最关键变化结论。",
+            ),
+            (
+                "五维趋势研究员",
+                all_roles,
+                ["二、五大维度月度趋势"],
+                (
+                    "固定包含 1.政策、2.竞对、3.客户、4.技术、5.原料；"
+                    "每项都写趋势判断、核心佐证、业务影响。"
+                ),
+            ),
+            (
+                "关键事件研究员",
+                all_roles,
+                ["三、月度关键市场信息解读"],
+                (
+                    "只选 1-3 条中长期影响最大的事件；每条固定写事件本质、"
+                    "传导逻辑、业务启示。"
+                ),
+            ),
+            (
+                "风险跟踪研究员",
+                all_roles,
+                ["四、下月跟踪重点与风险提示"],
+                "写 3-4 个重点跟踪变量和 2-3 个风险，注明观察信号、影响范围和触发条件。",
             ),
         ]
 
-        async def build_section(index: int, role_name: str, roles: list[str], headings: list[str]) -> tuple[str, str]:
+        async def build_section(
+            index: int,
+            role_name: str,
+            roles: list[str],
+            headings: list[str],
+            section_instruction: str,
+        ) -> tuple[str, str]:
             scoped = [
                 item
                 for item in materials
@@ -492,8 +527,9 @@ class InsightFeishuMonthlyReportService:
 {MONTHLY_TEMPLATE_PROMPT}
 公司：{company_name}
 周期：{self._period_text(period_start, period_end)}
-只输出以下章节，必须使用 `# 序号、标题` 和 `## 企业或主题`：
+只输出以下章节，必须使用 `# 序号、标题` 和必要的 `## 子标题`：
 {json.dumps(headings, ensure_ascii=False)}
+本章要求：{section_instruction}
 补充要求：{prompt_override or "无"}
 资料：
 {json.dumps([self._compact_material(item, include_approval=True) for item in scoped], ensure_ascii=False, default=str)}
@@ -506,15 +542,15 @@ class InsightFeishuMonthlyReportService:
 
         tasks = {
             asyncio.create_task(
-                build_section(index, role_name, roles, headings),
+                build_section(index, role_name, roles, headings, section_instruction),
                 name=f"monthly-section-{index + 1}",
-            ): (index, role_name, roles, headings)
-            for index, (role_name, roles, headings) in enumerate(section_specs)
+            ): (index, role_name, roles, headings, section_instruction)
+            for index, (role_name, roles, headings, section_instruction) in enumerate(section_specs)
         }
         done, pending = await asyncio.wait(tasks, timeout=330)
         completed_parts: dict[int, tuple[str, str]] = {}
         for task in done:
-            index, role_name, _roles, _headings = tasks[task]
+            index, role_name, _roles, _headings, _section_instruction = tasks[task]
             try:
                 completed_parts[index] = task.result()
                 logger.info("月报分章节生成完成: {}", role_name)
@@ -527,11 +563,17 @@ class InsightFeishuMonthlyReportService:
             await asyncio.gather(*pending, return_exceptions=True)
             logger.warning("月报分章节并发收束超时，待补写章节数: {}", len(pending))
 
-        for task, (index, role_name, roles, headings) in tasks.items():
+        for task, (index, role_name, roles, headings, section_instruction) in tasks.items():
             if index in completed_parts:
                 continue
             logger.info("开始单独补写月报章节: {}", role_name)
-            completed_parts[index] = await build_section(index, role_name, roles, headings)
+            completed_parts[index] = await build_section(
+                index,
+                role_name,
+                roles,
+                headings,
+                section_instruction,
+            )
 
         parts = [completed_parts[index] for index in range(len(section_specs))]
         title_block = self._header(company_name, period_start, period_end, len(materials))
@@ -542,7 +584,9 @@ class InsightFeishuMonthlyReportService:
             strategy_name="分章节并行研究",
             markdown=self._sanitize_markdown(markdown, materials),
             models=list(dict.fromkeys(part[1] for part in parts)),
-            stage_notes=["竞对、客户、行业趋势由独立研究角色并行撰写，再按固定章节顺序合并。"],
+            stage_notes=[
+                "核心总览、五维趋势、关键事件、下月跟踪由独立研究角色并行撰写，再按领导模板合并。"
+            ],
         )
 
     async def _generate_multi_agent(
@@ -678,7 +722,10 @@ facts_to_recheck、strengths。
             ),
             (
                 "管理层报告编辑",
-                "检查报告深度、趋势归并、企业分组、可读性、模板一致性和新闻标题拼接问题。",
+                (
+                    "检查报告深度、五维趋势、关键事件三段式分析、下月跟踪、"
+                    "可读性、模板一致性和新闻标题拼接问题。"
+                ),
             ),
         ]
 
@@ -917,12 +964,13 @@ facts_to_recheck、strengths。
 任务：{instruction}
 补充要求：{prompt_override or "无"}
 
-输出 Markdown，正文必须以以下头部和章节开始，不得增加技术性说明：
+输出 Markdown，正文必须以以下头部和章节开始，不得增加技术性说明或其他主章节：
 {self._header(company_name, period_start, period_end, len(materials))}
 
 {chr(10).join(f"# {section}" for section in MONTHLY_SECTIONS)}
 
-章节内用 `## 企业或主题` 分组。每个核心企业的导读应融合其本月多条动态，详细信息必须保留语义链接。
+第二章必须包含政策、竞对、客户、技术、原料五个二级标题，并在每个维度写趋势判断、核心佐证、
+业务影响。第三章只选 1-3 条关键事件，每条写事件本质、传导逻辑、业务启示。引用必须使用语义链接。
 已审批资料：
 {json.dumps([self._compact_material(item, include_approval=True) for item in materials], ensure_ascii=False, default=str)}
 """
@@ -942,7 +990,7 @@ facts_to_recheck、strengths。
 
     def _title(self, company_name: str, period_end: datetime) -> str:
         short_name = "健源" if "健源" in company_name else "御馨" if "御馨" in company_name else company_name
-        return f"{short_name}｜{period_end.year}年{period_end.month}月竞对及客户市场信息月报"
+        return f"{short_name}｜{period_end.year}年{period_end.month}月市场洞察月度简报"
 
     def _sanitize_markdown(
         self,
@@ -1018,7 +1066,7 @@ facts_to_recheck、strengths。
             return markdown
         if "管理层月度市场信息报告" in markdown[:300]:
             first_section = re.search(
-                r"^#\s+一、竞对市场信息导读\s*$",
+                r"^#\s+一、月度核心总览\s*$",
                 markdown,
                 flags=re.MULTILINE,
             )
@@ -1053,10 +1101,48 @@ facts_to_recheck、strengths。
             errors.append("存在未嵌入事件短语的裸网址")
         if len(output_urls) < min(10, len(allowed_urls)):
             errors.append("报告引用覆盖不足")
+        dimension_section = self._section_body(markdown, MONTHLY_SECTIONS[1])
+        for dimension in ("政策", "竞对", "客户", "技术", "原料"):
+            if not re.search(
+                rf"^##\s+(?:\d+[.、]\s*)?{dimension}\s*$",
+                dimension_section,
+                flags=re.MULTILINE,
+            ):
+                errors.append(f"五大维度缺少“{dimension}”")
+        if dimension_section.count("趋势判断") < 5:
+            errors.append("五大维度未逐项给出趋势判断")
+        if dimension_section.count("核心佐证") < 5:
+            errors.append("五大维度未逐项给出核心佐证")
+        if dimension_section.count("业务影响") < 5:
+            errors.append("五大维度未逐项给出业务影响")
+        interpretation_section = self._section_body(markdown, MONTHLY_SECTIONS[2])
+        interpretation_count = len(
+            re.findall(r"^##\s+.+$", interpretation_section, flags=re.MULTILINE)
+        )
+        if interpretation_count < 1 or interpretation_count > 3:
+            errors.append("关键市场信息解读必须为 1-3 条")
+        for label in ("事件本质", "传导逻辑", "业务启示"):
+            if interpretation_section.count(label) < interpretation_count:
+                errors.append(f"关键市场信息解读缺少“{label}”")
+        tracking_section = self._section_body(markdown, MONTHLY_SECTIONS[3])
+        if "重点跟踪方向" not in tracking_section or "风险预警" not in tracking_section:
+            errors.append("下月跟踪章节缺少重点跟踪方向或风险预警")
         forbidden = ("作为AI", "多智能体", "模型生成", "RAG", "素材ID", "证据ID")
         if any(value in markdown for value in forbidden):
             errors.append("报告正文包含内部技术或编号表达")
         return errors
+
+    def _section_body(self, markdown: str, section: str) -> str:
+        match = re.search(
+            rf"^#\s+{re.escape(section)}\s*$",
+            markdown,
+            flags=re.MULTILINE,
+        )
+        if not match:
+            return ""
+        next_heading = re.search(r"^#\s+", markdown[match.end() :], flags=re.MULTILINE)
+        end = match.end() + next_heading.start() if next_heading else len(markdown)
+        return markdown[match.end() : end]
 
     def _review_score(self, reviews: list[dict[str, Any]]) -> float:
         scores: list[float] = []

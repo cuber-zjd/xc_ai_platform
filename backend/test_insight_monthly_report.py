@@ -24,20 +24,59 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
         ]
 
     def valid_markdown(self) -> str:
-        body = ["管理层月度市场信息报告｜2026年7月1日至26日｜生成时间：2026年7月26日", "", "---"]
-        for index, section in enumerate(MONTHLY_SECTIONS, 1):
+        body = [
+            "管理层月度市场信息报告｜2026年7月1日至26日｜生成时间：2026年7月26日",
+            "",
+            "---",
+            "",
+            f"# {MONTHLY_SECTIONS[0]}",
+            "",
+            "本月核心主线发生变化，详见[总览依据](https://example.com/1)。",
+            "",
+            f"# {MONTHLY_SECTIONS[1]}",
+        ]
+        dimensions = ("政策", "竞对", "客户", "技术", "原料")
+        for index, dimension in enumerate(dimensions, 2):
             body.extend(
                 [
                     "",
-                    f"# {section}",
+                    f"## {index - 1}.{dimension}",
                     "",
-                    f"## 主题 {index}",
+                    f"**趋势判断（变化）**：本月{dimension}方向发生变化。",
                     "",
-                    f"本月发生具体变化，详见[相关事项](https://example.com/{index})。",
+                    f"**核心佐证**：详见[{dimension}事项](https://example.com/{index})。",
+                    "",
+                    "**业务影响**：需要持续关注对经营的影响。",
                 ]
             )
-        for index in range(8, 11):
-            body.append(f"补充[交叉来源](https://example.com/{index})。")
+        body.extend(["", f"# {MONTHLY_SECTIONS[2]}"])
+        for index in range(7, 9):
+            body.extend(
+                [
+                    "",
+                    f"## 事件 {index}｜行业",
+                    "",
+                    "**事件本质**：行业出现结构变化。",
+                    "",
+                    f"**传导逻辑**：详见[事件依据](https://example.com/{index})。",
+                    "",
+                    "**业务启示**：跟踪客户与成本变化。",
+                ]
+            )
+        body.extend(
+            [
+                "",
+                f"# {MONTHLY_SECTIONS[3]}",
+                "",
+                "## 1.重点跟踪方向",
+                "",
+                "关注[跟踪事项](https://example.com/9)。",
+                "",
+                "## 2.风险预警",
+                "",
+                "留意[风险事项](https://example.com/10)。",
+            ]
+        )
         return "\n".join(body)
 
     def test_valid_report_passes_deterministic_gate(self) -> None:
@@ -78,7 +117,7 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
 
     def test_missing_header_is_restored_deterministically(self) -> None:
         restored = self.service._ensure_monthly_header(
-            "# 一、竞对市场信息导读\n\n正文",
+            "# 一、月度核心总览\n\n正文",
             company_name="山东御馨生物科技股份有限公司",
             period_start=datetime(2026, 7, 1),
             period_end=datetime(2026, 7, 27),
@@ -91,7 +130,7 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
         value = (
             "# 管理层月度市场信息报告｜2026年7月1日至27日\n\n"
             "适用公司：山东御馨生物科技股份有限公司\n\n---\n\n"
-            "# 一、竞对市场信息导读\n\n正文"
+            "# 一、月度核心总览\n\n正文"
         )
         restored = self.service._ensure_monthly_header(
             value,
@@ -139,7 +178,7 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
                     stage_trace=[],
                 )
             )
-        self.assertEqual(invoke.await_count, 3)
+        self.assertEqual(invoke.await_count, 4)
         self.assertEqual(candidate.strategy_code, "section_parallel")
 
 
