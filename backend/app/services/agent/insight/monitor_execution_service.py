@@ -10,6 +10,7 @@ from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.config import settings
+from app.core.logger import logger
 from app.db.session import async_session
 from app.models.agent.insight import InsightChannel, InsightCompany, InsightMonitorConfig
 from app.schemas.agent.insight.crawl import InsightSearchDiscoveryRequest
@@ -747,26 +748,39 @@ class InsightMonitorExecutionService:
                 timeout=timeout,
             )
             return hits, {"retry_count": 0, "retry_errors": []}
-        except Exception:
+        except Exception as exc:
             if handler_code != "doubao_web_search" or len(batch.rows) <= 1:
                 raise
+            logger.warning(
+                "Insight 豆包分组搜索首次失败，准备拆分重试: group_key={} rows={} error={}",
+                batch.group_key,
+                len(batch.rows),
+                f"{exc.__class__.__name__}: {str(exc) or '请求超时'}"[:300],
+            )
 
-        retry_batch_size = max(1, settings.INSIGHT_SCHEDULER_GROUPED_AI_RETRY_BATCH_SIZE)
-        retry_hits: list[InsightSearchHit] = []
-        retry_errors: list[dict[str, Any]] = []
-        retry_count = 0
+        configured_batch_size = max(1, settings.INSIGHT_SCHEDULER_GROUPED_AI_RETRY_BATCH_SIZE)
+        retry_batch_size = min(configured_batch_size, max(1, len(batch.rows) // 2))
+        retry_batches: list[GroupedDiscoveryBatch] = []
         for index in range(0, len(batch.rows), retry_batch_size):
             retry_rows = batch.rows[index : index + retry_batch_size]
-            retry_batch = GroupedDiscoveryBatch(
-                group_key=f"{batch.group_key}:retry:{index // retry_batch_size + 1}",
-                group_name=self._group_name(retry_rows),
-                rows=retry_rows,
-                query=self._build_group_query(retry_rows),
+            retry_batches.append(
+                GroupedDiscoveryBatch(
+                    group_key=f"{batch.group_key}:retry:{index // retry_batch_size + 1}",
+                    group_name=self._group_name(retry_rows),
+                    rows=retry_rows,
+                    query=self._build_group_query(retry_rows),
+                )
             )
-            retry_count += 1
+        retry_semaphore = asyncio.Semaphore(
+            max(1, settings.INSIGHT_SCHEDULER_GROUPED_AI_RETRY_CONCURRENCY)
+        )
+
+        async def run_retry(
+            retry_batch: GroupedDiscoveryBatch,
+        ) -> tuple[list[InsightSearchHit], dict[str, Any] | None]:
             try:
-                retry_hits.extend(
-                    await asyncio.wait_for(
+                async with retry_semaphore:
+                    hits = await asyncio.wait_for(
                         self._search_grouped_channel(
                             retry_batch,
                             handler_code,
@@ -774,15 +788,26 @@ class InsightMonitorExecutionService:
                         ),
                         timeout=timeout,
                     )
-                )
+                return hits, None
             except Exception as exc:
-                retry_errors.append(
-                    {
+                return [], {
                         "group_key": retry_batch.group_key,
                         "query": retry_batch.query,
                         "error": f"{exc.__class__.__name__}: {str(exc) or '重试未返回'}"[:500],
                     }
-                )
+
+        retry_results = await asyncio.gather(*(run_retry(item) for item in retry_batches))
+        retry_hits = [hit for hits, _ in retry_results for hit in hits]
+        retry_errors = [error for _, error in retry_results if error]
+        retry_count = len(retry_batches)
+        logger.info(
+            "Insight 豆包分组拆分重试完成: group_key={} retries={} success_parts={} failed_parts={} hits={}",
+            batch.group_key,
+            retry_count,
+            retry_count - len(retry_errors),
+            len(retry_errors),
+            len(retry_hits),
+        )
         deduped_hits: list[InsightSearchHit] = []
         seen_urls: set[str] = set()
         for hit in retry_hits:
