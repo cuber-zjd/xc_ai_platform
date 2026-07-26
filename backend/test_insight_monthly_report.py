@@ -87,6 +87,22 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
         self.assertTrue(restored.startswith("管理层月度市场信息报告｜"))
         self.assertIn("审批后素材 42 条", restored)
 
+    def test_markdown_title_header_is_replaced_without_duplication(self) -> None:
+        value = (
+            "# 管理层月度市场信息报告｜2026年7月1日至27日\n\n"
+            "适用公司：山东御馨生物科技股份有限公司\n\n---\n\n"
+            "# 一、竞对市场信息导读\n\n正文"
+        )
+        restored = self.service._ensure_monthly_header(
+            value,
+            company_name="山东御馨生物科技股份有限公司",
+            period_start=datetime(2026, 7, 1),
+            period_end=datetime(2026, 7, 27),
+            material_count=42,
+        )
+        self.assertEqual(restored.count("管理层月度市场信息报告"), 1)
+        self.assertEqual(restored.count("适用公司：山东御馨生物科技股份有限公司"), 1)
+
     def test_blocking_issue_reduces_review_score(self) -> None:
         review = {
             "review_role": "事实与幻觉核验员",

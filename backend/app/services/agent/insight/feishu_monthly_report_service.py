@@ -1016,6 +1016,14 @@ facts_to_recheck、strengths。
     ) -> str:
         if markdown.startswith("管理层月度市场信息报告｜"):
             return markdown
+        if "管理层月度市场信息报告" in markdown[:300]:
+            first_section = re.search(
+                r"^#\s+一、竞对市场信息导读\s*$",
+                markdown,
+                flags=re.MULTILINE,
+            )
+            if first_section:
+                markdown = markdown[first_section.start() :]
         return (
             self._header(company_name, period_start, period_end, material_count)
             + "\n\n"
