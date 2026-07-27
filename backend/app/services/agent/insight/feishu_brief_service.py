@@ -321,12 +321,17 @@ class InsightFeishuBriefService:
         plan_id_value = plan.id or 0
         try:
             company = await self._require_company(db, plan.sys_company_id)
+            material_scan_limit = (
+                1000
+                if plan.schedule_frequency == "monthly"
+                else min(plan.max_materials, settings.INSIGHT_FEISHU_BRIEF_MAX_MATERIALS)
+            )
             materials = await self._load_materials(
                 db,
                 sys_company_id=plan.sys_company_id,
                 period_start=period_start,
                 period_end=period_end,
-                limit=min(plan.max_materials, settings.INSIGHT_FEISHU_BRIEF_MAX_MATERIALS),
+                limit=material_scan_limit,
             )
             minimum_materials = 10 if plan.schedule_frequency == "monthly" else 7
             if len(materials) < minimum_materials:

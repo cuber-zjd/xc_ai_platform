@@ -511,9 +511,9 @@ class InsightFeishuMonthlyReportService:
                     "selected_count": len(approved_ids),
                     "warning": f"全局总编仅返回 {len(selected_ids)} 条，未采用该结果",
                 }
-        if len(approved_ids) < 10:
+        if len(approved_ids) < 6:
             raise ValueError(
-                f"月报资料审批仅通过 {len(approved_ids)} 条，未达到 10 条最低证据要求；"
+                f"月报资料审批仅通过 {len(approved_ids)} 条，未达到 6 条最低证据要求；"
                 "系统不会用未通过审批的材料凑数"
             )
         approved_by_id = {row["id"]: row for row in approved_meta}
@@ -1212,11 +1212,18 @@ facts_to_recheck、strengths。
                 "大豆油",
                 "大豆磷脂",
                 "磷脂",
-                "粮油",
-                "油脂",
             )
             has_own_business_fact = any(value in primary_text for value in own_business)
-            if not has_own_business_fact:
+            contextual_policy = (
+                "食品监管",
+                "食品安全",
+                "委托生产",
+                "对外投资",
+                "出口",
+                "外贸",
+            )
+            has_contextual_policy = any(value in primary_text for value in contextual_policy)
+            if not has_own_business_fact and not has_contextual_policy:
                 return "标题、摘要或监测主题缺少健源大豆及植物蛋白业务的直接事实"
             unrelated_primary = (
                 "果葡糖浆",
