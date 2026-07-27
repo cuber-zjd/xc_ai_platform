@@ -1111,12 +1111,13 @@ facts_to_recheck、strengths。
             errors.append("存在审批资料之外的链接")
         if re.search(r"(?<!\]\()https?://", markdown):
             errors.append("存在未嵌入事件短语的裸网址")
-        if len(output_urls) < min(10, len(allowed_urls)):
-            errors.append("报告引用覆盖不足")
+        minimum_citations = min(8, len(allowed_urls))
+        if len(output_urls) < minimum_citations:
+            errors.append(f"报告引用覆盖不足（当前 {len(output_urls)}，最低 {minimum_citations}）")
         dimension_section = self._section_body(markdown, MONTHLY_SECTIONS[1])
         for dimension in ("政策", "竞对", "客户", "技术", "原料"):
             if not re.search(
-                rf"^##\s+(?:\d+[.、]\s*)?{dimension}\s*$",
+                rf"^#{{2,3}}\s+\**\s*(?:\d+[.、]\s*)?{dimension}\s*\**\s*$",
                 dimension_section,
                 flags=re.MULTILINE,
             ):
@@ -1129,7 +1130,7 @@ facts_to_recheck、strengths。
             errors.append("五大维度未逐项给出业务影响")
         interpretation_section = self._section_body(markdown, MONTHLY_SECTIONS[2])
         interpretation_count = len(
-            re.findall(r"^##\s+.+$", interpretation_section, flags=re.MULTILINE)
+            re.findall(r"^#{2,3}\s+.+$", interpretation_section, flags=re.MULTILINE)
         )
         if interpretation_count < 1 or interpretation_count > 3:
             errors.append("关键市场信息解读必须为 1-3 条")

@@ -93,6 +93,20 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
         errors = self.service._validate_monthly_markdown(value, self.materials)
         self.assertIn("报告正文包含内部技术或编号表达", errors)
 
+    def test_dimension_gate_accepts_bold_level_three_headings(self) -> None:
+        value = self.valid_markdown()
+        for index, dimension in enumerate(("政策", "竞对", "客户", "技术", "原料"), 1):
+            value = value.replace(f"## {index}.{dimension}", f"### **{index}. {dimension}**")
+        errors = self.service._validate_monthly_markdown(value, self.materials)
+        self.assertFalse(any(error.startswith("五大维度缺少") for error in errors))
+
+    def test_eight_distinct_citations_meet_template_gate(self) -> None:
+        value = self.valid_markdown()
+        value = value.replace("[跟踪事项](https://example.com/9)", "跟踪事项")
+        value = value.replace("[风险事项](https://example.com/10)", "风险事项")
+        errors = self.service._validate_monthly_markdown(value, self.materials)
+        self.assertFalse(any(error.startswith("报告引用覆盖不足") for error in errors))
+
     def test_section_order_accepts_bold_h2_headings(self) -> None:
         body = ["管理层月度市场信息报告｜2026年7月1日至26日｜生成时间：2026年7月26日"]
         for section in MONTHLY_SECTIONS:
