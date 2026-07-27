@@ -409,6 +409,86 @@ class InsightFeishuMonthlyReportService:
                             "reason": str(row.get("reason") or "")[:300],
                         }
                     )
+        global_selection: dict[str, Any] = {
+            "mode": "not_required",
+            "candidate_count": len(approved_ids),
+            "selected_count": len(approved_ids),
+        }
+        if len(approved_ids) > 60:
+            global_candidates = [
+                {
+                    "id": row["id"],
+                    "score": row["score"],
+                    "role": row["role"],
+                    "subject": row["subject"],
+                    "title": str(by_id[row["id"]].get("title") or "")[:180],
+                    "fact_digest": row["fact_digest"][:360],
+                    "reason": row["reason"][:180],
+                }
+                for row in approved_meta
+            ]
+            selection_payload, selection_model = await self._invoke_json(
+                stage="material_global_selection",
+                system="你是月报全局选材总编，只输出合法 JSON，不写报告。",
+                prompt=f"""
+对 {company_name} 的月报初筛材料做第二轮全局横向比较。
+目标公司真实业务边界：{insight_company_business_context(company_name)}
+周期：{self._period_text(period_start, period_end)}
+
+要求：
+1. 从全部初筛项中保留 30-50 条最有管理价值的材料，绝不因为某条在局部批次通过就继续保留；
+2. 优先覆盖政策、竞对、客户、技术、原料五个维度，但不得用弱相关材料补齐分类；
+3. 健源不得把淀粉糖、果葡糖浆、糖醇当作核心业务，御馨不得把大豆蛋白、蛋白粉、豆粕当作核心业务；
+4. 相同事件只留事实最完整、来源最可靠的一条，其他来源作为交叉印证但不单独占名额；
+5. 优先保留有明确主体、动作、时间、数字、经营影响或监管变化的材料；
+6. 其他产业公司的材料只有能直接影响目标公司的核心产品、客户、竞对、原料或合规时才可保留。
+
+只返回 JSON：
+{{
+  "selected_ids": [1, 2],
+  "rejected": [{{"id": 3, "reason": "跨产业公司/重复/弱相关"}}],
+  "coverage": {{"政策": 0, "竞对": 0, "客户": 0, "技术": 0, "原料": 0}},
+  "coverage_gaps": ["仍然缺少的高价值信息"]
+}}
+
+初筛材料：
+{json.dumps(global_candidates, ensure_ascii=False, default=str)}
+""",
+                preferred_model=model_names[0],
+                stage_trace=stage_trace,
+                enable_reasoning=False,
+                invocation_timeout_seconds=180,
+            )
+            selected_ids: list[int] = []
+            for value in selection_payload.get("selected_ids") or []:
+                try:
+                    item_id = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if item_id in approved_ids and item_id not in selected_ids:
+                    selected_ids.append(item_id)
+            if len(selected_ids) >= 10:
+                selected_ids = selected_ids[:60]
+                approved_by_id = {row["id"]: row for row in approved_meta}
+                approved_ids = selected_ids
+                approved_meta = [approved_by_id[item_id] for item_id in approved_ids]
+                global_selection = {
+                    "mode": "ai_global_editor",
+                    "model": selection_model,
+                    "candidate_count": len(global_candidates),
+                    "selected_count": len(approved_ids),
+                    "coverage": selection_payload.get("coverage") or {},
+                    "coverage_gaps": selection_payload.get("coverage_gaps") or [],
+                    "rejected": selection_payload.get("rejected") or [],
+                }
+            else:
+                global_selection = {
+                    "mode": "invalid_model_result_kept_batch_approval",
+                    "model": selection_model,
+                    "candidate_count": len(global_candidates),
+                    "selected_count": len(approved_ids),
+                    "warning": f"全局总编仅返回 {len(selected_ids)} 条，未采用该结果",
+                }
         if len(approved_ids) < 10:
             raise ValueError(
                 f"月报资料审批仅通过 {len(approved_ids)} 条，未达到 10 条最低证据要求；"
@@ -440,6 +520,7 @@ class InsightFeishuMonthlyReportService:
             "approved": approved_meta,
             "rejected": rejected,
             "coverage_gaps": list(dict.fromkeys(coverage_gaps))[:12],
+            "global_selection": global_selection,
         }
 
     async def _generate_single_model(

@@ -116,6 +116,63 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
         self.assertIn("不是健源月报的核心业务", jianyuan)
         self.assertIn("不是御馨月报的核心业务", yuxin)
 
+    def test_material_approval_uses_global_editor_above_sixty_items(self) -> None:
+        materials = [
+            {
+                "id": index,
+                "title": f"情报 {index}",
+                "summary": f"与目标公司核心业务直接相关的事实 {index}",
+                "source_url": f"https://example.com/{index}",
+            }
+            for index in range(1, 71)
+        ]
+
+        async def invoke_json(**kwargs):
+            stage = kwargs["stage"]
+            if stage == "material_global_selection":
+                return (
+                    {
+                        "selected_ids": list(range(1, 36)),
+                        "coverage": {"政策": 3, "竞对": 8, "客户": 8, "技术": 8, "原料": 8},
+                    },
+                    "global-editor",
+                )
+            batch_index = int(stage.rsplit("_", 1)[-1]) - 1
+            batch = materials[batch_index * 25 : (batch_index + 1) * 25]
+            return (
+                {
+                    "approved": [
+                        {
+                            "id": item["id"],
+                            "score": 90,
+                            "role": "行业",
+                            "subject": "测试主题",
+                            "fact_digest": item["summary"],
+                            "reason": "直接相关",
+                        }
+                        for item in batch
+                    ],
+                    "rejected": [],
+                    "coverage_gaps": [],
+                },
+                "batch-reviewer",
+            )
+
+        with patch.object(self.service, "_invoke_json", AsyncMock(side_effect=invoke_json)):
+            approved, audit = asyncio.run(
+                self.service._approve_materials(
+                    company_name="山东御馨生物科技股份有限公司",
+                    period_start=datetime(2026, 7, 1),
+                    period_end=datetime(2026, 7, 27),
+                    materials=materials,
+                    model_names=["model-a", "model-b", "model-c"],
+                    stage_trace=[],
+                )
+            )
+        self.assertEqual(len(approved), 35)
+        self.assertEqual(audit["global_selection"]["mode"], "ai_global_editor")
+        self.assertEqual(audit["global_selection"]["model"], "global-editor")
+
     def test_section_order_accepts_bold_h2_headings(self) -> None:
         body = ["管理层月度市场信息报告｜2026年7月1日至26日｜生成时间：2026年7月26日"]
         for section in MONTHLY_SECTIONS:
