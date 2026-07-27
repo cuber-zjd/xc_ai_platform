@@ -111,21 +111,21 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
         self.assertIn("第 2 条关键市场信息解读缺少自然嵌入的原文链接", errors)
 
     def test_company_focus_rejects_cross_company_business(self) -> None:
-        jianyuan = self.valid_markdown() + "\n大豆植物蛋白与豆粕是核心。果葡糖浆扩产。"
+        jianyuan = self.valid_markdown() + "\n玉米果葡糖浆与麦芽糖浆是核心。大豆蛋白扩产。"
         errors = self.service._validate_monthly_markdown(
             jianyuan,
             self.materials,
             company_name="山东香驰健源生物科技有限公司",
         )
-        self.assertIn("健源月报混入御馨糖浆或糖醇业务主线", errors)
+        self.assertIn("健源月报混入御馨大豆或植物蛋白业务主线", errors)
 
-        yuxin = self.valid_markdown() + "\n玉米果葡糖浆、麦芽糖浆和功能糖是核心。豆粕扩产。"
+        yuxin = self.valid_markdown() + "\n大豆植物蛋白和豆粕是核心。果葡糖浆扩产。"
         errors = self.service._validate_monthly_markdown(
             yuxin,
             self.materials,
             company_name="山东御馨生物科技股份有限公司",
         )
-        self.assertIn("御馨月报混入健源大豆或植物蛋白业务主线", errors)
+        self.assertIn("御馨月报混入健源糖浆或糖醇业务主线", errors)
 
     def test_dimension_gate_accepts_bold_level_three_headings(self) -> None:
         value = self.valid_markdown()
@@ -162,8 +162,8 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
     def test_company_business_context_separates_jianyuan_and_yuxin(self) -> None:
         jianyuan = insight_company_business_context("山东香驰健源生物科技有限公司")
         yuxin = insight_company_business_context("山东御馨生物科技股份有限公司")
-        self.assertIn("大豆精深加工和植物蛋白", jianyuan)
-        self.assertIn("果葡糖浆、麦芽糖浆", yuxin)
+        self.assertIn("果葡糖浆、麦芽糖浆", jianyuan)
+        self.assertIn("大豆精深加工和植物蛋白", yuxin)
         self.assertIn("不是健源月报的核心业务", jianyuan)
         self.assertIn("不是御馨月报的核心业务", yuxin)
 
@@ -178,13 +178,13 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
         }
         self.assertIsNotNone(
             self.service._cross_company_material_reason(
-                "山东御馨生物科技股份有限公司",
+                "山东香驰健源生物科技有限公司",
                 soybean_only,
             )
         )
         self.assertIsNotNone(
             self.service._cross_company_material_reason(
-                "山东御馨生物科技股份有限公司",
+                "山东香驰健源生物科技有限公司",
                 soybean_with_syrup,
             )
         )
@@ -194,8 +194,30 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
         }
         self.assertIsNone(
             self.service._cross_company_material_reason(
-                "山东御馨生物科技股份有限公司",
+                "山东香驰健源生物科技有限公司",
                 syrup_only,
+            )
+        )
+        generic_patent = {
+            "title": "食品企业取得新型杀菌装置专利",
+            "summary": "该设备用于提升生产线清洗效率。",
+            "tags": "技术 专利",
+        }
+        self.assertIsNotNone(
+            self.service._cross_company_material_reason(
+                "山东香驰健源生物科技有限公司",
+                generic_patent,
+            )
+        )
+        yuxin_policy = {
+            "title": "食品添加剂新品种管理要求发布",
+            "summary": "新规调整食品添加剂申报与标签管理要求。",
+            "tags": "食品监管",
+        }
+        self.assertIsNone(
+            self.service._cross_company_material_reason(
+                "山东香驰健源生物科技有限公司",
+                yuxin_policy,
             )
         )
         generic_customer = {
@@ -205,7 +227,7 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
         }
         self.assertIsNotNone(
             self.service._cross_company_material_reason(
-                "山东香驰健源生物科技有限公司",
+                "山东御馨生物科技股份有限公司",
                 generic_customer,
             )
         )
@@ -216,7 +238,7 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
         }
         self.assertIsNotNone(
             self.service._cross_company_material_reason(
-                "山东香驰健源生物科技有限公司",
+                "山东御馨生物科技股份有限公司",
                 incidental_soybean,
             )
         )
@@ -226,8 +248,19 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
         }
         self.assertIsNone(
             self.service._cross_company_material_reason(
-                "山东香驰健源生物科技有限公司",
+                "山东御馨生物科技股份有限公司",
                 direct_soybean,
+            )
+        )
+        sugar_policy = {
+            "title": "功能糖与赤藓糖醇食品标签管理政策调整",
+            "summary": "政策涉及糖醇和甜味剂产品的标识要求。",
+            "tags": "食品监管",
+        }
+        self.assertIsNotNone(
+            self.service._cross_company_material_reason(
+                "山东御馨生物科技股份有限公司",
+                sugar_policy,
             )
         )
 
@@ -235,8 +268,8 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
         materials = [
             {
                 "id": index,
-                "title": f"情报 {index}",
-                "summary": f"与目标公司核心业务直接相关的事实 {index}",
+                "title": f"大豆蛋白市场情报 {index}",
+                "summary": f"植物蛋白与豆粕业务直接相关的事实 {index}",
                 "source_url": f"https://example.com/{index}",
             }
             for index in range(1, 71)

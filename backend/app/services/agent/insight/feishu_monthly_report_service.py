@@ -471,7 +471,7 @@ class InsightFeishuMonthlyReportService:
 要求：
 1. 从全部初筛项中保留 30-50 条最有管理价值的材料，绝不因为某条在局部批次通过就继续保留；
 2. 优先覆盖政策、竞对、客户、技术、原料五个维度，但不得用弱相关材料补齐分类；
-3. 健源不得把淀粉糖、果葡糖浆、糖醇当作核心业务，御馨不得把大豆蛋白、蛋白粉、豆粕当作核心业务；
+3. 健源不得把大豆蛋白、蛋白粉、豆粕当作核心业务，御馨不得把淀粉糖、果葡糖浆、糖醇当作核心业务；
 4. 相同事件只留事实最完整、来源最可靠的一条，其他来源作为交叉印证但不单独占名额；
 5. 优先保留有明确主体、动作、时间、数字、经营影响或监管变化的材料；
 6. 其他产业公司的材料只有能直接影响目标公司的核心产品、客户、竞对、原料或合规时才可保留。
@@ -1185,7 +1185,7 @@ facts_to_recheck、strengths。
                 "subject_name",
             )
         ).lower()
-        if "御馨" in company_name:
+        if "健源" in company_name:
             headline_text = str(item.get("title") or "").lower()
             other_business = (
                 "大豆蛋白",
@@ -1210,13 +1210,27 @@ facts_to_recheck、strengths。
                 "甜味剂",
                 "低gi",
             )
+            contextual_policy = (
+                "食品监管",
+                "食品安全",
+                "食品标准",
+                "食品添加剂",
+                "委托生产",
+                "对外投资",
+                "出口",
+                "外贸",
+            )
             headline_is_other_business = any(value in headline_text for value in other_business)
+            has_own_business_fact = any(value in primary_text for value in own_business)
+            has_contextual_policy = any(value in primary_text for value in contextual_policy)
             summary_is_other_without_own_headline = any(
                 value in primary_text for value in other_business
             ) and not any(value in headline_text for value in own_business)
             if headline_is_other_business or summary_is_other_without_own_headline:
-                return "跨产业公司材料：大豆或植物蛋白为主，且无御馨核心业务直接关系"
-        if "健源" in company_name:
+                return "跨产业公司材料：大豆或植物蛋白为主，且无健源核心业务直接关系"
+            if not has_own_business_fact and not has_contextual_policy:
+                return "标题、摘要或监测主题缺少健源玉米深加工或糖类业务直接事实"
+        if "御馨" in company_name:
             headline_text = str(item.get("title") or "").lower()
             own_business = (
                 "大豆",
@@ -1239,11 +1253,17 @@ facts_to_recheck、strengths。
             )
             has_contextual_policy = any(value in primary_text for value in contextual_policy)
             if not has_own_business_fact and not has_contextual_policy:
-                return "标题、摘要或监测主题缺少健源大豆及植物蛋白业务的直接事实"
+                return "标题、摘要或监测主题缺少御馨大豆及植物蛋白业务的直接事实"
             unrelated_primary = (
                 "果葡糖浆",
                 "麦芽糖浆",
                 "淀粉糖",
+                "糖浆",
+                "功能糖",
+                "糖醇",
+                "赤藓糖醇",
+                "代糖",
+                "甜味剂",
                 "玉米深加工",
                 "乳清蛋白",
                 "咖啡烘焙",
@@ -1253,7 +1273,7 @@ facts_to_recheck、strengths。
             if any(value in primary_text for value in unrelated_primary) and not any(
                 value in headline_text for value in direct_business
             ):
-                return "主事件属于糖浆、乳清或咖啡等非健源核心业务"
+                return "主事件属于糖浆、乳清或咖啡等非御馨核心业务"
         return None
 
     def _order_sections(self, markdown: str) -> str:
@@ -1405,19 +1425,19 @@ facts_to_recheck、strengths。
     def _validate_company_focus(markdown: str, company_name: str) -> list[str]:
         normalized = markdown.lower()
         if "健源" in company_name:
-            own_terms = ("大豆", "植物蛋白", "大豆蛋白", "豆粕", "豆油")
-            mixed_terms = ("果葡糖浆", "麦芽糖浆", "淀粉糖", "糖醇", "赤藓糖醇")
-            if sum(normalized.count(term) for term in own_terms) < 3:
-                return ["健源月报未充分围绕大豆和植物蛋白业务"]
-            if any(term in normalized for term in mixed_terms):
-                return ["健源月报混入御馨糖浆或糖醇业务主线"]
-        if "御馨" in company_name:
             own_terms = ("果葡糖浆", "麦芽糖浆", "淀粉糖", "功能糖", "糖醇", "玉米")
             mixed_terms = ("大豆蛋白", "植物蛋白", "豆粕", "豆油", "大豆油")
             if sum(normalized.count(term) for term in own_terms) < 3:
-                return ["御馨月报未充分围绕玉米深加工和糖类业务"]
+                return ["健源月报未充分围绕玉米深加工和糖类业务"]
             if any(term in normalized for term in mixed_terms):
-                return ["御馨月报混入健源大豆或植物蛋白业务主线"]
+                return ["健源月报混入御馨大豆或植物蛋白业务主线"]
+        if "御馨" in company_name:
+            own_terms = ("大豆", "植物蛋白", "大豆蛋白", "豆粕", "豆油")
+            mixed_terms = ("果葡糖浆", "麦芽糖浆", "淀粉糖", "糖醇", "赤藓糖醇")
+            if sum(normalized.count(term) for term in own_terms) < 3:
+                return ["御馨月报未充分围绕大豆和植物蛋白业务"]
+            if any(term in normalized for term in mixed_terms):
+                return ["御馨月报混入健源糖浆或糖醇业务主线"]
         return []
 
     def _section_body(self, markdown: str, section: str) -> str:
