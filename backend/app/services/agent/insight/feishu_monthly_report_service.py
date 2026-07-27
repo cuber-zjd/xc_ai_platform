@@ -1164,16 +1164,14 @@ facts_to_recheck、strengths。
         company_name: str,
         item: dict[str, Any],
     ) -> str | None:
-        text = " ".join(
+        factual_text = " ".join(
             str(item.get(key) or "")
             for key in (
                 "title",
                 "summary",
                 "content",
-                "selection_reason",
-                "business_insight",
-                "risk_opportunity",
                 "tags",
+                "subject_name",
             )
         ).lower()
         if "御馨" in company_name:
@@ -1200,19 +1198,11 @@ facts_to_recheck、strengths。
                 "甜味剂",
                 "低gi",
             )
-            if any(value in text for value in other_business) and not any(
-                value in text for value in own_business
+            if any(value in factual_text for value in other_business) and not any(
+                value in factual_text for value in own_business
             ):
                 return "跨产业公司材料：大豆或植物蛋白为主，且无御馨核心业务直接关系"
         if "健源" in company_name:
-            other_business = (
-                "果葡糖浆",
-                "麦芽糖浆",
-                "淀粉糖",
-                "功能糖",
-                "糖醇",
-                "赤藓糖醇",
-            )
             own_business = (
                 "大豆",
                 "植物蛋白",
@@ -1223,10 +1213,9 @@ facts_to_recheck、strengths。
                 "粮油",
                 "油脂",
             )
-            if any(value in text for value in other_business) and not any(
-                value in text for value in own_business
-            ):
-                return "跨产业公司材料：淀粉糖或功能糖为主，且无健源核心业务直接关系"
+            has_own_business_fact = any(value in factual_text for value in own_business)
+            if not has_own_business_fact:
+                return "缺少健源大豆或植物蛋白核心业务的直接事实"
         return None
 
     def _order_sections(self, markdown: str) -> str:

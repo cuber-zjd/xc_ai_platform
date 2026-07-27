@@ -155,6 +155,17 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
                 soybean_with_syrup,
             )
         )
+        generic_customer = {
+            "title": "茶饮品牌推出夏季新品",
+            "summary": "新品覆盖果茶和咖啡场景。",
+            "business_insight": "可能带动香驰大豆蛋白需求",
+        }
+        self.assertIsNotNone(
+            self.service._cross_company_material_reason(
+                "山东香驰健源生物科技有限公司",
+                generic_customer,
+            )
+        )
 
     def test_material_approval_uses_global_editor_above_sixty_items(self) -> None:
         materials = [
