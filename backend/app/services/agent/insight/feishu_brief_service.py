@@ -384,6 +384,12 @@ class InsightFeishuBriefService:
                         }
                     )
                 pipeline_output = monthly_result.output_payload | {"artifacts": artifacts}
+                used_material_count = int(
+                    monthly_result.output_payload.get("material_approval", {}).get(
+                        "approved_count",
+                        len(materials),
+                    )
+                )
             else:
                 selected_materials, selection_audit = await self._select_materials(
                     company_name=company.name if company else "香驰控股",
@@ -406,6 +412,7 @@ class InsightFeishuBriefService:
                     prompt_override=plan.prompt_override,
                 )
                 pipeline_output = {"material_selection": selection_audit}
+                used_material_count = len(selected_materials)
             document_id, document_url = await self._create_document(title, markdown)
             recipients = self._recipients(plan)
             should_push = not run_request or run_request.push_final
@@ -416,7 +423,7 @@ class InsightFeishuBriefService:
             )
             finished = datetime.now()
             run.status = "success" if push_result["failed_count"] == 0 else "partial"
-            run.material_count = len(materials)
+            run.material_count = used_material_count
             run.report_title = title
             run.document_id = document_id
             run.document_url = document_url
