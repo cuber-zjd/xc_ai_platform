@@ -1186,6 +1186,7 @@ facts_to_recheck、strengths。
             )
         ).lower()
         if "御馨" in company_name:
+            headline_text = str(item.get("title") or "").lower()
             other_business = (
                 "大豆蛋白",
                 "植物蛋白",
@@ -1209,9 +1210,11 @@ facts_to_recheck、strengths。
                 "甜味剂",
                 "低gi",
             )
-            if any(value in primary_text for value in other_business) and not any(
-                value in primary_text for value in own_business
-            ):
+            headline_is_other_business = any(value in headline_text for value in other_business)
+            summary_is_other_without_own_headline = any(
+                value in primary_text for value in other_business
+            ) and not any(value in headline_text for value in own_business)
+            if headline_is_other_business or summary_is_other_without_own_headline:
                 return "跨产业公司材料：大豆或植物蛋白为主，且无御馨核心业务直接关系"
         if "健源" in company_name:
             headline_text = str(item.get("title") or "").lower()
@@ -1247,7 +1250,7 @@ facts_to_recheck、strengths。
                 "咖啡豆",
             )
             direct_business = ("大豆", "植物蛋白", "大豆蛋白", "豆粕", "豆油", "大豆油")
-            if any(value in headline_text for value in unrelated_primary) and not any(
+            if any(value in primary_text for value in unrelated_primary) and not any(
                 value in headline_text for value in direct_business
             ):
                 return "主事件属于糖浆、乳清或咖啡等非健源核心业务"

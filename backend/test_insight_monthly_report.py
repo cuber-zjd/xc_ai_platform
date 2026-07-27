@@ -182,10 +182,20 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
                 soybean_only,
             )
         )
-        self.assertIsNone(
+        self.assertIsNotNone(
             self.service._cross_company_material_reason(
                 "山东御馨生物科技股份有限公司",
                 soybean_with_syrup,
+            )
+        )
+        syrup_only = {
+            "title": "饮料客户调整果葡糖浆与麦芽糖浆配方",
+            "summary": "客户测试低糖饮料方案。",
+        }
+        self.assertIsNone(
+            self.service._cross_company_material_reason(
+                "山东御馨生物科技股份有限公司",
+                syrup_only,
             )
         )
         generic_customer = {
