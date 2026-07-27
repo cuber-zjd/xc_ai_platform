@@ -42,6 +42,8 @@ MONTHLY_TEMPLATE_PROMPT = """
    - 事件本质：一句话定性其行业意义；
    - 传导逻辑：说明如何影响产业链、需求、竞争格局或成本；
    - 业务启示：给出对目标公司的直接参考和应对方向。
+   每条解读至少引用 1 条审批资料，链接必须嵌入“主体+动作”组成的自然事件短语中，
+   不把链接挂在章节标题上，也不得使用“原文、来源、详情、点击查看”等无语义文字。
 4. 下月跟踪重点与风险提示：
    - 重点跟踪方向：列出下月需持续关注的 3-4 个核心变量，写清观察信号；
    - 风险预警：列出 2-3 个有资料基础的潜在风险，标明影响范围和触发条件。
@@ -49,7 +51,8 @@ MONTHLY_TEMPLATE_PROMPT = """
 写作要求：
 - 只使用给定的已审批资料，不使用模型记忆补数字、日期、企业动作或链接。
 - 相同事件合并，多来源只用于交叉印证，不重复计算。
-- 链接挂在自然的事件短语上，不显示裸网址，不复制冗长新闻标题。
+- 链接挂在自然的“主体+动作”事件短语上，不显示裸网址，不复制冗长新闻标题，
+  禁止使用“原文、来源、详情、点击查看”等无语义链接文字。
 - 强调“本月发生了什么变化、为何重要、如何传导、公司应关注什么”，不能写成信息汇编。
 - 重要数字必须保留主体、口径和时间，不得把计划、预测、传闻写成已实现结果。
 - 弱相关、广告、榜单、通用专利、旧闻重发和无法确认日期的材料不得用于核心结论。
@@ -205,7 +208,11 @@ class InsightFeishuMonthlyReportService:
             )
         final_score = self._review_score(final_reviews)
         blocking = self._blocking_issues(final_reviews)
-        deterministic_errors = self._validate_monthly_markdown(final_markdown, approved)
+        deterministic_errors = self._validate_monthly_markdown(
+            final_markdown,
+            approved,
+            company_name=company_name,
+        )
         if blocking or deterministic_errors or final_score < 82:
             repair_reviews = list(final_reviews)
             if deterministic_errors:
@@ -241,7 +248,11 @@ class InsightFeishuMonthlyReportService:
             final_score = self._review_score(final_reviews)
             blocking = self._blocking_issues(final_reviews)
 
-        deterministic_errors = self._validate_monthly_markdown(final_markdown, approved)
+        deterministic_errors = self._validate_monthly_markdown(
+            final_markdown,
+            approved,
+            company_name=company_name,
+        )
         if blocking or deterministic_errors or final_score < 78:
             reasons = blocking + deterministic_errors + [f"综合评分 {final_score:.1f}"]
             raise ValueError("月报终审未通过：" + "；".join(dict.fromkeys(reasons))[:1800])
@@ -613,7 +624,8 @@ class InsightFeishuMonthlyReportService:
                 ["三、月度关键市场信息解读"],
                 (
                     "只选 1-3 条中长期影响最大的事件；每条固定写事件本质、"
-                    "传导逻辑、业务启示。"
+                    "传导逻辑、业务启示；每条至少把一个真实原文链接嵌入"
+                    "“主体+动作”的事实语句，不使用“原文、来源、详情”等链接文字。"
                 ),
             ),
             (
@@ -1308,6 +1320,8 @@ facts_to_recheck、strengths。
         self,
         markdown: str,
         materials: list[dict[str, Any]],
+        *,
+        company_name: str | None = None,
     ) -> list[str]:
         errors: list[str] = []
         positions = [markdown.find(f"# {section}") for section in MONTHLY_SECTIONS]
@@ -1325,6 +1339,16 @@ facts_to_recheck、strengths。
             errors.append("存在审批资料之外的链接")
         if re.search(r"(?<!\]\()https?://", markdown):
             errors.append("存在未嵌入事件短语的裸网址")
+        link_labels = re.findall(r"\[([^\]]+)\]\(https?://[^)]+\)", markdown)
+        if any(
+            re.fullmatch(
+                r"\s*(?:原文|来源|来源\d+|查看原文|详情|点击查看|报道|链接)\s*",
+                label,
+                flags=re.IGNORECASE,
+            )
+            for label in link_labels
+        ):
+            errors.append("存在“原文、来源、详情”等无语义链接文字")
         minimum_citations = min(8, len(allowed_urls))
         if len(output_urls) < minimum_citations:
             errors.append(f"报告引用覆盖不足（当前 {len(output_urls)}，最低 {minimum_citations}）")
@@ -1351,13 +1375,47 @@ facts_to_recheck、strengths。
         for label in ("事件本质", "传导逻辑", "业务启示"):
             if interpretation_section.count(label) < interpretation_count:
                 errors.append(f"关键市场信息解读缺少“{label}”")
+        interpretation_headings = list(
+            re.finditer(r"^#{2,3}\s+.+$", interpretation_section, flags=re.MULTILINE)
+        )
+        for index, heading in enumerate(interpretation_headings, 1):
+            body_start = heading.end()
+            body_end = (
+                interpretation_headings[index].start()
+                if index < len(interpretation_headings)
+                else len(interpretation_section)
+            )
+            subsection = interpretation_section[body_start:body_end]
+            if not re.search(r"\[[^\]]+\]\(https?://[^)]+\)", subsection):
+                errors.append(f"第 {index} 条关键市场信息解读缺少自然嵌入的原文链接")
         tracking_section = self._section_body(markdown, MONTHLY_SECTIONS[3])
         if "重点跟踪方向" not in tracking_section or "风险预警" not in tracking_section:
             errors.append("下月跟踪章节缺少重点跟踪方向或风险预警")
         forbidden = ("作为AI", "多智能体", "模型生成", "RAG", "素材ID", "证据ID")
         if any(value in markdown for value in forbidden):
             errors.append("报告正文包含内部技术或编号表达")
+        if company_name:
+            errors.extend(self._validate_company_focus(markdown, company_name))
         return errors
+
+    @staticmethod
+    def _validate_company_focus(markdown: str, company_name: str) -> list[str]:
+        normalized = markdown.lower()
+        if "健源" in company_name:
+            own_terms = ("大豆", "植物蛋白", "大豆蛋白", "豆粕", "豆油")
+            mixed_terms = ("果葡糖浆", "麦芽糖浆", "淀粉糖", "糖醇", "赤藓糖醇")
+            if sum(normalized.count(term) for term in own_terms) < 3:
+                return ["健源月报未充分围绕大豆和植物蛋白业务"]
+            if any(term in normalized for term in mixed_terms):
+                return ["健源月报混入御馨糖浆或糖醇业务主线"]
+        if "御馨" in company_name:
+            own_terms = ("果葡糖浆", "麦芽糖浆", "淀粉糖", "功能糖", "糖醇", "玉米")
+            mixed_terms = ("大豆蛋白", "植物蛋白", "豆粕", "豆油", "大豆油")
+            if sum(normalized.count(term) for term in own_terms) < 3:
+                return ["御馨月报未充分围绕玉米深加工和糖类业务"]
+            if any(term in normalized for term in mixed_terms):
+                return ["御馨月报混入健源大豆或植物蛋白业务主线"]
+        return []
 
     def _section_body(self, markdown: str, section: str) -> str:
         match = re.search(

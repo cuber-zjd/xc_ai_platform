@@ -94,6 +94,39 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
         errors = self.service._validate_monthly_markdown(value, self.materials)
         self.assertIn("报告正文包含内部技术或编号表达", errors)
 
+    def test_generic_source_link_label_is_blocked(self) -> None:
+        value = self.valid_markdown().replace(
+            "[政策事项](https://example.com/2)",
+            "[原文](https://example.com/2)",
+        )
+        errors = self.service._validate_monthly_markdown(value, self.materials)
+        self.assertIn("存在“原文、来源、详情”等无语义链接文字", errors)
+
+    def test_each_key_interpretation_requires_embedded_link(self) -> None:
+        value = self.valid_markdown().replace(
+            "[事件依据](https://example.com/8)",
+            "事件依据",
+        )
+        errors = self.service._validate_monthly_markdown(value, self.materials)
+        self.assertIn("第 2 条关键市场信息解读缺少自然嵌入的原文链接", errors)
+
+    def test_company_focus_rejects_cross_company_business(self) -> None:
+        jianyuan = self.valid_markdown() + "\n大豆植物蛋白与豆粕是核心。果葡糖浆扩产。"
+        errors = self.service._validate_monthly_markdown(
+            jianyuan,
+            self.materials,
+            company_name="山东香驰健源生物科技有限公司",
+        )
+        self.assertIn("健源月报混入御馨糖浆或糖醇业务主线", errors)
+
+        yuxin = self.valid_markdown() + "\n玉米果葡糖浆、麦芽糖浆和功能糖是核心。豆粕扩产。"
+        errors = self.service._validate_monthly_markdown(
+            yuxin,
+            self.materials,
+            company_name="山东御馨生物科技股份有限公司",
+        )
+        self.assertIn("御馨月报混入健源大豆或植物蛋白业务主线", errors)
+
     def test_dimension_gate_accepts_bold_level_three_headings(self) -> None:
         value = self.valid_markdown()
         for index, dimension in enumerate(("政策", "竞对", "客户", "技术", "原料"), 1):
