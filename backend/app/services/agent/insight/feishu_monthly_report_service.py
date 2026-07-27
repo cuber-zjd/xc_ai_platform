@@ -1164,12 +1164,11 @@ facts_to_recheck、strengths。
         company_name: str,
         item: dict[str, Any],
     ) -> str | None:
-        factual_text = " ".join(
+        primary_text = " ".join(
             str(item.get(key) or "")
             for key in (
                 "title",
                 "summary",
-                "content",
                 "tags",
                 "subject_name",
             )
@@ -1198,24 +1197,41 @@ facts_to_recheck、strengths。
                 "甜味剂",
                 "低gi",
             )
-            if any(value in factual_text for value in other_business) and not any(
-                value in factual_text for value in own_business
+            if any(value in primary_text for value in other_business) and not any(
+                value in primary_text for value in own_business
             ):
                 return "跨产业公司材料：大豆或植物蛋白为主，且无御馨核心业务直接关系"
         if "健源" in company_name:
+            headline_text = str(item.get("title") or "").lower()
             own_business = (
                 "大豆",
                 "植物蛋白",
                 "大豆蛋白",
-                "蛋白粉",
                 "豆粕",
-                "蛋白",
+                "豆油",
+                "大豆油",
+                "大豆磷脂",
+                "磷脂",
                 "粮油",
                 "油脂",
             )
-            has_own_business_fact = any(value in factual_text for value in own_business)
+            has_own_business_fact = any(value in primary_text for value in own_business)
             if not has_own_business_fact:
-                return "缺少健源大豆或植物蛋白核心业务的直接事实"
+                return "标题、摘要或监测主题缺少健源大豆及植物蛋白业务的直接事实"
+            unrelated_primary = (
+                "果葡糖浆",
+                "麦芽糖浆",
+                "淀粉糖",
+                "玉米深加工",
+                "乳清蛋白",
+                "咖啡烘焙",
+                "咖啡豆",
+            )
+            direct_business = ("大豆", "植物蛋白", "大豆蛋白", "豆粕", "豆油", "大豆油")
+            if any(value in headline_text for value in unrelated_primary) and not any(
+                value in headline_text for value in direct_business
+            ):
+                return "主事件属于糖浆、乳清或咖啡等非健源核心业务"
         return None
 
     def _order_sections(self, markdown: str) -> str:

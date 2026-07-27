@@ -166,6 +166,27 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
                 generic_customer,
             )
         )
+        incidental_soybean = {
+            "title": "益海嘉里周口投产果葡糖浆和麦芽糖浆产线",
+            "summary": "项目核心为玉米深加工，正文附带提及集团其他大豆业务。",
+            "content": "集团同时经营大豆加工业务。",
+        }
+        self.assertIsNotNone(
+            self.service._cross_company_material_reason(
+                "山东香驰健源生物科技有限公司",
+                incidental_soybean,
+            )
+        )
+        direct_soybean = {
+            "title": "大豆蛋白客户扩大植物蛋白饮料产线",
+            "summary": "新增产线直接带动分离蛋白采购需求。",
+        }
+        self.assertIsNone(
+            self.service._cross_company_material_reason(
+                "山东香驰健源生物科技有限公司",
+                direct_soybean,
+            )
+        )
 
     def test_material_approval_uses_global_editor_above_sixty_items(self) -> None:
         materials = [
