@@ -325,7 +325,25 @@ class InsightFeishuMonthlyReportService:
         model_names: list[str],
         stage_trace: list[dict[str, Any]],
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        batches = [materials[index : index + 25] for index in range(0, min(len(materials), 200), 25)]
+        deterministic_rejected = [
+            {"id": item.get("id"), "reason": reason}
+            for item in materials
+            if (reason := self._cross_company_material_reason(company_name, item))
+        ]
+        deterministic_rejected_ids = {
+            int(item["id"])
+            for item in deterministic_rejected
+            if str(item.get("id") or "").isdigit()
+        }
+        eligible_materials = [
+            item
+            for item in materials
+            if int(item.get("id") or 0) not in deterministic_rejected_ids
+        ]
+        batches = [
+            eligible_materials[index : index + 25]
+            for index in range(0, min(len(eligible_materials), 200), 25)
+        ]
 
         async def approve_batch(batch_index: int, batch: list[dict[str, Any]]) -> tuple[dict[str, Any], str]:
             compact = [self._compact_material(item) for item in batch]
@@ -379,7 +397,11 @@ class InsightFeishuMonthlyReportService:
                 for batch_index, batch in enumerate(batches)
             ]
         )
-        by_id = {int(item["id"]): item for item in materials if item.get("id") is not None}
+        by_id = {
+            int(item["id"]): item
+            for item in eligible_materials
+            if item.get("id") is not None
+        }
         approved_meta: list[dict[str, Any]] = []
         approved_ids: list[int] = []
         for payload, _used_model in batch_results:
@@ -500,7 +522,7 @@ class InsightFeishuMonthlyReportService:
             item = dict(by_id[item_id])
             item["approval"] = approved_by_id[item_id]
             approved.append(item)
-        rejected = [
+        rejected = deterministic_rejected + [
             {"id": row.get("id"), "reason": str(row.get("reason") or "")[:300]}
             for payload, _used_model in batch_results
             for row in (payload.get("rejected") or [])
@@ -521,6 +543,7 @@ class InsightFeishuMonthlyReportService:
             "rejected": rejected,
             "coverage_gaps": list(dict.fromkeys(coverage_gaps))[:12],
             "global_selection": global_selection,
+            "deterministic_cross_company_rejected_count": len(deterministic_rejected),
         }
 
     async def _generate_single_model(
@@ -1115,7 +1138,96 @@ facts_to_recheck、strengths。
 
         markdown = re.sub(r"\[([^\]]+)\]\((https?://[^)]+)\)", replace, markdown)
         markdown = re.sub(r"(?<!\]\()https?://[^\s)]+", "", markdown)
-        return self._order_sections(markdown)
+        return self._normalize_monthly_subheadings(self._order_sections(markdown))
+
+    def _normalize_monthly_subheadings(self, markdown: str) -> str:
+        dimensions = {"1": "政策", "2": "竞对", "3": "客户", "4": "技术", "5": "原料"}
+        normalized_lines: list[str] = []
+        for line in markdown.splitlines():
+            stripped = line.strip()
+            plain = re.sub(r"[*_`#]", "", stripped).strip()
+            match = re.match(r"^([1-5])[.、]\s*(政策|竞对|客户|技术|原料)(?:\s*[（(].{0,20}[）)])?$", plain)
+            if match and dimensions.get(match.group(1)) == match.group(2):
+                normalized_lines.append(f"## {match.group(1)}.{match.group(2)}")
+                continue
+            if plain in {"重点跟踪方向", "1.重点跟踪方向", "1、重点跟踪方向"}:
+                normalized_lines.append("## 1.重点跟踪方向")
+                continue
+            if plain in {"风险预警", "2.风险预警", "2、风险预警"}:
+                normalized_lines.append("## 2.风险预警")
+                continue
+            normalized_lines.append(line)
+        return "\n".join(normalized_lines)
+
+    def _cross_company_material_reason(
+        self,
+        company_name: str,
+        item: dict[str, Any],
+    ) -> str | None:
+        text = " ".join(
+            str(item.get(key) or "")
+            for key in (
+                "title",
+                "summary",
+                "content",
+                "selection_reason",
+                "business_insight",
+                "risk_opportunity",
+                "tags",
+            )
+        ).lower()
+        if "御馨" in company_name:
+            other_business = (
+                "大豆蛋白",
+                "植物蛋白",
+                "蛋白粉",
+                "豆粕",
+                "乳清蛋白",
+                "禹王",
+                "嘉华生物",
+                "万得福",
+            )
+            own_business = (
+                "玉米",
+                "淀粉糖",
+                "果葡糖浆",
+                "麦芽糖",
+                "糖浆",
+                "功能糖",
+                "糖醇",
+                "赤藓糖醇",
+                "代糖",
+                "甜味剂",
+                "低gi",
+            )
+            if any(value in text for value in other_business) and not any(
+                value in text for value in own_business
+            ):
+                return "跨产业公司材料：大豆或植物蛋白为主，且无御馨核心业务直接关系"
+        if "健源" in company_name:
+            other_business = (
+                "果葡糖浆",
+                "麦芽糖浆",
+                "淀粉糖",
+                "功能糖",
+                "糖醇",
+                "赤藓糖醇",
+            )
+            own_business = (
+                "大豆",
+                "植物蛋白",
+                "大豆蛋白",
+                "蛋白粉",
+                "豆粕",
+                "蛋白",
+                "粮油",
+                "油脂",
+            )
+            if any(value in text for value in other_business) and not any(
+                value in text for value in own_business
+            ):
+                return "跨产业公司材料：淀粉糖或功能糖为主，且无健源核心业务直接关系"
+        return None
 
     def _order_sections(self, markdown: str) -> str:
         def normalize_heading(value: str) -> str:

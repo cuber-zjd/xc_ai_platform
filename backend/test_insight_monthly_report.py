@@ -101,6 +101,24 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
         errors = self.service._validate_monthly_markdown(value, self.materials)
         self.assertFalse(any(error.startswith("五大维度缺少") for error in errors))
 
+    def test_subheading_normalizer_restores_template_headings(self) -> None:
+        value = "\n".join(
+            [
+                "### **1. 政策**",
+                "**2、竞对**",
+                "## 3.客户（变化）",
+                "### 4、技术",
+                "**5. 原料**",
+                "**重点跟踪方向**",
+                "### 2、风险预警",
+            ]
+        )
+        normalized = self.service._normalize_monthly_subheadings(value)
+        for index, dimension in enumerate(("政策", "竞对", "客户", "技术", "原料"), 1):
+            self.assertIn(f"## {index}.{dimension}", normalized)
+        self.assertIn("## 1.重点跟踪方向", normalized)
+        self.assertIn("## 2.风险预警", normalized)
+
     def test_eight_distinct_citations_meet_template_gate(self) -> None:
         value = self.valid_markdown()
         value = value.replace("[跟踪事项](https://example.com/9)", "跟踪事项")
@@ -115,6 +133,28 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
         self.assertIn("果葡糖浆、麦芽糖浆", yuxin)
         self.assertIn("不是健源月报的核心业务", jianyuan)
         self.assertIn("不是御馨月报的核心业务", yuxin)
+
+    def test_cross_company_material_filter_keeps_only_direct_overlap(self) -> None:
+        soybean_only = {
+            "title": "禹王扩建大豆蛋白产线",
+            "summary": "新增植物蛋白与豆粕产能。",
+        }
+        soybean_with_syrup = {
+            "title": "植物蛋白饮料调整糖浆配方",
+            "summary": "客户同步测试果葡糖浆和麦芽糖浆。",
+        }
+        self.assertIsNotNone(
+            self.service._cross_company_material_reason(
+                "山东御馨生物科技股份有限公司",
+                soybean_only,
+            )
+        )
+        self.assertIsNone(
+            self.service._cross_company_material_reason(
+                "山东御馨生物科技股份有限公司",
+                soybean_with_syrup,
+            )
+        )
 
     def test_material_approval_uses_global_editor_above_sixty_items(self) -> None:
         materials = [
