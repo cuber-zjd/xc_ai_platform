@@ -14,6 +14,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.llm_factory import LLMFactory
 from app.models.system.sys_model import SysModel
+from app.services.agent.insight.company_context import insight_company_business_context
 
 
 MONTHLY_SECTIONS = [
@@ -331,6 +332,7 @@ class InsightFeishuMonthlyReportService:
             prompt = f"""
 你是月报资料审批员，不写报告。审批 {company_name} 在
 {self._period_text(period_start, period_end)} 的正式情报。
+目标公司真实业务边界：{insight_company_business_context(company_name)}
 
 逐条判断：
 - 是否确实发生在本月，旧闻重发或日期矛盾必须排除；
@@ -539,6 +541,7 @@ class InsightFeishuMonthlyReportService:
 {MONTHLY_TEMPLATE_PROMPT}
 公司：{company_name}
 周期：{self._period_text(period_start, period_end)}
+目标公司真实业务边界：{insight_company_business_context(company_name)}
 只输出以下章节，必须使用 `# 序号、标题` 和必要的 `## 子标题`：
 {json.dumps(headings, ensure_ascii=False)}
 本章要求：{section_instruction}
@@ -618,6 +621,7 @@ class InsightFeishuMonthlyReportService:
             prompt=f"""
 为 {company_name} 制定 {self._period_text(period_start, period_end)} 月报研究计划。
 {MONTHLY_TEMPLATE_PROMPT}
+目标公司真实业务边界：{insight_company_business_context(company_name)}
 输出 JSON：research_questions、company_clusters、cross_month_signals、section_outline、
 evidence_requirements、known_gaps。不得写正式报告。
 资料：{json.dumps([self._compact_material(item, include_approval=True) for item in materials], ensure_ascii=False, default=str)}
@@ -659,6 +663,7 @@ facts_to_recheck、strengths。
 {MONTHLY_TEMPLATE_PROMPT}
 公司：{company_name}
 周期：{self._period_text(period_start, period_end)}
+目标公司真实业务边界：{insight_company_business_context(company_name)}
 审稿意见：{json.dumps(critique, ensure_ascii=False)}
 原稿：{draft}
 资料：{json.dumps([self._compact_material(item, include_approval=True) for item in materials], ensure_ascii=False, default=str)}
@@ -753,6 +758,7 @@ facts_to_recheck、strengths。
 
 目标公司：{company_name}
 报告周期：{self._period_text(period_start, period_end)}
+目标公司真实业务边界：{insight_company_business_context(company_name)}
 职责：{instruction}
 按 0-100 评分并输出 JSON：
 {{
@@ -834,6 +840,7 @@ facts_to_recheck、strengths。
 {MONTHLY_TEMPLATE_PROMPT}
 公司：{company_name}
 周期：{self._period_text(period_start, period_end)}
+目标公司真实业务边界：{insight_company_business_context(company_name)}
 补充要求：{prompt_override or "无"}
 评选意见：{json.dumps(judgment, ensure_ascii=False)}
 主稿：{selected.markdown}
@@ -872,6 +879,7 @@ facts_to_recheck、strengths。
 {MONTHLY_TEMPLATE_PROMPT}
 公司：{company_name}
 周期：{self._period_text(period_start, period_end)}
+目标公司真实业务边界：{insight_company_business_context(company_name)}
 终审意见：{json.dumps(reviews, ensure_ascii=False)}
 原稿：{markdown}
 已审批资料：{json.dumps([self._compact_material(item, include_approval=True) for item in materials], ensure_ascii=False, default=str)}
@@ -973,6 +981,7 @@ facts_to_recheck、strengths。
 {MONTHLY_TEMPLATE_PROMPT}
 公司：{company_name}
 周期：{self._period_text(period_start, period_end)}
+目标公司真实业务边界：{insight_company_business_context(company_name)}
 任务：{instruction}
 补充要求：{prompt_override or "无"}
 

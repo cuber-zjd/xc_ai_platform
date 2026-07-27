@@ -9,6 +9,7 @@ from app.services.agent.insight.feishu_monthly_report_service import (
     MONTHLY_SECTIONS,
     InsightFeishuMonthlyReportService,
 )
+from app.services.agent.insight.company_context import insight_company_business_context
 
 
 class InsightMonthlyReportServiceTest(unittest.TestCase):
@@ -106,6 +107,14 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
         value = value.replace("[风险事项](https://example.com/10)", "风险事项")
         errors = self.service._validate_monthly_markdown(value, self.materials)
         self.assertFalse(any(error.startswith("报告引用覆盖不足") for error in errors))
+
+    def test_company_business_context_separates_jianyuan_and_yuxin(self) -> None:
+        jianyuan = insight_company_business_context("山东香驰健源生物科技有限公司")
+        yuxin = insight_company_business_context("山东御馨生物科技股份有限公司")
+        self.assertIn("大豆精深加工和植物蛋白", jianyuan)
+        self.assertIn("果葡糖浆、麦芽糖浆", yuxin)
+        self.assertIn("不是健源月报的核心业务", jianyuan)
+        self.assertIn("不是御馨月报的核心业务", yuxin)
 
     def test_section_order_accepts_bold_h2_headings(self) -> None:
         body = ["管理层月度市场信息报告｜2026年7月1日至26日｜生成时间：2026年7月26日"]

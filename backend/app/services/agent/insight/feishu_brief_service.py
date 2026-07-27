@@ -33,6 +33,7 @@ from app.services.agent.insight.feishu_bitable_service import insight_feishu_bit
 from app.services.agent.insight.feishu_monthly_report_service import (
     insight_feishu_monthly_report_service,
 )
+from app.services.agent.insight.company_context import insight_company_business_context
 
 
 FIXED_FORMAT = [
@@ -1497,23 +1498,7 @@ class InsightFeishuBriefService:
         return payload
 
     def _company_business_context(self, company_name: str) -> str:
-        if "健源" in company_name:
-            return (
-                "健源以大豆精深加工和植物蛋白为核心，重点关注大豆蛋白、蛋白粉、豆粕及其在"
-                "饮料、乳品、肉制品、烘焙和茶咖中的应用；客户、竞对和原料变化必须能落到"
-                "配方应用、采购需求、供应链、产能、价格或食品合规。"
-            )
-        if "御馨" in company_name:
-            return (
-                "御馨以玉米精深加工和淀粉糖为核心，重点关注果葡糖浆、麦芽糖浆、功能糖、"
-                "糖醇及其在饮料、茶咖、乳品、烘焙和食品加工中的应用；材料必须能落到"
-                "配方、采购、产能、价格、客户经营或监管准入。"
-            )
-        return (
-            "香驰控股主要从事大豆、玉米精深加工，产品涉及植物蛋白、蛋白粉、豆粕、粮油、"
-            "果葡糖浆、麦芽糖浆和功能糖；只保留可影响客户、竞对、研发、销售、采购或"
-            "供应链判断的具体事实。"
-        )
+        return insight_company_business_context(company_name)
 
     def _material_quality_warning(
         self,
