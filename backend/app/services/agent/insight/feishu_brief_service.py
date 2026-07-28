@@ -304,10 +304,15 @@ class InsightFeishuBriefService:
         options = self.get_options()
         if not options.configured:
             raise ValueError("独立飞书简报机器人尚未配置完整")
-        now = run_request.period_end if run_request and run_request.period_end else datetime.now()
+        execution_started_at = datetime.now()
+        period_reference = (
+            run_request.period_end
+            if run_request and run_request.period_end
+            else execution_started_at
+        )
         period_start, period_end = self._period_bounds(
             plan,
-            now=now,
+            now=period_reference,
             trigger_type=trigger_type,
             requested_start=run_request.period_start if run_request else None,
         )
@@ -318,14 +323,14 @@ class InsightFeishuBriefService:
             status="running",
             period_start=period_start,
             period_end=period_end,
-            started_at=now,
+            started_at=execution_started_at,
         )
         db.add(run)
         await db.flush()
         if self._is_scheduled_trigger(trigger_type):
             # 先持久化本周期占用，再执行建文档和消息发送。外部发送成功后即使数据库连接
             # 短暂中断，也不会因计划仍处于到期状态而自动重复发送。
-            plan.last_run_time = now
+            plan.last_run_time = execution_started_at
             plan.last_run_id = run.id
             plan.last_status = "running"
             plan.last_error = None
@@ -334,7 +339,7 @@ class InsightFeishuBriefService:
                 plan.time_of_day,
                 plan.weekday,
                 plan.day_of_month,
-                base=now,
+                base=execution_started_at,
             )
             db.add(plan)
         await db.commit()
@@ -429,6 +434,7 @@ class InsightFeishuBriefService:
                     frequency=plan.schedule_frequency,
                     period_start=period_start,
                     period_end=period_end,
+                    generated_at=execution_started_at,
                     materials=selected_materials,
                     original_material_count=len(materials),
                     prompt_override=plan.prompt_override,
@@ -974,6 +980,7 @@ class InsightFeishuBriefService:
         frequency: str,
         period_start: datetime,
         period_end: datetime,
+        generated_at: datetime,
         materials: list[dict[str, Any]],
         original_material_count: int,
         prompt_override: str | None,
@@ -1000,7 +1007,7 @@ class InsightFeishuBriefService:
         format_prompt = f"""
 输出 Markdown。文档标题由系统单独创建，正文不要再次输出标题。必须逐字遵循以下版式骨架：
 
-管理层情报简报｜{period_text}｜生成时间：{period_end.year}年{period_end.month}月{period_end.day}日
+管理层情报简报｜{period_text}｜生成时间：{generated_at.year}年{generated_at.month}月{generated_at.day}日
 
 适用公司：{company_name}｜数据来源：情报管理多维表格·情报表｜原始候选 {original_material_count} 条
 

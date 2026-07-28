@@ -1119,9 +1119,10 @@ facts_to_recheck、strengths。
         period_end: datetime,
         material_count: int,
     ) -> str:
+        generated_at = datetime.now()
         return (
             f"管理层月度市场信息报告｜{self._period_text(period_start, period_end)}｜"
-            f"生成时间：{period_end.year}年{period_end.month}月{period_end.day}日\n\n"
+            f"生成时间：{generated_at.year}年{generated_at.month}月{generated_at.day}日\n\n"
             f"适用公司：{company_name}｜资料范围：正式情报｜审批后素材 {material_count} 条\n\n---"
         )
 
