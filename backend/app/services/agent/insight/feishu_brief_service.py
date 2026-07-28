@@ -1409,6 +1409,17 @@ class InsightFeishuBriefService:
             raise ValueError(f"飞书新建文件夹“{name}”后未返回 Token")
         return token
 
+    async def move_document_to_folder(
+        self,
+        document_id: str,
+        folder_token: str,
+    ) -> None:
+        await self._request(
+            "POST",
+            f"/open-apis/drive/v1/files/{document_id}/move",
+            json={"type": "docx", "folder_token": folder_token},
+        )
+
     @staticmethod
     def _safe_folder_name(value: str) -> str:
         cleaned = re.sub(r'[\\/:*?"<>|]+', "、", value).strip()
