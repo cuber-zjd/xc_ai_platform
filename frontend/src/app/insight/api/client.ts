@@ -2353,6 +2353,8 @@ export interface InsightFeishuBriefPlanCreate {
     generation_strategy: "auto" | "single_model" | "section_parallel" | "multi_agent_ensemble";
     prompt_override?: string | null;
     recipients: InsightFeishuBriefRecipient[];
+    afternoon_recipients: InsightFeishuBriefRecipient[];
+    afternoon_push_time: string;
     status: "active" | "paused";
 }
 
@@ -2372,6 +2374,8 @@ export interface InsightFeishuBriefPlanRead {
     generation_strategy: "auto" | "single_model" | "section_parallel" | "multi_agent_ensemble";
     prompt_override?: string | null;
     recipients: InsightFeishuBriefRecipient[];
+    afternoon_recipients: InsightFeishuBriefRecipient[];
+    afternoon_push_time: string;
     next_run_time?: string | null;
     last_run_time?: string | null;
     last_run_id?: number | null;
@@ -2395,6 +2399,10 @@ export interface InsightFeishuBriefRunRead {
     document_url?: string | null;
     pushed_count: number;
     failed_push_count: number;
+    afternoon_push_scheduled_at?: string | null;
+    afternoon_push_status?: string | null;
+    afternoon_pushed_count: number;
+    afternoon_failed_push_count: number;
     error_message?: string | null;
     output_payload: {
         pipeline_version?: string;

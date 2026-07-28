@@ -432,7 +432,7 @@ async def _ensure_insight_report_template_columns(conn):
 
 
 async def _ensure_insight_feishu_brief_columns(conn):
-    """补齐飞书简报计划的周期和生成策略字段。"""
+    """补齐飞书简报计划的周期、生成策略和分批推送字段。"""
     await conn.execute(
         text(
             "ALTER TABLE insight_feishu_brief_plan "
@@ -449,6 +449,48 @@ async def _ensure_insight_feishu_brief_columns(conn):
         text(
             "ALTER TABLE insight_feishu_brief_plan "
             "ADD COLUMN IF NOT EXISTS generation_strategy VARCHAR(40) DEFAULT 'auto' NOT NULL"
+        )
+    )
+    await conn.execute(
+        text(
+            "ALTER TABLE insight_feishu_brief_plan "
+            "ADD COLUMN IF NOT EXISTS afternoon_recipients_json JSONB DEFAULT '[]'::jsonb NOT NULL"
+        )
+    )
+    await conn.execute(
+        text(
+            "ALTER TABLE insight_feishu_brief_plan "
+            "ADD COLUMN IF NOT EXISTS afternoon_push_time VARCHAR(5) DEFAULT '15:00' NOT NULL"
+        )
+    )
+    await conn.execute(
+        text(
+            "ALTER TABLE insight_feishu_brief_run "
+            "ADD COLUMN IF NOT EXISTS afternoon_push_scheduled_at TIMESTAMP"
+        )
+    )
+    await conn.execute(
+        text(
+            "ALTER TABLE insight_feishu_brief_run "
+            "ADD COLUMN IF NOT EXISTS afternoon_push_status VARCHAR(30)"
+        )
+    )
+    await conn.execute(
+        text(
+            "ALTER TABLE insight_feishu_brief_run "
+            "ADD COLUMN IF NOT EXISTS afternoon_pushed_count INTEGER DEFAULT 0 NOT NULL"
+        )
+    )
+    await conn.execute(
+        text(
+            "ALTER TABLE insight_feishu_brief_run "
+            "ADD COLUMN IF NOT EXISTS afternoon_failed_push_count INTEGER DEFAULT 0 NOT NULL"
+        )
+    )
+    await conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_insight_feishu_brief_run_afternoon_due "
+            "ON insight_feishu_brief_run (afternoon_push_status, afternoon_push_scheduled_at)"
         )
     )
 

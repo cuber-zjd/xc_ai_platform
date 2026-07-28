@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bot, ChevronDown, ExternalLink, FileText, Loader2, Pencil, Play, Plus, RefreshCw, Send, Trash2, UserRound, X } from "lucide-react";
+import { Bot, ChevronDown, Clock3, ExternalLink, FileText, Loader2, Pencil, Play, Plus, RefreshCw, Send, Trash2, UserRound, X } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -8,11 +9,10 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 
-import { insightApi, type InsightFeishuBriefPlanCreate, type InsightFeishuBriefPlanRead } from "../api";
+import { insightApi, type InsightFeishuBriefPlanCreate, type InsightFeishuBriefPlanRead, type InsightFeishuBriefRecipient } from "../api";
 import { DemoCard } from "../components/DemoPrimitives";
 import { FeishuRecipientPickerDialog } from "../components/FeishuRecipientPickerDialog";
 import { InsightSelect } from "../components/InsightSelect";
@@ -40,6 +40,8 @@ const emptyForm: InsightFeishuBriefPlanCreate = {
     generation_strategy: "auto",
     prompt_override: "",
     recipients: [],
+    afternoon_recipients: [],
+    afternoon_push_time: "15:00",
     status: "active",
 };
 
@@ -50,7 +52,7 @@ export function FeishuBriefPage() {
     const [editing, setEditing] = useState<InsightFeishuBriefPlanRead | null>(null);
     const [form, setForm] = useState<InsightFeishuBriefPlanCreate>(emptyForm);
     const [promptExpanded, setPromptExpanded] = useState(false);
-    const [recipientPickerOpen, setRecipientPickerOpen] = useState(false);
+    const [recipientPickerStage, setRecipientPickerStage] = useState<"morning" | "afternoon" | null>(null);
     const optionsQuery = useQuery({ queryKey: ["insight-feishu-brief-options"], queryFn: insightApi.getFeishuBriefOptions });
     const plansQuery = useQuery({
         queryKey: ["insight-feishu-brief-plans", page],
@@ -110,7 +112,7 @@ export function FeishuBriefPage() {
             setEditing(null);
             setForm(emptyForm);
             setPromptExpanded(false);
-            setRecipientPickerOpen(false);
+            setRecipientPickerStage(null);
         }
     }, [dialogOpen]);
 
@@ -128,6 +130,8 @@ export function FeishuBriefPage() {
             generation_strategy: item.generation_strategy,
             prompt_override: item.prompt_override,
             recipients: item.recipients,
+            afternoon_recipients: item.afternoon_recipients,
+            afternoon_push_time: item.afternoon_push_time,
             status: item.status,
         });
         setDialogOpen(true);
@@ -199,7 +203,7 @@ export function FeishuBriefPage() {
                                             <div className="mt-1 text-xs font-medium text-slate-500">
                                                 素材近 {item.material_days} 天
                                                 {item.schedule_frequency === "monthly" ? ` · ${strategyLabel(item.generation_strategy)}` : ""}
-                                                {" "}· 推送 {item.recipients.length} 人
+                                                {" "}· 上午 {item.recipients.length} 人 · 下午 {item.afternoon_recipients.length} 人
                                             </div>
                                         </TableCell>
                                         <TableCell className="text-xs font-semibold text-slate-600">{formatDateTime(item.next_run_time)}</TableCell>
@@ -248,7 +252,10 @@ export function FeishuBriefPage() {
                                         <div className="flex items-start justify-between gap-3">
                                             <div className="min-w-0">
                                                 <div className="truncate text-sm font-bold text-slate-900">{item.report_title || `执行记录 #${item.id}`}</div>
-                                                <div className="mt-1 text-xs font-semibold text-slate-500">{formatDateTime(item.finished_at || item.started_at)} · {item.material_count} 条素材 · 推送 {item.pushed_count} 人</div>
+                                                <div className="mt-1 text-xs font-semibold text-slate-500">
+                                                    {formatDateTime(item.finished_at || item.started_at)} · {item.material_count} 条素材 · 已推送 {item.pushed_count} 人
+                                                    {item.afternoon_push_status === "pending" ? " · 等待下午发送" : ""}
+                                                </div>
                                             </div>
                                             <Badge variant="outline" className={statusClass(item.status)}>{statusLabel(item.status)}</Badge>
                                         </div>
@@ -391,55 +398,46 @@ export function FeishuBriefPage() {
                         </section>
 
                         <section className="border-t border-slate-100 pt-5">
-                            <div className="flex items-center justify-between gap-4">
-                                <div>
-                                    <div className="flex items-center gap-2 text-sm font-black text-slate-900"><Send className="size-4 text-blue-600" />生成后推送</div>
-                                    <div className="mt-1 text-xs text-slate-500">开启后，由独立机器人将云文档卡片发送给指定人员。</div>
-                                </div>
-                                <Switch
-                                    checked={form.recipients.length > 0}
-                                    onCheckedChange={(checked) => {
-                                        if (checked) setRecipientPickerOpen(true);
-                                        else setForm((old) => ({ ...old, recipients: [] }));
-                                    }}
+                            <div className="mb-3 flex items-center gap-2 text-sm font-black text-slate-900">
+                                <Send className="size-4 text-blue-600" />
+                                分批推送
+                            </div>
+                            <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-800">
+                                周报只生成一篇云文档。上午审阅人可直接修改，下午发送的是修改后的同一篇文档。
+                            </div>
+                            <div className="mt-4 grid gap-3 md:grid-cols-2">
+                                <RecipientGroupCard
+                                    title="上午审阅组"
+                                    description="报告生成完成后立即发送，并授予云文档编辑权限。"
+                                    recipients={form.recipients}
+                                    onChoose={() => setRecipientPickerStage("morning")}
+                                    onRemove={(receiveId) => setForm((old) => ({
+                                        ...old,
+                                        recipients: old.recipients.filter((item) => item.receive_id !== receiveId),
+                                    }))}
+                                />
+                                <RecipientGroupCard
+                                    title="下午正式接收组"
+                                    description={`将在 ${form.afternoon_push_time} 发送上午审阅后的同一文档。`}
+                                    recipients={form.afternoon_recipients}
+                                    onChoose={() => setRecipientPickerStage("afternoon")}
+                                    onRemove={(receiveId) => setForm((old) => ({
+                                        ...old,
+                                        afternoon_recipients: old.afternoon_recipients.filter((item) => item.receive_id !== receiveId),
+                                    }))}
+                                    action={(
+                                        <div className="flex items-center gap-2">
+                                            <Clock3 className="size-4 text-slate-400" />
+                                            <Input
+                                                type="time"
+                                                className="h-8 w-28 bg-white"
+                                                value={form.afternoon_push_time}
+                                                onChange={(event) => setForm((old) => ({ ...old, afternoon_push_time: event.target.value }))}
+                                            />
+                                        </div>
+                                    )}
                                 />
                             </div>
-                            {form.recipients.length ? (
-                                <div className="mt-4">
-                                    <div className="mb-2 flex items-center justify-between">
-                                        <span className="text-xs font-bold text-slate-500">已选 {form.recipients.length} 人</span>
-                                        <Button type="button" variant="outline" size="sm" onClick={() => setRecipientPickerOpen(true)}>继续选择</Button>
-                                    </div>
-                                    <div className="grid gap-2 sm:grid-cols-2">
-                                        {form.recipients.map((recipient) => (
-                                            <div key={`${recipient.receive_id_type}-${recipient.receive_id}`} className="flex items-center gap-3 rounded-lg border border-slate-200 bg-white p-3">
-                                                <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-blue-50 text-blue-700">
-                                                    <UserRound className="size-4" />
-                                                </div>
-                                                <div className="min-w-0 flex-1">
-                                                    <div className="truncate text-sm font-bold text-slate-900">{recipient.name || recipient.receive_id}</div>
-                                                    <div className="mt-0.5 truncate text-xs text-slate-500">{recipient.receive_id}</div>
-                                                </div>
-                                                <Button
-                                                    type="button"
-                                                    variant="ghost"
-                                                    size="icon"
-                                                    className="size-8 shrink-0 text-slate-400 hover:text-rose-600"
-                                                    title="移除"
-                                                    onClick={() => setForm((old) => ({ ...old, recipients: old.recipients.filter((item) => item !== recipient) }))}
-                                                >
-                                                    <X className="size-4" />
-                                                </Button>
-                                            </div>
-                                        ))}
-                                    </div>
-                                </div>
-                            ) : (
-                                <Button type="button" variant="outline" className="mt-4 bg-white" onClick={() => setRecipientPickerOpen(true)}>
-                                    <UserRound className="size-4" />
-                                    选择接收人
-                                </Button>
-                            )}
                         </section>
                     </div>
                     <DialogFooter className="shrink-0 border-t border-slate-100 px-6 py-4">
@@ -452,12 +450,73 @@ export function FeishuBriefPage() {
                 </DialogContent>
             </Dialog>
             <FeishuRecipientPickerDialog
-                open={recipientPickerOpen}
-                selected={form.recipients}
-                onOpenChange={setRecipientPickerOpen}
-                onConfirm={(recipients) => setForm((old) => ({ ...old, recipients }))}
+                open={recipientPickerStage !== null}
+                selected={recipientPickerStage === "afternoon" ? form.afternoon_recipients : form.recipients}
+                onOpenChange={(open) => {
+                    if (!open) setRecipientPickerStage(null);
+                }}
+                onConfirm={(recipients) => {
+                    setForm((old) => recipientPickerStage === "afternoon"
+                        ? ({ ...old, afternoon_recipients: recipients })
+                        : ({ ...old, recipients }));
+                    setRecipientPickerStage(null);
+                }}
             />
         </PageContainer>
+    );
+}
+
+function RecipientGroupCard({
+    title,
+    description,
+    recipients,
+    onChoose,
+    onRemove,
+    action,
+}: {
+    title: string;
+    description: string;
+    recipients: InsightFeishuBriefRecipient[];
+    onChoose: () => void;
+    onRemove: (receiveId: string) => void;
+    action?: ReactNode;
+}) {
+    return (
+        <div className="min-w-0 rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                    <div className="text-sm font-black text-slate-900">{title}</div>
+                    <div className="mt-1 text-xs leading-5 text-slate-500">{description}</div>
+                </div>
+                {action}
+            </div>
+            <div className="mt-3 min-h-24 rounded-lg border border-slate-200 bg-white p-2">
+                {recipients.length ? (
+                    <div className="space-y-2">
+                        {recipients.map((recipient) => (
+                            <div key={`${recipient.receive_id_type}-${recipient.receive_id}`} className="flex items-center gap-2 rounded-md bg-slate-50 px-2 py-1.5">
+                                <div className="flex size-7 shrink-0 items-center justify-center rounded-full bg-blue-50 text-blue-700">
+                                    <UserRound className="size-3.5" />
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                    <div className="truncate text-xs font-bold text-slate-800">{recipient.name || recipient.receive_id}</div>
+                                    <div className="truncate text-[11px] text-slate-500">{recipient.receive_id}</div>
+                                </div>
+                                <Button type="button" variant="ghost" size="icon" className="size-7 text-slate-400 hover:text-rose-600" title="移除" onClick={() => onRemove(recipient.receive_id)}>
+                                    <X className="size-3.5" />
+                                </Button>
+                            </div>
+                        ))}
+                    </div>
+                ) : (
+                    <div className="flex h-20 items-center justify-center text-xs font-semibold text-slate-400">尚未选择人员</div>
+                )}
+            </div>
+            <Button type="button" variant="outline" size="sm" className="mt-3 w-full bg-white" onClick={onChoose}>
+                <UserRound className="size-4" />
+                {recipients.length ? "调整人员" : "选择人员"}
+            </Button>
+        </div>
     );
 }
 

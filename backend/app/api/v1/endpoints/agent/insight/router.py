@@ -2,6 +2,7 @@ import asyncio
 import json
 from io import BytesIO
 from datetime import datetime
+from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
@@ -1475,6 +1476,18 @@ async def run_due_feishu_brief_plans(
     _ensure_admin(current_user, "仅管理员可执行飞书简报计划")
     result = await insight_feishu_brief_service.run_due_plans(db, limit=limit, trigger_type="manual_due_scan")
     return Result.success(data=result, msg="到期飞书简报已扫描")
+
+
+@router.post("/feishu-briefs/run-due-deliveries", response_model=Result[dict[str, Any]])
+async def run_due_feishu_brief_deliveries(
+    *,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+    limit: int = 20,
+) -> Result[dict[str, Any]]:
+    _ensure_admin(current_user, "仅管理员可执行飞书简报推送")
+    result = await insight_feishu_brief_service.run_due_afternoon_pushes(db, limit=limit)
+    return Result.success(data=result, msg="到期飞书简报推送已扫描")
 
 
 @router.get("/reports/templates", response_model=Result[list[InsightReportTemplateRead]])

@@ -27,13 +27,16 @@ class InsightFeishuBriefPlanCreate(BaseModel):
     ] = "auto"
     prompt_override: str | None = None
     recipients: list[InsightFeishuBriefRecipient] = Field(default_factory=list)
+    afternoon_recipients: list[InsightFeishuBriefRecipient] = Field(default_factory=list)
+    afternoon_push_time: str = Field(default="15:00", pattern=r"^\d{2}:\d{2}$")
     status: Literal["active", "paused"] = "active"
 
     @model_validator(mode="after")
     def validate_schedule(self) -> "InsightFeishuBriefPlanCreate":
-        hour, minute = [int(item) for item in self.time_of_day.split(":", 1)]
-        if hour > 23 or minute > 59:
-            raise ValueError("执行时间格式必须为 HH:mm")
+        for label, value in (("执行时间", self.time_of_day), ("下午推送时间", self.afternoon_push_time)):
+            hour, minute = [int(item) for item in value.split(":", 1)]
+            if hour > 23 or minute > 59:
+                raise ValueError(f"{label}格式必须为 HH:mm")
         return self
 
 
@@ -54,7 +57,19 @@ class InsightFeishuBriefPlanUpdate(BaseModel):
     ] | None = None
     prompt_override: str | None = None
     recipients: list[InsightFeishuBriefRecipient] | None = None
+    afternoon_recipients: list[InsightFeishuBriefRecipient] | None = None
+    afternoon_push_time: str | None = Field(default=None, pattern=r"^\d{2}:\d{2}$")
     status: Literal["active", "paused"] | None = None
+
+    @model_validator(mode="after")
+    def validate_schedule(self) -> "InsightFeishuBriefPlanUpdate":
+        for label, value in (("执行时间", self.time_of_day), ("下午推送时间", self.afternoon_push_time)):
+            if not value:
+                continue
+            hour, minute = [int(item) for item in value.split(":", 1)]
+            if hour > 23 or minute > 59:
+                raise ValueError(f"{label}格式必须为 HH:mm")
+        return self
 
 
 class InsightFeishuBriefPlanRead(BaseModel):
@@ -73,6 +88,8 @@ class InsightFeishuBriefPlanRead(BaseModel):
     generation_strategy: str
     prompt_override: str | None
     recipients: list[InsightFeishuBriefRecipient]
+    afternoon_recipients: list[InsightFeishuBriefRecipient]
+    afternoon_push_time: str
     next_run_time: datetime | None
     last_run_time: datetime | None
     last_run_id: int | None
@@ -96,6 +113,10 @@ class InsightFeishuBriefRunRead(BaseModel):
     document_url: str | None
     pushed_count: int
     failed_push_count: int
+    afternoon_push_scheduled_at: datetime | None
+    afternoon_push_status: str | None
+    afternoon_pushed_count: int
+    afternoon_failed_push_count: int
     error_message: str | None
     output_payload: dict[str, Any] = Field(default_factory=dict)
     started_at: datetime | None

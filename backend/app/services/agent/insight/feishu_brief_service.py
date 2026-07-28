@@ -232,6 +232,10 @@ class InsightFeishuBriefService:
             generation_strategy=payload.generation_strategy,
             prompt_override=payload.prompt_override,
             recipients_json=[item.model_dump(mode="json") for item in payload.recipients],
+            afternoon_recipients_json=[
+                item.model_dump(mode="json") for item in payload.afternoon_recipients
+            ],
+            afternoon_push_time=payload.afternoon_push_time,
             next_run_time=self._next_run_time(
                 payload.schedule_frequency,
                 payload.time_of_day,
@@ -261,6 +265,8 @@ class InsightFeishuBriefService:
             await self._require_company(db, data["sys_company_id"])
         if "recipients" in data:
             data["recipients_json"] = data.pop("recipients")
+        if "afternoon_recipients" in data:
+            data["afternoon_recipients_json"] = data.pop("afternoon_recipients")
         for key, value in data.items():
             setattr(row, key, value)
         row.next_run_time = self._next_run_time(
@@ -415,13 +421,29 @@ class InsightFeishuBriefService:
                 used_material_count = len(selected_materials)
             document_id, document_url = await self._create_document(title, markdown)
             recipients = self._recipients(plan)
+            afternoon_recipients = self._afternoon_recipients(plan)
             should_push = not run_request or run_request.push_final
+            permission_result = (
+                await self._grant_document_edit_permission(document_id, recipients)
+                if should_push and recipients
+                else {"success_count": 0, "failed_count": 0, "results": []}
+            )
             push_result = (
-                await self._push_document(title, document_url, recipients)
+                await self._push_document(
+                    title,
+                    document_url,
+                    recipients,
+                    stage="morning_review",
+                )
                 if should_push
                 else {"success_count": 0, "failed_count": 0, "results": []}
             )
             finished = datetime.now()
+            afternoon_scheduled_at = (
+                self._same_day_time(finished, plan.afternoon_push_time)
+                if should_push and afternoon_recipients
+                else None
+            )
             run.status = "success" if push_result["failed_count"] == 0 else "partial"
             run.material_count = used_material_count
             run.report_title = title
@@ -429,8 +451,21 @@ class InsightFeishuBriefService:
             run.document_url = document_url
             run.pushed_count = push_result["success_count"]
             run.failed_push_count = push_result["failed_count"]
+            run.afternoon_push_scheduled_at = afternoon_scheduled_at
+            run.afternoon_push_status = "pending" if afternoon_scheduled_at else None
             run.content_markdown = markdown
             run.output_payload = {
+                "morning_delivery": {
+                    "recipients": [item.model_dump(mode="json") for item in recipients],
+                    "permission_results": permission_result,
+                    "push_results": push_result,
+                },
+                "afternoon_delivery": {
+                    "scheduled_at": afternoon_scheduled_at.isoformat() if afternoon_scheduled_at else None,
+                    "recipients": [item.model_dump(mode="json") for item in afternoon_recipients],
+                    "status": "pending" if afternoon_scheduled_at else "disabled",
+                },
+                # 兼容已有执行记录读取方式。
                 "push_results": push_result["results"],
                 "bot_name": options.bot_name,
                 **pipeline_output,
@@ -453,7 +488,9 @@ class InsightFeishuBriefService:
             await db.refresh(run)
             message = "飞书简报已生成"
             if recipients:
-                message = "飞书简报已生成并推送"
+                message = "飞书简报已生成并发送给上午审阅组"
+            if afternoon_scheduled_at:
+                message += f"，下午 {plan.afternoon_push_time} 将发送同一云文档"
             return InsightFeishuBriefRunResponse(run=self._run_read(run), message=message)
         except Exception as exc:
             await db.rollback()
@@ -521,6 +558,96 @@ class InsightFeishuBriefService:
             failed_count=failed_count,
             results=results,
         )
+
+    async def run_due_afternoon_pushes(
+        self,
+        db: AsyncSession,
+        *,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """发送已经生成、允许上午修改后的同一篇云文档。"""
+        now = datetime.now()
+        rows = list(
+            (
+                await db.exec(
+                    select(InsightFeishuBriefRun)
+                    .where(
+                        InsightFeishuBriefRun.is_deleted == 0,
+                        InsightFeishuBriefRun.afternoon_push_status == "pending",
+                        InsightFeishuBriefRun.afternoon_push_scheduled_at <= now,
+                    )
+                    .order_by(InsightFeishuBriefRun.afternoon_push_scheduled_at.asc())
+                    .limit(min(max(limit, 1), 50))
+                )
+            ).all()
+        )
+        success_count = 0
+        failed_count = 0
+        results: list[dict[str, Any]] = []
+        for row in rows:
+            payload = dict(row.output_payload or {})
+            delivery = dict(payload.get("afternoon_delivery") or {})
+            recipients = [
+                InsightFeishuBriefRecipient.model_validate(item)
+                for item in delivery.get("recipients") or []
+            ]
+            row.afternoon_push_status = "sending"
+            db.add(row)
+            await db.commit()
+            try:
+                push_result = await self._push_document(
+                    row.report_title or "市场信息简报",
+                    row.document_url or "",
+                    recipients,
+                    stage="afternoon_release",
+                )
+                row.afternoon_pushed_count = push_result["success_count"]
+                row.afternoon_failed_push_count = push_result["failed_count"]
+                row.pushed_count += push_result["success_count"]
+                row.failed_push_count += push_result["failed_count"]
+                row.afternoon_push_status = (
+                    "success" if push_result["failed_count"] == 0 else "partial"
+                )
+                row.status = "success" if row.failed_push_count == 0 else "partial"
+                delivery.update(
+                    {
+                        "status": row.afternoon_push_status,
+                        "sent_at": datetime.now().isoformat(),
+                        "push_results": push_result,
+                    }
+                )
+                success_count += 1
+                results.append(
+                    {
+                        "run_id": row.id,
+                        "status": row.afternoon_push_status,
+                        "document_url": row.document_url,
+                    }
+                )
+            except Exception as exc:
+                row.afternoon_push_status = "failed"
+                row.afternoon_failed_push_count = max(len(recipients), 1)
+                row.failed_push_count += row.afternoon_failed_push_count
+                row.status = "partial"
+                delivery.update(
+                    {
+                        "status": "failed",
+                        "sent_at": datetime.now().isoformat(),
+                        "error": str(exc)[:1000],
+                    }
+                )
+                failed_count += 1
+                results.append({"run_id": row.id, "status": "failed", "error": str(exc)[:500]})
+            payload["afternoon_delivery"] = delivery
+            row.output_payload = payload
+            db.add(row)
+            await db.commit()
+        return {
+            "due_count": len(rows),
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "results": results,
+        }
 
     async def _load_materials(
         self,
@@ -1059,12 +1186,26 @@ class InsightFeishuBriefService:
         title: str,
         document_url: str,
         recipients: list[InsightFeishuBriefRecipient],
+        *,
+        stage: str = "release",
     ) -> dict[str, Any]:
         results: list[dict[str, Any]] = []
         success_count = 0
         failed_count = 0
         for recipient in recipients:
             try:
+                if stage == "morning_review":
+                    message = (
+                        f"**{settings.INSIGHT_FEISHU_BRIEF_BOT_NAME}已生成本期简报审阅稿**\n"
+                        "请直接在云文档中审阅和修改；下午发送时会使用同一篇文档，不会覆盖您的修改。"
+                    )
+                    button_text = "打开并审阅"
+                else:
+                    message = (
+                        f"**{settings.INSIGHT_FEISHU_BRIEF_BOT_NAME}已发布本期简报**\n"
+                        "点击下方按钮查看完整内容与原文链接。"
+                    )
+                    button_text = "打开云文档"
                 await self._request(
                     "POST",
                     "/open-apis/im/v1/messages",
@@ -1084,10 +1225,7 @@ class InsightFeishuBriefService:
                                         "tag": "div",
                                         "text": {
                                             "tag": "lark_md",
-                                            "content": (
-                                                f"**{settings.INSIGHT_FEISHU_BRIEF_BOT_NAME}已完成本期简报**\n"
-                                                "点击下方按钮查看完整内容与原文链接。"
-                                            ),
+                                            "content": message,
                                         },
                                     },
                                     {
@@ -1095,7 +1233,7 @@ class InsightFeishuBriefService:
                                         "actions": [
                                             {
                                                 "tag": "button",
-                                                "text": {"tag": "plain_text", "content": "打开云文档"},
+                                                "text": {"tag": "plain_text", "content": button_text},
                                                 "type": "primary",
                                                 "url": document_url,
                                             }
@@ -1113,6 +1251,64 @@ class InsightFeishuBriefService:
                 failed_count += 1
                 results.append({"receive_id": recipient.receive_id, "status": "failed", "error": str(exc)[:500]})
         return {"success_count": success_count, "failed_count": failed_count, "results": results}
+
+    async def _grant_document_edit_permission(
+        self,
+        document_id: str,
+        recipients: list[InsightFeishuBriefRecipient],
+    ) -> dict[str, Any]:
+        """尽力给上午审阅人开放编辑权限；权限失败不阻断文档和消息发送。"""
+        member_type_map = {
+            "open_id": "openid",
+            "user_id": "userid",
+            "email": "email",
+            "chat_id": "openchat",
+        }
+        supported = [
+            recipient
+            for recipient in recipients
+            if recipient.receive_id_type in member_type_map
+        ]
+        results: list[dict[str, Any]] = []
+        success_count = 0
+        failed_count = 0
+        for index in range(0, len(supported), 10):
+            batch = supported[index : index + 10]
+            try:
+                await self._request(
+                    "POST",
+                    f"/open-apis/drive/v1/permissions/{document_id}/members/batch_create",
+                    params={"type": "docx", "need_notification": "false"},
+                    json={
+                        "members": [
+                            {
+                                "member_type": member_type_map[item.receive_id_type],
+                                "member_id": item.receive_id,
+                                "perm": "edit",
+                            }
+                            for item in batch
+                        ]
+                    },
+                )
+                success_count += len(batch)
+                results.extend(
+                    {"receive_id": item.receive_id, "status": "success"} for item in batch
+                )
+            except Exception as exc:
+                failed_count += len(batch)
+                results.extend(
+                    {
+                        "receive_id": item.receive_id,
+                        "status": "failed",
+                        "error": str(exc)[:500],
+                    }
+                    for item in batch
+                )
+        return {
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "results": results,
+        }
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         token = await self._tenant_access_token()
@@ -1363,6 +1559,20 @@ class InsightFeishuBriefService:
         values = plan.recipients_json or self._default_recipients()
         return [InsightFeishuBriefRecipient.model_validate(item) for item in values]
 
+    def _afternoon_recipients(
+        self,
+        plan: InsightFeishuBriefPlan,
+    ) -> list[InsightFeishuBriefRecipient]:
+        return [
+            InsightFeishuBriefRecipient.model_validate(item)
+            for item in plan.afternoon_recipients_json or []
+        ]
+
+    def _same_day_time(self, source: datetime, time_of_day: str) -> datetime:
+        hour, minute = [int(item) for item in time_of_day.split(":", 1)]
+        candidate = source.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        return max(candidate, source)
+
     def _default_recipients(self) -> list[dict[str, Any]]:
         try:
             value = json.loads(settings.INSIGHT_FEISHU_BRIEF_DEFAULT_RECIPIENTS_JSON or "[]")
@@ -1458,6 +1668,11 @@ class InsightFeishuBriefService:
             generation_strategy=row.generation_strategy,
             prompt_override=row.prompt_override,
             recipients=[InsightFeishuBriefRecipient.model_validate(item) for item in row.recipients_json or []],
+            afternoon_recipients=[
+                InsightFeishuBriefRecipient.model_validate(item)
+                for item in row.afternoon_recipients_json or []
+            ],
+            afternoon_push_time=row.afternoon_push_time,
             next_run_time=row.next_run_time,
             last_run_time=row.last_run_time,
             last_run_id=row.last_run_id,
@@ -1482,6 +1697,10 @@ class InsightFeishuBriefService:
             document_url=row.document_url,
             pushed_count=row.pushed_count,
             failed_push_count=row.failed_push_count,
+            afternoon_push_scheduled_at=row.afternoon_push_scheduled_at,
+            afternoon_push_status=row.afternoon_push_status,
+            afternoon_pushed_count=row.afternoon_pushed_count,
+            afternoon_failed_push_count=row.afternoon_failed_push_count,
             error_message=row.error_message,
             output_payload=row.output_payload or {},
             started_at=row.started_at,
