@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from datetime import datetime, timedelta
@@ -448,11 +449,21 @@ class InsightFeishuBriefService:
             recipients = self._recipients(plan)
             afternoon_recipients = self._afternoon_recipients(plan)
             should_push = not run_request or run_request.push_final
-            permission_result = (
-                await self._grant_document_edit_permission(document_id, recipients)
+            morning_permission_result = (
+                await self._grant_document_permission(document_id, recipients, permission="edit")
                 if should_push and recipients
                 else {"success_count": 0, "failed_count": 0, "results": []}
             )
+            afternoon_permission_result = (
+                await self._grant_document_permission(
+                    document_id,
+                    afternoon_recipients,
+                    permission="view",
+                )
+                if should_push and afternoon_recipients
+                else {"success_count": 0, "failed_count": 0, "results": []}
+            )
+            security_label_name = await self._document_security_label(document_id)
             push_result = (
                 await self._push_document(
                     title,
@@ -482,17 +493,20 @@ class InsightFeishuBriefService:
             run.output_payload = {
                 "morning_delivery": {
                     "recipients": [item.model_dump(mode="json") for item in recipients],
-                    "permission_results": permission_result,
+                    "permission_results": morning_permission_result,
                     "push_results": push_result,
                 },
                 "afternoon_delivery": {
                     "scheduled_at": afternoon_scheduled_at.isoformat() if afternoon_scheduled_at else None,
                     "recipients": [item.model_dump(mode="json") for item in afternoon_recipients],
+                    "permission_results": afternoon_permission_result,
                     "status": "pending" if afternoon_scheduled_at else "disabled",
                 },
                 # 兼容已有执行记录读取方式。
                 "push_results": push_result["results"],
                 "bot_name": options.bot_name,
+                "security_label_name": security_label_name,
+                "security_label_status": "known" if security_label_name else "unknown",
                 **pipeline_output,
             }
             run.finished_at = finished
@@ -620,24 +634,43 @@ class InsightFeishuBriefService:
             db.add(row)
             await db.commit()
             try:
+                permission_result = await self._grant_document_permission(
+                    row.document_id or "",
+                    recipients,
+                    permission="view",
+                )
+                failed_permission_ids = {
+                    str(item.get("receive_id") or "")
+                    for item in permission_result["results"]
+                    if item.get("status") == "failed"
+                }
+                permitted_recipients = [
+                    recipient
+                    for recipient in recipients
+                    if recipient.receive_id not in failed_permission_ids
+                ]
                 push_result = await self._push_document(
                     row.report_title or "市场信息简报",
                     row.document_url or "",
-                    recipients,
+                    permitted_recipients,
                     stage="afternoon_release",
                 )
+                permission_failed_count = permission_result["failed_count"]
                 row.afternoon_pushed_count = push_result["success_count"]
-                row.afternoon_failed_push_count = push_result["failed_count"]
+                row.afternoon_failed_push_count = (
+                    push_result["failed_count"] + permission_failed_count
+                )
                 row.pushed_count += push_result["success_count"]
-                row.failed_push_count += push_result["failed_count"]
+                row.failed_push_count += row.afternoon_failed_push_count
                 row.afternoon_push_status = (
-                    "success" if push_result["failed_count"] == 0 else "partial"
+                    "success" if row.afternoon_failed_push_count == 0 else "partial"
                 )
                 row.status = "success" if row.failed_push_count == 0 else "partial"
                 delivery.update(
                     {
                         "status": row.afternoon_push_status,
                         "sent_at": datetime.now().isoformat(),
+                        "permission_results": permission_result,
                         "push_results": push_result,
                     }
                 )
@@ -1308,6 +1341,22 @@ class InsightFeishuBriefService:
         recipients: list[InsightFeishuBriefRecipient],
     ) -> dict[str, Any]:
         """尽力给上午审阅人开放编辑权限；权限失败不阻断文档和消息发送。"""
+        return await self._grant_document_permission(
+            document_id,
+            recipients,
+            permission="edit",
+        )
+
+    async def _grant_document_permission(
+        self,
+        document_id: str,
+        recipients: list[InsightFeishuBriefRecipient],
+        *,
+        permission: str,
+    ) -> dict[str, Any]:
+        """逐人授予文档权限，兼容 L3 等需要显式协作者的文档密级。"""
+        if permission not in {"view", "edit"}:
+            raise ValueError("飞书文档协作者权限仅支持 view 或 edit")
         member_type_map = {
             "open_id": "openid",
             "user_id": "userid",
@@ -1319,37 +1368,122 @@ class InsightFeishuBriefService:
             for recipient in recipients
             if recipient.receive_id_type in member_type_map
         ]
+        existing_permissions = await self._document_member_permissions(document_id)
+        permission_rank = {"view": 1, "edit": 2, "full_access": 3}
         results: list[dict[str, Any]] = []
         success_count = 0
         failed_count = 0
-        for recipient in supported:
-            try:
-                await self._request(
-                    "POST",
-                    f"/open-apis/drive/v1/permissions/{document_id}/members",
-                    params={"type": "docx", "need_notification": "false"},
-                    json={
-                        "member_type": member_type_map[recipient.receive_id_type],
-                        "member_id": recipient.receive_id,
-                        "perm": "edit",
-                    },
-                )
+        for index, recipient in enumerate(supported):
+            member_type = member_type_map[recipient.receive_id_type]
+            existing_permission = existing_permissions.get(
+                (member_type, recipient.receive_id)
+            )
+            if permission_rank.get(existing_permission or "", 0) >= permission_rank[permission]:
                 success_count += 1
-                results.append({"receive_id": recipient.receive_id, "status": "success"})
+                results.append(
+                    {
+                        "receive_id": recipient.receive_id,
+                        "status": "already_granted",
+                        "permission": existing_permission,
+                    }
+                )
+                continue
+            try:
+                if existing_permission:
+                    await self._request(
+                        "PUT",
+                        (
+                            f"/open-apis/drive/v1/permissions/{document_id}/members/"
+                            f"{recipient.receive_id}"
+                        ),
+                        params={"type": "docx", "need_notification": "false"},
+                        json={"member_type": member_type, "perm": permission},
+                    )
+                else:
+                    await self._request(
+                        "POST",
+                        f"/open-apis/drive/v1/permissions/{document_id}/members",
+                        params={"type": "docx", "need_notification": "false"},
+                        json={
+                            "member_type": member_type,
+                            "member_id": recipient.receive_id,
+                            "perm": permission,
+                        },
+                    )
+                success_count += 1
+                results.append(
+                    {
+                        "receive_id": recipient.receive_id,
+                        "status": "success",
+                        "permission": permission,
+                    }
+                )
             except Exception as exc:
                 failed_count += 1
                 results.append(
                     {
                         "receive_id": recipient.receive_id,
                         "status": "failed",
+                        "permission": permission,
                         "error": str(exc)[:500],
                     }
                 )
+            if index < len(supported) - 1:
+                await asyncio.sleep(0.65)
         return {
             "success_count": success_count,
             "failed_count": failed_count,
             "results": results,
         }
+
+    async def _document_member_permissions(
+        self,
+        document_id: str,
+    ) -> dict[tuple[str, str], str]:
+        permissions: dict[tuple[str, str], str] = {}
+        page_token: str | None = None
+        try:
+            while True:
+                params: dict[str, Any] = {"type": "docx", "page_size": 100}
+                if page_token:
+                    params["page_token"] = page_token
+                data = await self._request(
+                    "GET",
+                    f"/open-apis/drive/v1/permissions/{document_id}/members",
+                    params=params,
+                )
+                for item in data.get("items") or []:
+                    member_type = str(item.get("member_type") or "")
+                    member_id = str(item.get("member_id") or "")
+                    if member_type and member_id:
+                        permissions[(member_type, member_id)] = str(item.get("perm") or "")
+                if not data.get("has_more"):
+                    break
+                page_token = str(data.get("page_token") or "")
+                if not page_token:
+                    break
+        except Exception:
+            return {}
+        return permissions
+
+    async def _document_security_label(self, document_id: str) -> str | None:
+        """读取文档密级；应用未开通字段权限时返回 None，不阻断发布。"""
+        try:
+            data = await self._request(
+                "POST",
+                "/open-apis/drive/v1/metas/batch_query",
+                params={"user_id_type": "open_id"},
+                json={
+                    "request_docs": [{"doc_token": document_id, "doc_type": "docx"}],
+                    "with_url": False,
+                },
+            )
+            metas = data.get("metas") or []
+            if not metas:
+                return None
+            return str(metas[0].get("sec_label_name") or "").strip() or None
+        except Exception:
+            return None
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         token = await self._tenant_access_token()
