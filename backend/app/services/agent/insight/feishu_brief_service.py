@@ -681,10 +681,13 @@ class InsightFeishuBriefService:
             db.add(row)
             await db.commit()
             try:
-                permission_result = await self._grant_document_permission(
-                    row.document_id or "",
-                    recipients,
-                    permission="view",
+                permission_result = (
+                    self._stored_permission_result(delivery, recipients)
+                    or await self._grant_document_permission(
+                        row.document_id or "",
+                        recipients,
+                        permission="view",
+                    )
                 )
                 failed_permission_ids = {
                     str(item.get("receive_id") or "")
@@ -1626,6 +1629,26 @@ class InsightFeishuBriefService:
         except Exception:
             return {}
         return permissions
+
+    @staticmethod
+    def _stored_permission_result(
+        delivery: dict[str, Any],
+        recipients: list[InsightFeishuBriefRecipient],
+    ) -> dict[str, Any] | None:
+        stored = delivery.get("permission_results")
+        if not isinstance(stored, dict):
+            return None
+        results = stored.get("results")
+        if not isinstance(results, list):
+            return None
+        successful_ids = {
+            str(item.get("receive_id") or "")
+            for item in results
+            if item.get("status") in {"success", "already_granted"}
+        }
+        if any(recipient.receive_id not in successful_ids for recipient in recipients):
+            return None
+        return stored
 
     async def _document_security_label(self, document_id: str) -> str | None:
         """读取文档密级；应用未开通字段权限时返回 None，不阻断发布。"""
