@@ -14,7 +14,10 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.llm_factory import LLMFactory
 from app.models.system.sys_model import SysModel
-from app.services.agent.insight.company_context import insight_company_business_context
+from app.services.agent.insight.company_context import (
+    insight_company_business_context,
+    insight_company_material_rejection_reason,
+)
 
 
 MONTHLY_SECTIONS = [
@@ -1177,105 +1180,7 @@ facts_to_recheck、strengths。
         company_name: str,
         item: dict[str, Any],
     ) -> str | None:
-        primary_text = " ".join(
-            str(item.get(key) or "")
-            for key in (
-                "title",
-                "summary",
-                "tags",
-                "subject_name",
-            )
-        ).lower()
-        if "健源" in company_name:
-            headline_text = str(item.get("title") or "").lower()
-            other_business = (
-                "大豆蛋白",
-                "植物蛋白",
-                "蛋白粉",
-                "豆粕",
-                "乳清蛋白",
-                "禹王",
-                "嘉华生物",
-                "万得福",
-            )
-            own_business = (
-                "玉米",
-                "淀粉糖",
-                "果葡糖浆",
-                "麦芽糖",
-                "糖浆",
-                "功能糖",
-                "糖醇",
-                "赤藓糖醇",
-                "代糖",
-                "甜味剂",
-                "低gi",
-            )
-            contextual_policy = (
-                "食品监管",
-                "食品安全",
-                "食品标准",
-                "食品添加剂",
-                "委托生产",
-                "对外投资",
-                "出口",
-                "外贸",
-            )
-            headline_is_other_business = any(value in headline_text for value in other_business)
-            has_own_business_fact = any(value in primary_text for value in own_business)
-            has_contextual_policy = any(value in primary_text for value in contextual_policy)
-            summary_is_other_without_own_headline = any(
-                value in primary_text for value in other_business
-            ) and not any(value in headline_text for value in own_business)
-            if headline_is_other_business or summary_is_other_without_own_headline:
-                return "跨产业公司材料：大豆或植物蛋白为主，且无健源核心业务直接关系"
-            if not has_own_business_fact and not has_contextual_policy:
-                return "标题、摘要或监测主题缺少健源玉米深加工或糖类业务直接事实"
-        if "御馨" in company_name:
-            headline_text = str(item.get("title") or "").lower()
-            own_business = (
-                "大豆",
-                "植物蛋白",
-                "大豆蛋白",
-                "豆粕",
-                "豆油",
-                "大豆油",
-                "大豆磷脂",
-                "磷脂",
-            )
-            has_own_business_fact = any(value in primary_text for value in own_business)
-            contextual_policy = (
-                "食品监管",
-                "食品安全",
-                "委托生产",
-                "对外投资",
-                "出口",
-                "外贸",
-            )
-            has_contextual_policy = any(value in primary_text for value in contextual_policy)
-            if not has_own_business_fact and not has_contextual_policy:
-                return "标题、摘要或监测主题缺少御馨大豆及植物蛋白业务的直接事实"
-            unrelated_primary = (
-                "果葡糖浆",
-                "麦芽糖浆",
-                "淀粉糖",
-                "糖浆",
-                "功能糖",
-                "糖醇",
-                "赤藓糖醇",
-                "代糖",
-                "甜味剂",
-                "玉米深加工",
-                "乳清蛋白",
-                "咖啡烘焙",
-                "咖啡豆",
-            )
-            direct_business = ("大豆", "植物蛋白", "大豆蛋白", "豆粕", "豆油", "大豆油")
-            if any(value in primary_text for value in unrelated_primary) and not any(
-                value in headline_text for value in direct_business
-            ):
-                return "主事件属于糖浆、乳清或咖啡等非御馨核心业务"
-        return None
+        return insight_company_material_rejection_reason(company_name, item)
 
     def _order_sections(self, markdown: str) -> str:
         def normalize_heading(value: str) -> str:

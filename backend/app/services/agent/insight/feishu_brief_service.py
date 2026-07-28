@@ -33,7 +33,10 @@ from app.services.agent.insight.feishu_bitable_service import insight_feishu_bit
 from app.services.agent.insight.feishu_monthly_report_service import (
     insight_feishu_monthly_report_service,
 )
-from app.services.agent.insight.company_context import insight_company_business_context
+from app.services.agent.insight.company_context import (
+    insight_company_business_context,
+    insight_company_material_rejection_reason,
+)
 
 
 FIXED_FORMAT = [
@@ -748,6 +751,21 @@ class InsightFeishuBriefService:
         period_end: datetime,
         materials: list[dict[str, Any]],
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        deterministic_rejected = [
+            {"id": item.get("id"), "reason": reason}
+            for item in materials
+            if (reason := insight_company_material_rejection_reason(company_name, item))
+        ]
+        deterministic_rejected_ids = {
+            int(item["id"])
+            for item in deterministic_rejected
+            if str(item.get("id") or "").isdigit()
+        }
+        eligible_materials = [
+            item
+            for item in materials
+            if int(item.get("id") or 0) not in deterministic_rejected_ids
+        ]
         compact_materials = [
             {
                 "id": item["id"],
@@ -767,7 +785,7 @@ class InsightFeishuBriefService:
                     period_end=period_end,
                 ),
             }
-            for item in materials
+            for item in eligible_materials
         ]
         prompt = f"""
 你是管理层简报的选材编辑。请从候选正式情报中筛出真正值得写入
@@ -817,14 +835,14 @@ class InsightFeishuBriefService:
             )
             payload = self._parse_json_object(getattr(response, "content", str(response)))
             selected_rows = payload.get("selected") if isinstance(payload.get("selected"), list) else []
-            material_by_id = {int(item["id"]): item for item in materials}
+            material_by_id = {int(item["id"]): item for item in eligible_materials}
             warnings_by_id = {
                 int(item["id"]): self._material_quality_warning(
                     item,
                     period_start=period_start,
                     period_end=period_end,
                 )
-                for item in materials
+                for item in eligible_materials
             }
             hard_reject_warnings = {
                 "明显旧闻",
@@ -868,10 +886,16 @@ class InsightFeishuBriefService:
             ]
             rejected_ids = {row.get("id") for row in rejected_meta}
             rejected_meta.extend(row for row in enforced_rejected if row["id"] not in rejected_ids)
+            rejected_ids = {row.get("id") for row in rejected_meta}
+            rejected_meta.extend(
+                row for row in deterministic_rejected if row["id"] not in rejected_ids
+            )
             selected = [material_by_id[item_id] for item_id in selected_ids]
             return selected, {
                 "mode": "ai_editorial_selection",
                 "candidate_count": len(materials),
+                "eligible_count": len(eligible_materials),
+                "deterministic_rejected_count": len(deterministic_rejected),
                 "selected_count": len(selected),
                 "rejected_count": len(materials) - len(selected),
                 "selected": selected_meta,
@@ -880,7 +904,7 @@ class InsightFeishuBriefService:
         except Exception as exc:
             selected = [
                 item
-                for item in materials
+                for item in eligible_materials
                 if self._material_quality_warning(
                     item,
                     period_start=period_start,
@@ -891,8 +915,11 @@ class InsightFeishuBriefService:
             return selected, {
                 "mode": "deterministic_fallback",
                 "candidate_count": len(materials),
+                "eligible_count": len(eligible_materials),
+                "deterministic_rejected_count": len(deterministic_rejected),
                 "selected_count": len(selected),
                 "rejected_count": len(materials) - len(selected),
+                "rejected": deterministic_rejected,
                 "warning": str(exc)[:500],
             }
 

@@ -6,6 +6,7 @@ from sqlmodel import select
 
 from app.db.session import async_session
 from app.models.agent.insight import InsightMonitorConfig
+from app.models.system.sys_company import SysCompany
 from app.models.system.sys_user import SysUser
 
 
@@ -17,6 +18,7 @@ TOPIC_SEEDS = [
         "modules": ["行业资讯", "综合舆情"],
         "keywords": ["果葡糖浆", "麦芽糖浆", "淀粉糖", "低糖配料", "饮料配料", "糖浆价格"],
         "prompt": "重点保留价格、供需、应用场景、饮料客户采购变化和竞品替代信号。",
+        "company_name_keyword": "健源",
     },
     {
         "code": "topic_plant_protein_opportunity",
@@ -25,6 +27,7 @@ TOPIC_SEEDS = [
         "modules": ["行业资讯", "技术专利", "综合舆情"],
         "keywords": ["植物蛋白", "大豆蛋白", "蛋白粉", "功能蛋白", "蛋白饮料", "新蛋白"],
         "prompt": "重点保留新品、应用创新、客户采购、产能扩张、技术路线和监管变化。",
+        "company_name_keyword": "御馨",
     },
     {
         "code": "topic_soybean_meal_grain_oil",
@@ -33,6 +36,7 @@ TOPIC_SEEDS = [
         "modules": ["经营财经", "行业资讯", "综合舆情"],
         "keywords": ["豆粕", "粮油", "大豆加工", "大豆压榨", "油脂油料", "饲料原料"],
         "prompt": "重点保留原料价格、压榨利润、库存、进出口、饲料需求和竞争格局变化。",
+        "company_name_keyword": "御馨",
     },
     {
         "code": "topic_corn_deep_processing",
@@ -41,6 +45,7 @@ TOPIC_SEEDS = [
         "modules": ["政策监管", "行业资讯", "技术专利"],
         "keywords": ["玉米深加工", "玉米加工", "功能糖", "赤藓糖醇", "低聚糖", "食品添加剂"],
         "prompt": "重点保留产业政策、食品添加剂监管、技术专利、功能糖应用和产能投资变化。",
+        "company_name_keyword": "健源",
     },
     {
         "code": "topic_beverage_tea_customers",
@@ -49,6 +54,7 @@ TOPIC_SEEDS = [
         "modules": ["企业新闻", "电商新品", "行业资讯", "综合舆情"],
         "keywords": ["奶茶", "茶饮", "无糖饮料", "低糖饮料", "功能饮料", "食品饮料新品", "配料升级"],
         "prompt": "重点保留客户新品、配方趋势、低糖需求、供应链合作、招商采购和消费者偏好变化。",
+        "company_name_keyword": "健源",
     },
     {
         "code": "topic_food_safety_public_opinion",
@@ -74,10 +80,26 @@ async def main() -> None:
             )
         ).first()
         owner_id = admin.id if admin else None
+        companies = list(
+            (
+                await db.exec(
+                    select(SysCompany).where(
+                        SysCompany.is_deleted == 0,
+                    )
+                )
+            ).all()
+        )
         now = datetime.now()
         created = 0
         updated = 0
         for seed in TOPIC_SEEDS:
+            company_ids = [
+                int(company.id)
+                for company in companies
+                if company.id is not None
+                and seed.get("company_name_keyword")
+                and str(seed["company_name_keyword"]) in company.name
+            ]
             row = (
                 await db.exec(
                     select(InsightMonitorConfig).where(
@@ -104,7 +126,13 @@ async def main() -> None:
                 "generation_mode": "system_seed",
                 "schedule_enabled": True,
                 "status": "active",
-                "config_json": {"collection_budget": {"paid_search_calls_per_run": 1, "max_executed_channels_per_run": 6}},
+                "config_json": {
+                    "collection_budget": {
+                        "paid_search_calls_per_run": 1,
+                        "max_executed_channels_per_run": 6,
+                    },
+                    "business_sys_company_ids": company_ids,
+                },
                 "next_run_time": now,
                 "update_time": now,
                 "update_by": str(owner_id) if owner_id else None,
