@@ -512,7 +512,7 @@ class InsightFeishuBriefService:
             await db.commit()
             await db.refresh(run)
             message = "飞书简报已生成"
-            if recipients:
+            if should_push and recipients:
                 message = "飞书简报已生成并发送给上午审阅组"
             if afternoon_scheduled_at:
                 message += f"，下午 {plan.afternoon_push_time} 将发送同一云文档"
