@@ -1272,37 +1272,28 @@ class InsightFeishuBriefService:
         results: list[dict[str, Any]] = []
         success_count = 0
         failed_count = 0
-        for index in range(0, len(supported), 10):
-            batch = supported[index : index + 10]
+        for recipient in supported:
             try:
                 await self._request(
                     "POST",
-                    f"/open-apis/drive/v1/permissions/{document_id}/members/batch_create",
+                    f"/open-apis/drive/v1/permissions/{document_id}/members",
                     params={"type": "docx", "need_notification": "false"},
                     json={
-                        "members": [
-                            {
-                                "member_type": member_type_map[item.receive_id_type],
-                                "member_id": item.receive_id,
-                                "perm": "edit",
-                            }
-                            for item in batch
-                        ]
+                        "member_type": member_type_map[recipient.receive_id_type],
+                        "member_id": recipient.receive_id,
+                        "perm": "edit",
                     },
                 )
-                success_count += len(batch)
-                results.extend(
-                    {"receive_id": item.receive_id, "status": "success"} for item in batch
-                )
+                success_count += 1
+                results.append({"receive_id": recipient.receive_id, "status": "success"})
             except Exception as exc:
-                failed_count += len(batch)
-                results.extend(
+                failed_count += 1
+                results.append(
                     {
-                        "receive_id": item.receive_id,
+                        "receive_id": recipient.receive_id,
                         "status": "failed",
                         "error": str(exc)[:500],
                     }
-                    for item in batch
                 )
         return {
             "success_count": success_count,
