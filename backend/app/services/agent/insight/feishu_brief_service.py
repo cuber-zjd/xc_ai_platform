@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from typing import Any
@@ -123,12 +124,22 @@ PROMPT_TEMPLATE_DISPLAY = f"""你是香驰控股管理层情报简报撰写人�
 {APPROVED_STYLE_EXAMPLES.strip()}"""
 
 
+@dataclass(frozen=True)
+class BriefFolderResolution:
+    token: str
+    path: str
+    organized: bool
+    warning: str | None = None
+
+
 class InsightFeishuBriefService:
     """独立于报告中心的飞书机器人简报服务。"""
 
     def __init__(self) -> None:
         self._tenant_token: str | None = None
         self._tenant_token_expires_at = 0.0
+        self._folder_cache: dict[tuple[str, str], str] = {}
+        self._folder_lock = asyncio.Lock()
 
     def get_options(self) -> InsightFeishuBriefOptionsRead:
         app_configured = bool(settings.INSIGHT_FEISHU_BRIEF_APP_ID and settings.INSIGHT_FEISHU_BRIEF_APP_SECRET)
@@ -352,6 +363,23 @@ class InsightFeishuBriefService:
         plan_id_value = plan.id or 0
         try:
             company = await self._require_company(db, plan.sys_company_id)
+            company_name = company.name if company else "香驰控股"
+            final_folder = await self._resolve_document_folder(
+                company_name=company_name,
+                frequency=plan.schedule_frequency,
+                period_end=period_end,
+                artifact_type="final",
+            )
+            process_folder = (
+                await self._resolve_document_folder(
+                    company_name=company_name,
+                    frequency=plan.schedule_frequency,
+                    period_end=period_end,
+                    artifact_type="process",
+                )
+                if plan.schedule_frequency == "monthly"
+                else final_folder
+            )
             material_scan_limit = (
                 1000
                 if plan.schedule_frequency == "monthly"
@@ -371,7 +399,7 @@ class InsightFeishuBriefService:
             if plan.schedule_frequency == "monthly":
                 monthly_result = await insight_feishu_monthly_report_service.generate(
                     db,
-                    company_name=company.name if company else "香驰控股",
+                    company_name=company_name,
                     period_start=period_start,
                     period_end=period_end,
                     materials=materials,
@@ -388,6 +416,7 @@ class InsightFeishuBriefService:
                         candidate.document_id, candidate.document_url = await self._create_document(
                             candidate_title,
                             candidate.markdown,
+                            folder_token=process_folder.token,
                         )
                         artifacts.append(
                             {
@@ -405,6 +434,7 @@ class InsightFeishuBriefService:
                     audit_document_id, audit_document_url = await self._create_document(
                         audit_title,
                         monthly_result.audit_markdown,
+                        folder_token=process_folder.token,
                     )
                     artifacts.append(
                         {
@@ -423,7 +453,7 @@ class InsightFeishuBriefService:
                 )
             else:
                 selected_materials, selection_audit = await self._select_materials(
-                    company_name=company.name if company else "香驰控股",
+                    company_name=company_name,
                     period_start=period_start,
                     period_end=period_end,
                     materials=materials,
@@ -434,7 +464,7 @@ class InsightFeishuBriefService:
                         "通过简报相关性审校，不足以生成固定 7 条导读"
                     )
                 title, markdown = await self._generate_markdown(
-                    company_name=company.name if company else "香驰控股",
+                    company_name=company_name,
                     frequency=plan.schedule_frequency,
                     period_start=period_start,
                     period_end=period_end,
@@ -445,7 +475,24 @@ class InsightFeishuBriefService:
                 )
                 pipeline_output = {"material_selection": selection_audit}
                 used_material_count = len(selected_materials)
-            document_id, document_url = await self._create_document(title, markdown)
+            pipeline_output["document_folder"] = {
+                "token": final_folder.token,
+                "path": final_folder.path,
+                "organized": final_folder.organized,
+                "warning": final_folder.warning,
+            }
+            if process_folder.token != final_folder.token:
+                pipeline_output["process_folder"] = {
+                    "token": process_folder.token,
+                    "path": process_folder.path,
+                    "organized": process_folder.organized,
+                    "warning": process_folder.warning,
+                }
+            document_id, document_url = await self._create_document(
+                title,
+                markdown,
+                folder_token=final_folder.token,
+            )
             recipients = self._recipients(plan)
             afternoon_recipients = self._afternoon_recipients(plan)
             should_push = not run_request or run_request.push_final
@@ -1244,11 +1291,20 @@ class InsightFeishuBriefService:
             raise ValueError(f"业务审校修订后仍未通过确定性检查：{'；'.join(errors)}")
         return title, markdown
 
-    async def _create_document(self, title: str, markdown: str) -> tuple[str, str]:
+    async def _create_document(
+        self,
+        title: str,
+        markdown: str,
+        *,
+        folder_token: str | None = None,
+    ) -> tuple[str, str]:
         data = await self._request(
             "POST",
             "/open-apis/docx/v1/documents",
-            json={"folder_token": settings.INSIGHT_FEISHU_BRIEF_FOLDER_TOKEN, "title": title},
+            json={
+                "folder_token": folder_token or settings.INSIGHT_FEISHU_BRIEF_FOLDER_TOKEN,
+                "title": title,
+            },
         )
         document = data.get("document") or {}
         document_id = str(document.get("document_id") or "")
@@ -1263,6 +1319,100 @@ class InsightFeishuBriefService:
                 json={"children": blocks[index : index + 40], "index": index},
             )
         return document_id, f"https://feishu.cn/docx/{document_id}"
+
+    async def _resolve_document_folder(
+        self,
+        *,
+        company_name: str,
+        frequency: str,
+        period_end: datetime,
+        artifact_type: str,
+    ) -> BriefFolderResolution:
+        root_token = settings.INSIGHT_FEISHU_BRIEF_FOLDER_TOKEN
+        report_type = "月报" if frequency == "monthly" else "日报" if frequency == "daily" else "周报"
+        segments = [
+            self._safe_folder_name(self._short_company_name(company_name)),
+            f"{period_end.year}年",
+            report_type,
+        ]
+        if frequency == "monthly":
+            segments.append("生成过程" if artifact_type == "process" else "正式稿")
+        path = "/".join(segments)
+        try:
+            async with self._folder_lock:
+                parent_token = root_token
+                for segment in segments:
+                    cache_key = (parent_token, segment)
+                    child_token = self._folder_cache.get(cache_key)
+                    if not child_token:
+                        child_token = await self._find_child_folder(parent_token, segment)
+                    if not child_token:
+                        try:
+                            child_token = await self._create_folder(parent_token, segment)
+                        except Exception:
+                            # 多进程同时到点时可能由另一个进程先创建同名目录。
+                            child_token = await self._find_child_folder(parent_token, segment)
+                            if not child_token:
+                                raise
+                    self._folder_cache[cache_key] = child_token
+                    parent_token = child_token
+            return BriefFolderResolution(
+                token=parent_token,
+                path=path,
+                organized=True,
+            )
+        except Exception as exc:
+            return BriefFolderResolution(
+                token=root_token,
+                path="根目录",
+                organized=False,
+                warning=f"自动归档失败，已回退根目录：{str(exc)[:500]}",
+            )
+
+    async def _find_child_folder(self, parent_token: str, name: str) -> str | None:
+        page_token: str | None = None
+        while True:
+            params: dict[str, Any] = {
+                "folder_token": parent_token,
+                "page_size": 200,
+            }
+            if page_token:
+                params["page_token"] = page_token
+            data = await self._request(
+                "GET",
+                "/open-apis/drive/v1/files",
+                params=params,
+            )
+            files = data.get("files") or data.get("items") or []
+            for item in files:
+                if item.get("type") == "folder" and str(item.get("name") or "") == name:
+                    token = str(item.get("token") or item.get("file_token") or "")
+                    if token:
+                        return token
+            if not data.get("has_more"):
+                return None
+            page_token = str(
+                data.get("next_page_token") or data.get("page_token") or ""
+            )
+            if not page_token:
+                return None
+
+    async def _create_folder(self, parent_token: str, name: str) -> str:
+        data = await self._request(
+            "POST",
+            "/open-apis/drive/v1/files/create_folder",
+            json={"name": name, "folder_token": parent_token},
+        )
+        folder = data.get("folder") or {}
+        token = str(data.get("token") or folder.get("token") or "")
+        if not token:
+            raise ValueError(f"飞书新建文件夹“{name}”后未返回 Token")
+        return token
+
+    @staticmethod
+    def _safe_folder_name(value: str) -> str:
+        cleaned = re.sub(r'[\\/:*?"<>|]+', "、", value).strip()
+        return cleaned[:80] or "未分类公司"
 
     async def _push_document(
         self,
