@@ -1,37 +1,64 @@
 from typing import Any
-import pyodbc
 import logging
 from datetime import datetime
+
+import pymssql
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
+
+from app.core.config import settings
+from app.db.session import engine
 from app.models.system.sys_user import SysUser
 from app.models.system.sys_company import SysCompany
 from app.models.system.sys_dept import SysDept
 from app.models.system.sys_post import SysPost
-from app.db.session import engine 
 
-# Configure logger
+try:
+    import pyodbc
+except ImportError:
+    pyodbc = None
+
 logger = logging.getLogger(__name__)
-
-# SQL Server Config
-MSSQL_HOST = "192.168.14.127"
-MSSQL_USER = "sa"
-MSSQL_PASS = "Xckg123456!"
-MSSQL_DB = "ehr"
 
 class HrSyncService:
     @staticmethod
     def get_mssql_connection():
-        # Using "SQL Server" driver as confirmed by check_db.py
-        conn_str = (
-            "DRIVER={SQL Server};"
-            f"SERVER={MSSQL_HOST};"
-            f"DATABASE={MSSQL_DB};"
-            f"UID={MSSQL_USER};"
-            f"PWD={MSSQL_PASS};"
-            "TrustServerCertificate=yes;"
+        required = {
+            "HR_SYNC_MSSQL_HOST": settings.HR_SYNC_MSSQL_HOST,
+            "HR_SYNC_MSSQL_DATABASE": settings.HR_SYNC_MSSQL_DATABASE,
+            "HR_SYNC_MSSQL_USER": settings.HR_SYNC_MSSQL_USER,
+            "HR_SYNC_MSSQL_PASSWORD": settings.HR_SYNC_MSSQL_PASSWORD,
+        }
+        missing = [name for name, value in required.items() if not value]
+        if missing:
+            raise RuntimeError(f"HR 数据库配置不完整：{', '.join(missing)}")
+
+        if pyodbc is not None:
+            try:
+                conn_str = (
+                    f"DRIVER={{{settings.HR_SYNC_MSSQL_ODBC_DRIVER}}};"
+                    f"SERVER={settings.HR_SYNC_MSSQL_HOST},{settings.HR_SYNC_MSSQL_PORT};"
+                    f"DATABASE={settings.HR_SYNC_MSSQL_DATABASE};"
+                    f"UID={settings.HR_SYNC_MSSQL_USER};"
+                    f"PWD={settings.HR_SYNC_MSSQL_PASSWORD};"
+                    "TrustServerCertificate=yes;"
+                )
+                return pyodbc.connect(
+                    conn_str,
+                    timeout=settings.HR_SYNC_MSSQL_TIMEOUT_SECONDS,
+                )
+            except Exception as exc:
+                logger.warning("ODBC 连接 HR 数据库失败，改用 pymssql：%s", exc)
+
+        return pymssql.connect(
+            server=settings.HR_SYNC_MSSQL_HOST,
+            port=settings.HR_SYNC_MSSQL_PORT,
+            user=settings.HR_SYNC_MSSQL_USER,
+            password=settings.HR_SYNC_MSSQL_PASSWORD,
+            database=settings.HR_SYNC_MSSQL_DATABASE,
+            login_timeout=settings.HR_SYNC_MSSQL_TIMEOUT_SECONDS,
+            timeout=settings.HR_SYNC_MSSQL_TIMEOUT_SECONDS,
         )
-        return pyodbc.connect(conn_str)
 
     @staticmethod
     def map_gender(val: Any) -> str:

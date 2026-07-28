@@ -83,6 +83,15 @@ class Settings(BaseSettings):
     FR_AI_SQLSERVER_QUERY_TIMEOUT_SECONDS: int = 10
     FR_AI_SQLSERVER_MAX_ROWS: int = 20
 
+    # HR synchronization
+    HR_SYNC_MSSQL_HOST: str = ""
+    HR_SYNC_MSSQL_PORT: int = 1433
+    HR_SYNC_MSSQL_DATABASE: str = ""
+    HR_SYNC_MSSQL_USER: str = ""
+    HR_SYNC_MSSQL_PASSWORD: str = ""
+    HR_SYNC_MSSQL_ODBC_DRIVER: str = "SQL Server"
+    HR_SYNC_MSSQL_TIMEOUT_SECONDS: int = 30
+
     # Insight crawler
     INSIGHT_FIRECRAWL_BASE_URL: str = ""
     INSIGHT_FIRECRAWL_API_KEY: str = ""

@@ -121,6 +121,7 @@ uv sync
 - 帆软专用 MinIO 环境变量：`FR_AI_MINIO_ENDPOINT`、`FR_AI_MINIO_ACCESS_KEY`、`FR_AI_MINIO_SECRET_KEY`、`FR_AI_MINIO_BUCKET_NAME`、`FR_AI_MINIO_SECURE`。这些配置只用于读取现有 `.cpt` / `.frm`、写入用户指定的 `webroot/APP/reportlets/` 目标路径和目标目录下的结构化版本库，不影响平台通用文件存储。
 - 报表文件读取环境变量：`FR_AI_REPORT_FILE_PREFIXES` 控制允许扫描的 MinIO 目录，默认 `webroot/APP/reportlets`；`FR_AI_REPORT_FILE_EXTENSIONS` 控制文件类型，默认 `.cpt,.frm`。
 - SQL Server 校验环境变量：`FR_AI_SQLSERVER_ENABLED`、`FR_AI_SQLSERVER_HOST`、`FR_AI_SQLSERVER_PORT`、`FR_AI_SQLSERVER_DATABASE`、`FR_AI_SQLSERVER_USER`、`FR_AI_SQLSERVER_PASSWORD`、`FR_AI_SQLSERVER_QUERY_TIMEOUT_SECONDS`、`FR_AI_SQLSERVER_MAX_ROWS`。
+- HR 同步数据库环境变量：`HR_SYNC_MSSQL_HOST`、`HR_SYNC_MSSQL_PORT`、`HR_SYNC_MSSQL_DATABASE`、`HR_SYNC_MSSQL_USER`、`HR_SYNC_MSSQL_PASSWORD`、`HR_SYNC_MSSQL_ODBC_DRIVER`、`HR_SYNC_MSSQL_TIMEOUT_SECONDS`。Linux 服务器缺少 ODBC 运行库时自动改用 `pymssql`，不得因此跳过人员状态同步。
 - `FR_AI_SQLSERVER_ENABLED=false` 时跳过数据 SQL 校验；启用后用于 FineReport AI 报表生成链路中的只读 SQL Server 预执行校验。
 - 用途：AI 报表生成后调用 FineReport 预览 URL 校验 HTTP 状态和页面报错信息。
 - 未配置时：生成任务仍可完成，`PreviewValidator` 会返回 warning 并跳过 HTTP 校验。
