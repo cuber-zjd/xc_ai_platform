@@ -77,7 +77,7 @@ class HrSyncService:
     def map_employment_status(val: Any) -> tuple[int, str]:
         """
         Maps HR status string to (status_code, status_desc).
-        0: 试用, 1: 正式, 2: 临时, 3: 试用延期, 4: 解聘, 5: 离职, 6: 退休, 7: 其他
+        0: 试用, 1: 正式, 2: 临时, 3: 试用延期, 4: 解聘, 5: 离职/无效, 6: 退休, 7: 其他
         """
         if not val:
             return (7, "其他")
@@ -93,7 +93,7 @@ class HrSyncService:
             return (3, s)
         if s == '解聘':
             return (4, s)
-        if s == '离职':
+        if s in {'离职', '无效'}:
             return (5, s)
         if s == '退休':
             return (6, s)
