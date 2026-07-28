@@ -298,7 +298,7 @@ export function FeishuBriefPage() {
             </div>
 
             <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-                <DialogContent className="flex max-h-[min(860px,calc(100vh-32px))] w-[min(860px,calc(100vw-32px))] max-w-none flex-col gap-0 overflow-hidden p-0">
+                <DialogContent className="flex max-h-[min(900px,calc(100vh-32px))] !w-[min(1040px,calc(100vw-32px))] !max-w-[1040px] flex-col gap-0 overflow-hidden p-0 sm:!max-w-[1040px]">
                     <DialogHeader className="shrink-0 border-b border-slate-100 px-6 py-5">
                         <DialogTitle>{editing ? "编辑飞书简报计划" : "新建飞书简报计划"}</DialogTitle>
                         <DialogDescription>设置生成时间、素材范围和接收人；文档由独立飞书机器人创建并发送。</DialogDescription>
@@ -405,7 +405,7 @@ export function FeishuBriefPage() {
                             <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-800">
                                 周报只生成一篇云文档。上午审阅人可直接修改，下午发送的是修改后的同一篇文档。
                             </div>
-                            <div className="mt-4 grid gap-3 md:grid-cols-2">
+                            <div className="mt-4 grid gap-4 [grid-template-columns:repeat(auto-fit,minmax(min(100%,360px),1fr))]">
                                 <RecipientGroupCard
                                     title="上午审阅组"
                                     description="报告生成完成后立即发送，并授予云文档编辑权限。"
@@ -483,12 +483,12 @@ function RecipientGroupCard({
 }) {
     return (
         <div className="min-w-0 rounded-lg border border-slate-200 bg-slate-50 p-3">
-            <div className="flex items-start justify-between gap-3">
+            <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0">
                     <div className="text-sm font-black text-slate-900">{title}</div>
                     <div className="mt-1 text-xs leading-5 text-slate-500">{description}</div>
                 </div>
-                {action}
+                {action ? <div className="shrink-0">{action}</div> : null}
             </div>
             <div className="mt-3 min-h-24 rounded-lg border border-slate-200 bg-white p-2">
                 {recipients.length ? (
