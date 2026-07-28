@@ -321,6 +321,22 @@ class InsightFeishuBriefService:
             started_at=now,
         )
         db.add(run)
+        await db.flush()
+        if self._is_scheduled_trigger(trigger_type):
+            # 先持久化本周期占用，再执行建文档和消息发送。外部发送成功后即使数据库连接
+            # 短暂中断，也不会因计划仍处于到期状态而自动重复发送。
+            plan.last_run_time = now
+            plan.last_run_id = run.id
+            plan.last_status = "running"
+            plan.last_error = None
+            plan.next_run_time = self._next_run_time(
+                plan.schedule_frequency,
+                plan.time_of_day,
+                plan.weekday,
+                plan.day_of_month,
+                base=now,
+            )
+            db.add(plan)
         await db.commit()
         await db.refresh(run)
         run_id = run.id or 0
@@ -1613,14 +1629,29 @@ class InsightFeishuBriefService:
     ) -> tuple[datetime, datetime]:
         if requested_start:
             return requested_start, now
+        if plan.schedule_frequency == "weekly" and self._is_scheduled_trigger(trigger_type):
+            target_weekday = plan.weekday if plan.weekday is not None else 0
+            days_since_schedule = (now.weekday() - target_weekday) % 7
+            current_schedule_start = (now - timedelta(days=days_since_schedule)).replace(
+                hour=0,
+                minute=0,
+                second=0,
+                microsecond=0,
+            )
+            return current_schedule_start - timedelta(days=7), current_schedule_start - timedelta(microseconds=1)
         if plan.schedule_frequency != "monthly":
             return now - timedelta(days=plan.material_days), now
-        if trigger_type in {"scheduler", "manual_due_scan"}:
+        if self._is_scheduled_trigger(trigger_type):
             current_month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
             previous_month_end = current_month_start - timedelta(microseconds=1)
             previous_month_start = previous_month_end.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
             return previous_month_start, previous_month_end
         return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0), now
+
+    def _is_scheduled_trigger(self, trigger_type: str) -> bool:
+        return trigger_type in {"brief_scheduler", "scheduler", "manual_due_scan"} or trigger_type.startswith(
+            "scheduler:"
+        )
 
     async def _require_plan(self, db: AsyncSession, plan_id: int) -> InsightFeishuBriefPlan:
         row = await db.get(InsightFeishuBriefPlan, plan_id)

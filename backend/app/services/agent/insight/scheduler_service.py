@@ -18,7 +18,6 @@ from app.schemas.agent.insight.feishu import InsightFeishuSyncRequest
 from app.schemas.agent.insight.task import InsightSchedulerRunLogRead
 from app.schemas.page import Page
 from app.services.agent.insight.feishu_bitable_service import insight_feishu_bitable_service
-from app.services.agent.insight.feishu_brief_service import insight_feishu_brief_service
 from app.services.agent.insight.monitor_execution_service import insight_monitor_execution_service
 from app.services.agent.insight.report_subscription_service import insight_report_subscription_service
 
@@ -209,11 +208,6 @@ class InsightSchedulerService:
                         limit=settings.INSIGHT_SCHEDULER_BATCH_LIMIT,
                         triggered_by=triggered_by,
                     )
-                    brief_result = await insight_feishu_brief_service.run_due_plans(
-                        db,
-                        limit=settings.INSIGHT_SCHEDULER_BATCH_LIMIT,
-                        trigger_type=triggered_by,
-                    )
                     feishu_result: dict[str, Any] | None = None
                     feishu_error: str | None = None
                     if settings.INSIGHT_FEISHU_SYNC_ENABLED and insight_feishu_bitable_service.get_options().configured:
@@ -238,7 +232,6 @@ class InsightSchedulerService:
                     total_failed_count = (
                         result.failed_count
                         + report_result.failed_count
-                        + brief_result.failed_count
                         + (1 if feishu_error else 0)
                     )
                     task.status = InsightTaskStatus.SUCCESS if total_failed_count == 0 else InsightTaskStatus.FAILED
@@ -248,7 +241,7 @@ class InsightSchedulerService:
                         "daily_discovery": daily_discovery,
                         "monitor_configs": result.model_dump(mode="json"),
                         "report_subscriptions": report_result.model_dump(mode="json"),
-                        "feishu_briefs": brief_result.model_dump(mode="json"),
+                        "feishu_briefs": {"handled_by": "independent_scheduler"},
                         "feishu_sync": feishu_result,
                         "feishu_sync_error": feishu_error,
                         "token_usage": usage_collector.snapshot(),
@@ -259,7 +252,6 @@ class InsightSchedulerService:
                         else (
                             f"{result.failed_count} 个监测配置执行失败，"
                             f"{report_result.failed_count} 个定时报告执行失败，"
-                            f"{brief_result.failed_count} 个飞书简报执行失败"
                             f"{'，飞书同步失败：' + feishu_error if feishu_error else ''}"
                         )
                     )
@@ -269,7 +261,7 @@ class InsightSchedulerService:
                         "daily_discovery": daily_discovery,
                         "monitor_configs": result.model_dump(mode="json"),
                         "report_subscriptions": report_result.model_dump(mode="json"),
-                        "feishu_briefs": brief_result.model_dump(mode="json"),
+                        "feishu_briefs": {"handled_by": "independent_scheduler"},
                         "feishu_sync": feishu_result,
                         "feishu_sync_error": feishu_error,
                         "token_usage": usage_collector.snapshot(),
