@@ -244,6 +244,16 @@ class InsightMonitorExecutionService:
         )
         grouped_logs = list(grouped_summary.get("batches") or [])
         grouped_by_monitor = grouped_summary.get("by_monitor_config_id") or {}
+        daily_adapter_summary = await self._execute_daily_key_channel_sweep(
+            db,
+            rows,
+            user_id=user_id,
+            freshness_override=freshness,
+            published_start=published_start,
+            published_end=published_end,
+        )
+        daily_adapter_logs = list(daily_adapter_summary.get("runs") or [])
+        daily_adapter_by_monitor = daily_adapter_summary.get("by_monitor_config_id") or {}
         signal_ids = {
             int(item["monitor_config_id"])
             for item in baidu_logs
@@ -254,8 +264,17 @@ class InsightMonitorExecutionService:
             for row_id, counts in grouped_by_monitor.items()
             if int(counts.get("hits") or 0) > 0 or int(counts.get("candidates") or 0) > 0
         )
+        signal_ids.update(
+            int(row_id)
+            for row_id, counts in daily_adapter_by_monitor.items()
+            if int(counts.get("hits") or 0) > 0 or int(counts.get("candidates") or 0) > 0
+        )
         grouped_hit_count = sum(int(item.get("hits") or 0) for item in grouped_logs)
         grouped_candidate_count = sum(int(item.get("candidates") or 0) for item in grouped_logs)
+        daily_adapter_hit_count = sum(int(item.get("hits") or 0) for item in daily_adapter_logs)
+        daily_adapter_candidate_count = sum(
+            int(item.get("candidates") or 0) for item in daily_adapter_logs
+        )
         return {
             "checked_count": len(rows),
             "baidu_attempted_count": len(rows) if baidu_channel else 0,
@@ -265,6 +284,16 @@ class InsightMonitorExecutionService:
             "grouped_failed_count": sum(1 for item in grouped_logs if item.get("status") != "success"),
             "grouped_partial_count": sum(1 for item in grouped_logs if item.get("status") == "partial"),
             "grouped_retry_count": sum(int(item.get("retry_count") or 0) for item in grouped_logs),
+            "daily_adapter_run_count": len(daily_adapter_logs),
+            "daily_adapter_success_count": sum(
+                1 for item in daily_adapter_logs if item.get("status") == "success"
+            ),
+            "daily_adapter_failed_count": sum(
+                1 for item in daily_adapter_logs if item.get("status") == "failed"
+            ),
+            "daily_adapter_channel_count": len(
+                {str(item.get("channel_code")) for item in daily_adapter_logs}
+            ),
             "fulltext_summary": {
                 "success": sum(int((item.get("fulltext_summary") or {}).get("success") or 0) for item in grouped_logs),
                 "failed": sum(int((item.get("fulltext_summary") or {}).get("failed") or 0) for item in grouped_logs),
@@ -274,13 +303,20 @@ class InsightMonitorExecutionService:
                     for item in grouped_logs
                 ),
             },
-            "hit_count": sum(int(item.get("hits") or 0) for item in baidu_logs) + grouped_hit_count,
+            "hit_count": (
+                sum(int(item.get("hits") or 0) for item in baidu_logs)
+                + grouped_hit_count
+                + daily_adapter_hit_count
+            ),
             "candidate_count": sum(int(item.get("candidates") or 0) for item in baidu_logs)
-            + grouped_candidate_count,
+            + grouped_candidate_count
+            + daily_adapter_candidate_count,
             "signal_monitor_config_ids": sorted(signal_ids),
             "errors": [item for item in baidu_logs if item.get("status") == "failed"][:50]
-            + [item for item in grouped_logs if item.get("status") != "success"][:50],
+            + [item for item in grouped_logs if item.get("status") != "success"][:50]
+            + [item for item in daily_adapter_logs if item.get("status") == "failed"][:50],
             "grouped_batches": grouped_logs,
+            "daily_adapter_runs": daily_adapter_logs,
         }
 
     async def run_due_monitor_configs(
@@ -350,6 +386,7 @@ class InsightMonitorExecutionService:
                         user_id=user_id,
                         include_conditional_discovery=False,
                         include_discovery_channels=False,
+                        include_daily_sweep_channels=False,
                         freshness_override=freshness_override,
                     ),
                     timeout=self._timeout_seconds(row),
@@ -437,6 +474,7 @@ class InsightMonitorExecutionService:
         user_id: int | None,
         include_conditional_discovery: bool = True,
         include_discovery_channels: bool = True,
+        include_daily_sweep_channels: bool = True,
         freshness_override: str | None = None,
         published_start: datetime | None = None,
         published_end: datetime | None = None,
@@ -448,6 +486,7 @@ class InsightMonitorExecutionService:
             channels,
             query,
             include_discovery_channels=include_discovery_channels,
+            include_daily_sweep_channels=include_daily_sweep_channels,
         )
         if not plan.items:
             raise ValueError("当前监测配置没有匹配到可用渠道源")
@@ -560,6 +599,217 @@ class InsightMonitorExecutionService:
             "channel_errors": channel_errors[:20],
         }
 
+    async def _execute_daily_key_channel_sweep(
+        self,
+        db: AsyncSession,
+        rows: list[InsightMonitorConfig],
+        *,
+        user_id: int | None,
+        freshness_override: str | None = None,
+        published_start: datetime | None = None,
+        published_end: datetime | None = None,
+    ) -> dict[str, Any]:
+        configured_codes = self._daily_adapter_channel_codes()
+        if not configured_codes:
+            return {"by_monitor_config_id": {}, "runs": []}
+
+        supported_codes = insight_channel_adapter_service.supported_channel_codes()
+        channels = [
+            channel
+            for channel in await self._active_channels(db)
+            if channel.channel_code in configured_codes
+            and channel.channel_code in supported_codes
+            and (channel.default_frequency or "").strip().lower() == "daily"
+        ]
+        topic_rows = [
+            row
+            for row in rows
+            if row.id
+            and row.object_type != "company"
+            and row.schedule_enabled
+            and not self._is_placeholder_monitor(row)
+            and any(str(keyword).strip() for keyword in row.keywords or [])
+        ]
+        if not channels or not topic_rows:
+            return {"by_monitor_config_id": {}, "runs": []}
+
+        high_coverage_codes = self._csv_setting(
+            settings.INSIGHT_SCHEDULER_DAILY_ADAPTER_HIGH_COVERAGE_CODES
+        )
+        playwright_semaphore = asyncio.Semaphore(
+            max(1, settings.INSIGHT_SCHEDULER_DAILY_ADAPTER_CONCURRENCY)
+        )
+        http_semaphore = asyncio.Semaphore(max(1, self.api_concurrency))
+        channel_locks = {channel.channel_code: asyncio.Lock() for channel in channels}
+        by_monitor: dict[int, dict[str, int]] = defaultdict(
+            lambda: {"hits": 0, "candidates": 0}
+        )
+
+        async def run_one(
+            row: InsightMonitorConfig,
+            channel: InsightChannel,
+        ) -> dict[str, Any]:
+            definition = insight_channel_adapter_service.definition_for(channel.channel_code)
+            semaphore = (
+                http_semaphore
+                if definition and definition.adapter_kind == "http"
+                else playwright_semaphore
+            )
+            query = self._daily_adapter_query(row, channel)
+            started_at = datetime.now()
+            async with channel_locks[channel.channel_code]:
+                async with semaphore:
+                    try:
+                        response = await asyncio.wait_for(
+                            self._execute_search_channel_in_new_session(
+                                row_id=row.id or 0,
+                                channel_id=channel.id or 0,
+                                query=query,
+                                handler_code=channel.channel_code,
+                                max_results=min(
+                                    10,
+                                    self._frequency_max_results(row.fetch_frequency),
+                                ),
+                                user_id=user_id,
+                                freshness_override=freshness_override,
+                                published_start=published_start,
+                                published_end=published_end,
+                            ),
+                            timeout=max(
+                                settings.INSIGHT_SCHEDULER_DAILY_ADAPTER_TIMEOUT_SECONDS,
+                                60,
+                            ),
+                        )
+                    except Exception as exc:
+                        return {
+                            "channel_code": channel.channel_code,
+                            "channel_name": channel.channel_name,
+                            "monitor_config_id": row.id,
+                            "monitor_config_name": row.config_name,
+                            "query": query,
+                            "status": "failed",
+                            "hits": 0,
+                            "candidates": 0,
+                            "duration_ms": int(
+                                (datetime.now() - started_at).total_seconds() * 1000
+                            ),
+                            "error": (
+                                f"{exc.__class__.__name__}: "
+                                f"{str(exc) or '渠道请求失败或超时'}"
+                            )[:500],
+                        }
+
+            hit_count = len(response.hits)
+            candidate_count = len(response.candidates)
+            if row.id:
+                by_monitor[row.id]["hits"] += hit_count
+                by_monitor[row.id]["candidates"] += candidate_count
+            return {
+                "channel_code": channel.channel_code,
+                "channel_name": channel.channel_name,
+                "monitor_config_id": row.id,
+                "monitor_config_name": row.config_name,
+                "query": query,
+                "status": "success",
+                "hits": hit_count,
+                "candidates": candidate_count,
+                "duration_ms": int(
+                    (datetime.now() - started_at).total_seconds() * 1000
+                ),
+            }
+
+        tasks: list[asyncio.Task] = []
+        for channel in channels:
+            topic_limit = (
+                len(topic_rows)
+                if channel.channel_code in high_coverage_codes
+                else max(1, settings.INSIGHT_SCHEDULER_DAILY_ADAPTER_TOPIC_LIMIT)
+            )
+            selected_rows = self._select_daily_adapter_monitors(
+                channel,
+                topic_rows,
+                topic_limit,
+            )
+            tasks.extend(
+                asyncio.create_task(run_one(row, channel)) for row in selected_rows
+            )
+
+        run_logs = [await task for task in asyncio.as_completed(tasks)] if tasks else []
+        return {
+            "by_monitor_config_id": {
+                str(row_id): counts for row_id, counts in by_monitor.items()
+            },
+            "runs": run_logs,
+        }
+
+    def _daily_adapter_channel_codes(self) -> set[str]:
+        return self._csv_setting(settings.INSIGHT_SCHEDULER_DAILY_ADAPTER_CHANNEL_CODES)
+
+    def _csv_setting(self, value: str | None) -> set[str]:
+        return {
+            item.strip().lower()
+            for item in str(value or "").split(",")
+            if item.strip()
+        }
+
+    def _select_daily_adapter_monitors(
+        self,
+        channel: InsightChannel,
+        rows: list[InsightMonitorConfig],
+        limit: int,
+    ) -> list[InsightMonitorConfig]:
+        scenarios = {
+            str(item).strip()
+            for item in channel.applicable_scenarios or []
+            if str(item).strip()
+        }
+        matching = [
+            row
+            for row in rows
+            if scenarios.intersection(
+                {
+                    str(module).strip()
+                    for module in row.enabled_modules or []
+                    if str(module).strip()
+                }
+            )
+        ]
+        remaining = [row for row in rows if row not in matching]
+        seed = (
+            datetime.now().date().toordinal()
+            + int(channel.id or sum(ord(char) for char in channel.channel_code))
+        )
+
+        def rotate(items: list[InsightMonitorConfig]) -> list[InsightMonitorConfig]:
+            if not items:
+                return []
+            offset = seed % len(items)
+            return items[offset:] + items[:offset]
+
+        candidates = rotate(matching) + rotate(remaining)
+        if not candidates:
+            return []
+        return candidates[: min(max(1, limit), len(candidates))]
+
+    def _daily_adapter_query(
+        self,
+        row: InsightMonitorConfig,
+        channel: InsightChannel,
+    ) -> str:
+        keywords = [
+            str(item).strip()
+            for item in row.keywords or []
+            if str(item).strip()
+        ]
+        if not keywords:
+            return str(row.object_name or row.config_name).strip()
+        offset = (
+            datetime.now().date().toordinal()
+            + int(channel.id or 0)
+            + int(row.id or 0)
+        ) % len(keywords)
+        return keywords[offset]
+
     async def _execute_grouped_daily_discovery(
         self,
         db: AsyncSession,
@@ -598,11 +848,29 @@ class InsightMonitorExecutionService:
         if not bocha_channel and not doubao_channel:
             return {"by_monitor_config_id": {}, "batches": []}
 
-        batches = self._build_grouped_discovery_batches(rows)
+        bocha_batches = (
+            self._build_grouped_discovery_batches(
+                rows,
+                batch_size=max(2, settings.INSIGHT_SCHEDULER_GROUPED_BATCH_SIZE),
+            )
+            if bocha_channel
+            else []
+        )
+        doubao_batches = (
+            self._build_grouped_discovery_batches(
+                rows,
+                batch_size=max(1, settings.INSIGHT_SCHEDULER_GROUPED_AI_BATCH_SIZE),
+            )
+            if doubao_channel
+            else []
+        )
         by_monitor: dict[int, dict[str, int]] = defaultdict(lambda: {"hits": 0, "candidates": 0})
         batch_logs: list[dict[str, Any]] = []
         semaphore = asyncio.Semaphore(self.grouped_search_concurrency)
         ai_semaphore = asyncio.Semaphore(self.grouped_ai_search_concurrency)
+        ai_retry_semaphore = asyncio.Semaphore(
+            max(1, settings.INSIGHT_SCHEDULER_GROUPED_AI_RETRY_CONCURRENCY)
+        )
         ingest_semaphore = asyncio.Semaphore(
             max(settings.INSIGHT_SCHEDULER_GROUPED_INGEST_CONCURRENCY, 1)
         )
@@ -620,6 +888,7 @@ class InsightMonitorExecutionService:
                         batch,
                         handler_code,
                         freshness_override=freshness,
+                        retry_semaphore=ai_retry_semaphore,
                     )
                 except Exception as exc:
                     return {
@@ -705,11 +974,18 @@ class InsightMonitorExecutionService:
             }
 
         tasks: list[asyncio.Task] = []
-        for batch in batches:
-            if bocha_channel:
-                tasks.append(asyncio.create_task(run_one(batch, bocha_channel, "bocha", freshness_override)))
-            if doubao_channel:
-                tasks.append(asyncio.create_task(run_one(batch, doubao_channel, "doubao_web_search", freshness_override)))
+        if bocha_channel:
+            tasks.extend(
+                asyncio.create_task(run_one(batch, bocha_channel, "bocha", freshness_override))
+                for batch in bocha_batches
+            )
+        if doubao_channel:
+            tasks.extend(
+                asyncio.create_task(
+                    run_one(batch, doubao_channel, "doubao_web_search", freshness_override)
+                )
+                for batch in doubao_batches
+            )
         if tasks:
             batch_logs = [await task for task in asyncio.as_completed(tasks)]
 
@@ -736,6 +1012,7 @@ class InsightMonitorExecutionService:
         handler_code: str,
         *,
         freshness_override: str | None = None,
+        retry_semaphore: asyncio.Semaphore | None = None,
     ) -> tuple[list[InsightSearchHit], dict[str, Any]]:
         timeout = (
             max(settings.INSIGHT_SCHEDULER_GROUPED_AI_TIMEOUT_SECONDS, 30)
@@ -771,7 +1048,7 @@ class InsightMonitorExecutionService:
                     query=self._build_group_query(retry_rows),
                 )
             )
-        retry_semaphore = asyncio.Semaphore(
+        shared_retry_semaphore = retry_semaphore or asyncio.Semaphore(
             max(1, settings.INSIGHT_SCHEDULER_GROUPED_AI_RETRY_CONCURRENCY)
         )
 
@@ -779,7 +1056,7 @@ class InsightMonitorExecutionService:
             retry_batch: GroupedDiscoveryBatch,
         ) -> tuple[list[InsightSearchHit], dict[str, Any] | None]:
             try:
-                async with retry_semaphore:
+                async with shared_retry_semaphore:
                     hits = await asyncio.wait_for(
                         self._search_grouped_channel(
                             retry_batch,
@@ -852,7 +1129,12 @@ class InsightMonitorExecutionService:
             for hit in hits
         ]
 
-    def _build_grouped_discovery_batches(self, rows: list[InsightMonitorConfig]) -> list[GroupedDiscoveryBatch]:
+    def _build_grouped_discovery_batches(
+        self,
+        rows: list[InsightMonitorConfig],
+        *,
+        batch_size: int | None = None,
+    ) -> list[GroupedDiscoveryBatch]:
         grouped: dict[str, list[InsightMonitorConfig]] = defaultdict(list)
         for row in rows:
             if self._is_placeholder_monitor(row):
@@ -860,17 +1142,22 @@ class InsightMonitorExecutionService:
             grouped[self._group_key(row)].append(row)
 
         batches: list[GroupedDiscoveryBatch] = []
+        resolved_batch_size = max(
+            1,
+            batch_size
+            if batch_size is not None
+            else settings.INSIGHT_SCHEDULER_GROUPED_BATCH_SIZE,
+        )
         for group_key, group_rows in sorted(grouped.items(), key=lambda item: item[0]):
             ordered_rows = sorted(group_rows, key=lambda item: (item.monitor_strength != "deep", item.id or 0))
-            batch_size = max(2, settings.INSIGHT_SCHEDULER_GROUPED_BATCH_SIZE)
-            for index in range(0, len(ordered_rows), batch_size):
-                chunk = ordered_rows[index : index + batch_size]
+            for index in range(0, len(ordered_rows), resolved_batch_size):
+                chunk = ordered_rows[index : index + resolved_batch_size]
                 query = self._build_group_query(chunk)
                 if not query:
                     continue
                 batches.append(
                     GroupedDiscoveryBatch(
-                        group_key=f"{group_key}:{index // batch_size + 1}",
+                        group_key=f"{group_key}:{index // resolved_batch_size + 1}",
                         group_name=self._group_name(chunk),
                         rows=chunk,
                         query=query,
@@ -1137,6 +1424,7 @@ class InsightMonitorExecutionService:
         query: str,
         *,
         include_discovery_channels: bool = True,
+        include_daily_sweep_channels: bool = True,
     ) -> MonitorCollectionPlan:
         selected_ids = {int(item) for item in row.source_channel_ids or [] if str(item).isdigit()}
         channel_by_code = {item.channel_code: item for item in channels}
@@ -1159,6 +1447,11 @@ class InsightMonitorExecutionService:
 
         for channel in sorted(channels, key=lambda item: (item.sort_no, item.channel_name)):
             if not include_discovery_channels and channel.channel_code in self.default_search_channel_order:
+                continue
+            if (
+                not include_daily_sweep_channels
+                and channel.channel_code in self._daily_adapter_channel_codes()
+            ):
                 continue
             add_channel(channel)
 

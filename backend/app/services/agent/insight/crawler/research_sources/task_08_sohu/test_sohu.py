@@ -27,7 +27,8 @@ def parse_sohu_time(time_str):
                 return f"{match.group(1)}-{int(match.group(2)):02d}-{int(match.group(3)):02d} 00:00:00"
     except Exception:
         pass
-    return now.strftime("%Y-%m-%d %H:%M:%S")
+    # 搜索卡片未展示时间时保持为空，由正文抓取负责校准发布时间。
+    return ""
 
 def crawl_sohu(keyword):
     print(f"开始爬取 search.sohu.com - 关键字: '{keyword}'")

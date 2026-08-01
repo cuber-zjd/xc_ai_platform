@@ -66,7 +66,7 @@ class InsightCrawlService:
             crawl_result.source_title,
             crawl_result.source_url,
         )
-        extracted_publish_time = insight_content_cleaner.parse_publish_time(
+        extracted_publish_time, publish_time_source = insight_content_cleaner.parse_publish_time_with_source(
             metadata,
             markdown,
             extracted_title,
@@ -74,8 +74,9 @@ class InsightCrawlService:
         crawl_result.source_title = extracted_title
         crawl_result.snippet = insight_content_cleaner.clean_summary(markdown, 500)
         crawl_result.markdown_content = markdown
-        if extracted_publish_time:
-            crawl_result.published_at = extracted_publish_time
+        search_published_at = crawl_result.published_at
+        publish_time_verified = self._is_verified_publish_time_source(publish_time_source)
+        crawl_result.published_at = extracted_publish_time if publish_time_verified else None
         crawl_result.dedupe_hash = insight_content_cleaner.build_dedupe_hash(
             crawl_result.source_url,
             extracted_title,
@@ -84,6 +85,12 @@ class InsightCrawlService:
         crawl_result.status = InsightCrawlStatus.PARSED
         crawl_result.error_message = None
         crawl_metadata = dict(crawl_result.crawl_metadata or {})
+        crawl_metadata["publication_time"] = {
+            "value": crawl_result.published_at.isoformat() if crawl_result.published_at else None,
+            "source": publish_time_source,
+            "verified": publish_time_verified,
+            "search_published_at": search_published_at.isoformat() if search_published_at else None,
+        }
         crawl_metadata["fulltext_fetch"] = {
             "status": "success",
             "provider": "firecrawl",
@@ -92,6 +99,8 @@ class InsightCrawlService:
             "readable_length": len(readable),
             "original_search_snippet": original_snippet,
             "metadata": metadata,
+            "publish_time_source": publish_time_source,
+            "publish_time_verified": publish_time_verified,
         }
         crawl_result.crawl_metadata = crawl_metadata
         quality_report = await self._assess_crawl_quality(db, crawl_result)
@@ -133,7 +142,12 @@ class InsightCrawlService:
         )
         crawl_result.snippet = existing.snippet or insight_content_cleaner.clean_summary(markdown, 500)
         crawl_result.markdown_content = markdown
-        crawl_result.published_at = existing.published_at or crawl_result.published_at
+        existing_metadata = existing.crawl_metadata if isinstance(existing.crawl_metadata, dict) else {}
+        existing_publication = existing_metadata.get("publication_time")
+        existing_publication = existing_publication if isinstance(existing_publication, dict) else {}
+        search_published_at = crawl_result.published_at
+        publish_time_verified = bool(existing_publication.get("verified"))
+        crawl_result.published_at = existing.published_at if publish_time_verified else None
         crawl_result.dedupe_hash = insight_content_cleaner.build_dedupe_hash(
             crawl_result.source_url,
             crawl_result.source_title,
@@ -142,6 +156,13 @@ class InsightCrawlService:
         crawl_result.status = InsightCrawlStatus.PARSED
         crawl_result.error_message = None
         metadata = dict(crawl_result.crawl_metadata or {})
+        metadata["publication_time"] = {
+            "value": crawl_result.published_at.isoformat() if crawl_result.published_at else None,
+            "source": existing_publication.get("source"),
+            "verified": publish_time_verified,
+            "search_published_at": search_published_at.isoformat() if search_published_at else None,
+            "reused_from_crawl_result_id": existing.id,
+        }
         metadata["fulltext_fetch"] = {
             "status": "success",
             "provider": "existing_crawl_result",
@@ -337,7 +358,12 @@ class InsightCrawlService:
         )
         markdown = insight_content_cleaner.clean_text(firecrawl_data.get("markdown") or firecrawl_data.get("content"))
         html = firecrawl_data.get("html")
-        published_at = insight_content_cleaner.parse_publish_time(metadata, markdown, title)
+        published_at, publish_time_source = insight_content_cleaner.parse_publish_time_with_source(
+            metadata,
+            markdown,
+            title,
+        )
+        publish_time_verified = self._is_verified_publish_time_source(publish_time_source)
         return InsightCrawlResult(
             task_id=task_id,
             data_source_id=request.data_source_id,
@@ -349,7 +375,7 @@ class InsightCrawlService:
             source_title=title,
             snippet=insight_content_cleaner.clean_summary(markdown, 500),
             markdown_content=markdown,
-            published_at=published_at,
+            published_at=published_at if publish_time_verified else None,
             dedupe_hash=insight_content_cleaner.build_dedupe_hash(normalized_url, title, markdown),
             crawl_metadata={
                 "monitor_config_id": request.monitor_config_id,
@@ -358,9 +384,17 @@ class InsightCrawlService:
                 "html_length": len(html or ""),
                 "markdown_length": len(markdown or ""),
                 "original_url": request.url,
+                "publication_time": {
+                    "value": published_at.isoformat() if published_at and publish_time_verified else None,
+                    "source": publish_time_source,
+                    "verified": publish_time_verified,
+                },
             },
             status=InsightCrawlStatus.PARSED,
         )
+
+    def _is_verified_publish_time_source(self, source: str | None) -> bool:
+        return source in {"metadata", "url", "metadata_text"}
 
     async def _to_candidate(
         self,

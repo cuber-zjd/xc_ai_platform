@@ -261,7 +261,13 @@ class DoubaoWebSearchClient:
         event_samples: list[dict[str, Any]] = []
         response_usage: dict[str, Any] | None = None
 
-        async with httpx.AsyncClient(timeout=max(settings.INSIGHT_SEARCH_TIMEOUT_SECONDS, 90)) as client:
+        timeout = httpx.Timeout(
+            connect=max(settings.INSIGHT_DOUBAO_SEARCH_CONNECT_TIMEOUT_SECONDS, 5),
+            read=max(settings.INSIGHT_DOUBAO_SEARCH_READ_TIMEOUT_SECONDS, 90),
+            write=max(settings.INSIGHT_SEARCH_TIMEOUT_SECONDS, 30),
+            pool=max(settings.INSIGHT_SEARCH_TIMEOUT_SECONDS, 30),
+        )
+        async with httpx.AsyncClient(timeout=timeout) as client:
             async with client.stream("POST", endpoint, json=payload, headers=headers) as response:
                 response.raise_for_status()
                 async for raw_line in response.aiter_lines():

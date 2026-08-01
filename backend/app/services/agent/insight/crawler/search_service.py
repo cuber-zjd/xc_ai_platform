@@ -871,6 +871,12 @@ class InsightSearchDiscoveryService:
                 "source_channel_id": request.source_channel_id,
                 "normalized_url": normalized_url,
                 "raw": hit.raw or {},
+                "publication_time": {
+                    "value": hit.published_at.isoformat() if hit.published_at else None,
+                    "source": "search_result",
+                    "verified": False,
+                    "search_published_at": hit.published_at.isoformat() if hit.published_at else None,
+                },
                 "filter": {
                     "include_keywords": request.include_keywords,
                     "exclude_keywords": request.exclude_keywords,
@@ -1034,11 +1040,11 @@ class InsightSearchDiscoveryService:
             await self._enrich_fulltext_for_review(db, discovered_results, analyses, request)
         candidates: list[InsightIntelligenceCandidate] = []
         for result in discovered_results:
-            if not self._result_matches_exact_window(result, request):
+            if not self._result_matches_time_window(result, request):
                 metadata = dict(result.crawl_metadata or {})
                 metadata["post_fulltext_time_filter"] = {
                     "status": "rejected",
-                    "reason": "正文补抓后发布时间不在精确补采时间窗内，或仍无法确认发布时间",
+                    "reason": "正文补抓后发布时间不在本次时间窗内，或仍无法确认发布时间",
                     "published_at": result.published_at.isoformat() if result.published_at else None,
                     "published_start": request.published_start.isoformat() if request.published_start else None,
                     "published_end": request.published_end.isoformat() if request.published_end else None,
@@ -1164,16 +1170,17 @@ class InsightSearchDiscoveryService:
             await db.refresh(candidate)
         return candidates
 
-    def _result_matches_exact_window(
+    def _result_matches_time_window(
         self,
         result: InsightCrawlResult,
         request: InsightSearchDiscoveryRequest,
     ) -> bool:
-        if request.published_start is None and request.published_end is None:
+        lower_bound = request.published_start or self._freshness_cutoff(request.freshness)
+        if lower_bound is None and request.published_end is None:
             return True
         if result.published_at is None:
             return False
-        if request.published_start is not None and result.published_at < request.published_start:
+        if lower_bound is not None and result.published_at < lower_bound:
             return False
         return request.published_end is None or result.published_at <= request.published_end
 

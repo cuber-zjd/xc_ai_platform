@@ -1,5 +1,6 @@
 import asyncio
 import ipaddress
+import json
 import socket
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -108,6 +109,25 @@ class FirecrawlClient:
             ):
                 raise ValueError(f"直接 HTTP 抽取不支持该内容类型：{content_type[:100]}")
         soup = BeautifulSoup(response.text, "lxml")
+        metadata = self._extract_page_metadata(soup, str(response.url))
+        metadata_url = self._metadata_fallback_url(str(response.url))
+        if not metadata.get("publishedTime") and metadata_url:
+            try:
+                await self._ensure_public_url(metadata_url)
+                async with httpx.AsyncClient(
+                    timeout=timeout,
+                    follow_redirects=True,
+                    headers=headers,
+                ) as metadata_client:
+                    metadata_response = await metadata_client.get(metadata_url)
+                    metadata_response.raise_for_status()
+                desktop_metadata = self._extract_page_metadata(
+                    BeautifulSoup(metadata_response.text, "lxml"),
+                    str(metadata_response.url),
+                )
+                metadata = metadata | desktop_metadata
+            except Exception as exc:
+                metadata["metadata_fallback_error"] = str(exc)[:300]
         for element in soup.select("script, style, noscript, nav, header, footer, form, aside"):
             element.decompose()
         root = soup.find("article") or soup.find("main") or soup.body or soup
@@ -116,13 +136,99 @@ class FirecrawlClient:
         if len(content) < 200:
             raise ValueError("直接 HTTP 抽取未获得足够正文")
         title = soup.title.get_text(" ", strip=True) if soup.title else None
-        metadata = {"title": title, "source_url": str(response.url)}
-        for key in ("article:published_time", "publishdate", "pubdate", "date", "sailthru.date"):
-            node = soup.find("meta", attrs={"property": key}) or soup.find("meta", attrs={"name": key})
-            if node and node.get("content"):
-                metadata["publishedTime"] = str(node.get("content"))
-                break
+        metadata["title"] = metadata.get("title") or title
         return {"markdown": content, "html": response.text, "metadata": metadata}
+
+    def _extract_page_metadata(self, soup: BeautifulSoup, source_url: str) -> dict[str, Any]:
+        metadata: dict[str, Any] = {"source_url": source_url}
+        title = soup.title.get_text(" ", strip=True) if soup.title else None
+        if title:
+            metadata["title"] = title
+
+        # 部分媒体的动态 SEO 标签会写成页面刷新时间，优先读取文章头部的可见发布时间。
+        for selector in (
+            ".article-title-icon .item-time",
+            ".article-info .info-s",
+            ".article-info",
+            "time[datetime]",
+            "[itemprop='datePublished']",
+        ):
+            node = soup.select_one(selector)
+            if not node:
+                continue
+            value = str(node.get("datetime") or node.get("content") or node.get_text(" ", strip=True)).strip()
+            if value:
+                metadata["publishedTime"] = value
+                return metadata
+
+        date_keys = {
+            "article:published_time",
+            "og:published_time",
+            "publishdate",
+            "pubdate",
+            "date",
+            "datepublished",
+            "publish_time",
+            "publishtime",
+            "sailthru.date",
+        }
+        for node in soup.find_all("meta"):
+            key = str(node.get("property") or node.get("name") or node.get("itemprop") or "").lower()
+            content = str(node.get("content") or "").strip()
+            if key in date_keys and content:
+                metadata["publishedTime"] = content
+                return metadata
+
+        for node in soup.find_all("script", attrs={"type": "application/ld+json"}):
+            try:
+                payload = json.loads(node.string or node.get_text() or "")
+            except (TypeError, ValueError):
+                continue
+            published = self._find_json_date(payload)
+            if published:
+                metadata["publishedTime"] = published
+                return metadata
+
+        for selector in (
+            ".publish-time",
+            ".publish_time",
+            ".pub-time",
+            ".article-time",
+        ):
+            node = soup.select_one(selector)
+            if not node:
+                continue
+            value = str(node.get("datetime") or node.get("content") or node.get_text(" ", strip=True)).strip()
+            if value:
+                metadata["publishedTime"] = value
+                return metadata
+        return metadata
+
+    def _find_json_date(self, value: Any) -> str | None:
+        if isinstance(value, dict):
+            for key in ("datePublished", "dateCreated", "publishTime", "publishedAt"):
+                candidate = value.get(key)
+                if isinstance(candidate, str) and candidate.strip():
+                    return candidate.strip()
+            for child in value.values():
+                found = self._find_json_date(child)
+                if found:
+                    return found
+        elif isinstance(value, list):
+            for child in value:
+                found = self._find_json_date(child)
+                if found:
+                    return found
+        return None
+
+    def _metadata_fallback_url(self, source_url: str) -> str | None:
+        parsed = urlparse(source_url)
+        host_map = {"m.jiemian.com": "www.jiemian.com"}
+        target_host = host_map.get((parsed.hostname or "").lower())
+        if not target_host:
+            return None
+        port = f":{parsed.port}" if parsed.port else ""
+        return parsed._replace(netloc=f"{target_host}{port}").geturl()
 
     async def _ensure_public_url(self, url: str) -> None:
         parsed = urlparse(url)

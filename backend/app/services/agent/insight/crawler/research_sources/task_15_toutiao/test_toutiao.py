@@ -46,7 +46,9 @@ def parse_relative_time(time_str):
                 return f"{match_full.group(1)}-{int(match_full.group(2)):02d}-{int(match_full.group(3)):02d} 00:00:00"
     except Exception:
         pass
-    return now.strftime("%Y-%m-%d %H:%M:%S")
+    # 搜索卡片未展示时间时保持为空，后续正文抓取会从原文校准发布时间。
+    # 不得用采集时间冒充发布时间，否则旧文章会被错误纳入当日情报。
+    return ""
 
 def crawl_toutiao(keyword):
     print(f"开始爬取 so.toutiao.com (资讯) - 关键字: '{keyword}'")

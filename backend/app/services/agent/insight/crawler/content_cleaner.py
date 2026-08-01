@@ -111,6 +111,16 @@ class InsightContentCleaner:
         return compact or None
 
     def parse_publish_time(self, metadata: dict[str, Any], *texts: Any) -> datetime | None:
+        published_at, _ = self.parse_publish_time_with_source(metadata, *texts)
+        return published_at
+
+    def parse_publish_time_with_source(
+        self,
+        metadata: dict[str, Any],
+        *texts: Any,
+    ) -> tuple[datetime | None, str | None]:
+        """解析发布时间，并区分页面证据与正文中的弱日期线索。"""
+
         keys = (
             "publishedTime",
             "published_time",
@@ -128,22 +138,27 @@ class InsightContentCleaner:
         for key in keys:
             parsed = self._parse_datetime(metadata.get(key))
             if parsed:
-                return parsed
+                return parsed, "metadata"
         for key in ("url", "sourceURL", "source_url", "original_url"):
             parsed = self._parse_date_from_url(metadata.get(key))
             if parsed:
-                return parsed
+                return parsed, "url"
         if self._is_ecommerce_metadata(metadata):
-            return None
+            return None, None
         for key in keys:
             parsed = self._parse_datetime_from_text(metadata.get(key))
             if parsed:
-                return parsed
+                return parsed, "metadata_text"
+        for text in texts:
+            if isinstance(text, str):
+                parsed = self._parse_datetime_from_text(text[:500])
+                if parsed:
+                    return parsed, "content_header"
         for text in texts:
             parsed = self._parse_datetime_from_text(text)
             if parsed:
-                return parsed
-        return None
+                return parsed, "content_body"
+        return None, None
 
     def build_dedupe_hash(self, url: str, title: str | None, content: str | None) -> str:
         normalized_content = self.clean_text(content) or ""
@@ -228,17 +243,21 @@ class InsightContentCleaner:
             return None
         path = f"{parsed_url.path}?{parsed_url.query}"
         now = datetime.now()
-        for match in finditer(r"(?<!\d)(?P<date>20\d{6})(?!\d)", path):
-            raw = match.group("date")
-            year = int(raw[:4])
-            month = int(raw[4:6])
-            day = int(raw[6:8])
-            try:
-                parsed = datetime(year, month, day)
-            except ValueError:
-                continue
-            if parsed <= now:
-                return parsed
+        patterns = (
+            r"(?<!\d)(?P<year>20\d{2})(?P<month>\d{2})(?P<day>\d{2})(?!\d)",
+            r"(?<!\d)(?P<year>20\d{2})[-_/](?P<month>\d{1,2})[-_/](?P<day>\d{1,2})(?!\d)",
+        )
+        for pattern in patterns:
+            for match in finditer(pattern, path):
+                year = int(match.group("year"))
+                month = int(match.group("month"))
+                day = int(match.group("day"))
+                try:
+                    parsed = datetime(year, month, day)
+                except ValueError:
+                    continue
+                if parsed <= now:
+                    return parsed
         return None
 
     def _is_ecommerce_metadata(self, metadata: dict[str, Any]) -> bool:

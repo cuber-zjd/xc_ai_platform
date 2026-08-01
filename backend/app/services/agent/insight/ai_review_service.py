@@ -76,12 +76,14 @@ class InsightAiReviewService:
                 asset_id=None,
             )
 
-        aggregation = await insight_event_aggregation_service.try_merge_candidate(
-            db,
-            candidate,
-            crawl_result,
-            user_id=user_id,
-        )
+        aggregation = None
+        if self._has_verified_publish_time(crawl_result) or self._allows_without_fulltext(crawl_result):
+            aggregation = await insight_event_aggregation_service.try_merge_candidate(
+                db,
+                candidate,
+                crawl_result,
+                user_id=user_id,
+            )
         if aggregation:
             from app.models.agent.insight import InsightIntelligenceSource
 
@@ -400,8 +402,21 @@ class InsightAiReviewService:
             value = "candidate"
             rule_note = "正文尚未抓取成功，暂保留为候选线索，补全原文后再进行正式评审。"
             decision.reason = f"{decision.reason or ''} {rule_note}".strip()[:1000]
+        if (
+            value == "formal"
+            and not self._has_verified_publish_time(crawl_result)
+            and not self._allows_without_fulltext(crawl_result)
+        ):
+            value = "candidate"
+            rule_note = "原文发布时间尚未确认，暂保留为候选线索，确认日期后再进入正式情报。"
+            decision.reason = f"{decision.reason or ''} {rule_note}".strip()[:1000]
         decision.decision = value
         return decision
+
+    def _has_verified_publish_time(self, crawl_result: InsightCrawlResult) -> bool:
+        metadata = crawl_result.crawl_metadata if isinstance(crawl_result.crawl_metadata, dict) else {}
+        publication = metadata.get("publication_time") if isinstance(metadata, dict) else None
+        return bool(crawl_result.published_at and isinstance(publication, dict) and publication.get("verified"))
 
     def _has_sufficient_fulltext(self, crawl_result: InsightCrawlResult) -> bool:
         content = re.sub(r"\s+", "", str(crawl_result.markdown_content or ""))

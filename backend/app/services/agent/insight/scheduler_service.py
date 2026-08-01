@@ -98,6 +98,30 @@ class InsightSchedulerService:
             recommendations.append("百度资讯并发高于 5，可能增加触发反爬的风险。")
         if settings.INSIGHT_SCHEDULER_GROUPED_BATCH_SIZE < 2:
             warnings.append("INSIGHT_SCHEDULER_GROUPED_BATCH_SIZE 不能小于 2。")
+        if settings.INSIGHT_SCHEDULER_GROUPED_AI_BATCH_SIZE <= 0:
+            warnings.append("INSIGHT_SCHEDULER_GROUPED_AI_BATCH_SIZE 必须大于 0。")
+        elif settings.INSIGHT_SCHEDULER_GROUPED_AI_BATCH_SIZE > 4:
+            recommendations.append("豆包联网搜索单组对象数大于 4，长查询可能增加超时和漏检风险。")
+        if settings.INSIGHT_SCHEDULER_GROUPED_AI_TIMEOUT_SECONDS < 120:
+            recommendations.append("豆包联网搜索总时限低于 120 秒，联网检索和流式整理可能无法完整返回。")
+        if (
+            settings.INSIGHT_DOUBAO_SEARCH_READ_TIMEOUT_SECONDS
+            < settings.INSIGHT_SCHEDULER_GROUPED_AI_TIMEOUT_SECONDS
+        ):
+            recommendations.append("豆包流式读取时限低于调度总时限，请求可能在调度器接管前提前中断。")
+        daily_adapter_codes = [
+            item.strip()
+            for item in settings.INSIGHT_SCHEDULER_DAILY_ADAPTER_CHANNEL_CODES.split(",")
+            if item.strip()
+        ]
+        if not daily_adapter_codes:
+            warnings.append("重点渠道每日采集列表为空，头条、搜狐等垂直渠道不会得到每日执行保证。")
+        if settings.INSIGHT_SCHEDULER_DAILY_ADAPTER_CONCURRENCY <= 0:
+            warnings.append("INSIGHT_SCHEDULER_DAILY_ADAPTER_CONCURRENCY 必须大于 0。")
+        elif settings.INSIGHT_SCHEDULER_DAILY_ADAPTER_CONCURRENCY > 3:
+            recommendations.append("重点站点并发高于 3，可能增加反爬、封禁和浏览器资源占用风险。")
+        if settings.INSIGHT_SCHEDULER_DAILY_ADAPTER_TOPIC_LIMIT <= 0:
+            warnings.append("INSIGHT_SCHEDULER_DAILY_ADAPTER_TOPIC_LIMIT 必须大于 0。")
         if settings.INSIGHT_SCHEDULER_FAILURE_PAUSE_THRESHOLD <= 0:
             warnings.append("INSIGHT_SCHEDULER_FAILURE_PAUSE_THRESHOLD 必须大于 0，否则无法可靠自动暂停失败数据源。")
         if settings.INSIGHT_SCHEDULER_ADVISORY_LOCK_ID <= 0:
@@ -176,6 +200,11 @@ class InsightSchedulerService:
                     "batch_limit": settings.INSIGHT_SCHEDULER_BATCH_LIMIT,
                     "daily_discovery_enabled": settings.INSIGHT_SCHEDULER_DAILY_DISCOVERY_ENABLED,
                     "daily_discovery_freshness": settings.INSIGHT_SCHEDULER_DAILY_DISCOVERY_FRESHNESS,
+                    "daily_adapter_channel_codes": [
+                        item.strip()
+                        for item in settings.INSIGHT_SCHEDULER_DAILY_ADAPTER_CHANNEL_CODES.split(",")
+                        if item.strip()
+                    ],
                     "lock_id": settings.INSIGHT_SCHEDULER_ADVISORY_LOCK_ID,
                 },
             )
