@@ -141,7 +141,10 @@ export default function WeaverReviewConfigEmbedPage() {
       run_id: String(Date.now()),
     });
     setError("");
-    setTestReviewUrl(`/weaver/assistant/review?${params.toString()}`);
+    const appBaseUrl = import.meta.env.BASE_URL.endsWith("/")
+      ? import.meta.env.BASE_URL
+      : `${import.meta.env.BASE_URL}/`;
+    setTestReviewUrl(`${appBaseUrl}weaver/assistant/review?${params.toString()}`);
   }
 
   async function handleSave() {
