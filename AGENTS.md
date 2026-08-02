@@ -76,6 +76,8 @@ pnpm build
 4. 修改后运行与影响范围匹配的检查命令。
 5. 最终回复说明改了什么、如何验证、是否存在风险或后续建议。
 
+服务器 `192.168.14.44` 的代码发布必须使用仓库根目录 `scripts/deploy_server.ps1`：本地在 `main` 精确提交并推送后，以 `-ExpectedCommit <commit>` 部署到原目录 `/home/xinxi/ai_platform`。不得使用 `scp` 覆盖代码、不得新建发布目录、不得绕过脚本直接在服务器拼接临时发布命令；仅后端变更使用 `-BackendOnly`。
+
 ## 5. 关键约束
 
 - 后端所有 I/O 操作优先使用 async/await。
