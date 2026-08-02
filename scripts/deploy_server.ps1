@@ -6,6 +6,8 @@
     [string]$DeployRemoteUrl = "http://192.168.14.111:9055/zhangjide/ai_platform.git",
     [string]$ExpectedCommit = "",
     [string]$SshKey = "$HOME/.ssh/ai_platform_deploy_ed25519",
+    [string]$RemoteUvPath = "/home/xinxi/.local/bin/uv",
+    [string]$RemoteNodeBin = "/home/xinxi/.nvm/nvm-0.40.2/versions/node/v22.18.0/bin",
     [switch]$BackendOnly,
     [switch]$SkipDependencies
 )
@@ -67,6 +69,17 @@ $remoteScript = @"
 set -euo pipefail
 
 cd '$RemotePath'
+export PATH='${RemoteNodeBin}:/home/xinxi/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
+
+if [ ! -x '$RemoteUvPath' ]; then
+  echo '服务器 uv 不存在或不可执行：$RemoteUvPath' >&2
+  exit 20
+fi
+
+if $installFrontend && [ ! -x '$RemoteNodeBin/corepack' ]; then
+  echo '服务器 Node/corepack 不存在或不可执行：$RemoteNodeBin/corepack' >&2
+  exit 20
+fi
 
 if [ "`$(git branch --show-current)" != '$Branch' ]; then
   echo '服务器仓库不在 $Branch 分支，已中止。' >&2
@@ -92,13 +105,13 @@ fi
 
 if $installBackend; then
   cd '$RemotePath/backend'
-  uv sync --frozen
+  '$RemoteUvPath' sync --frozen
 fi
 
 if $installFrontend; then
   cd '$RemotePath/frontend'
-  pnpm install --frozen-lockfile
-  pnpm build
+  '$RemoteNodeBin/corepack' pnpm install --frozen-lockfile
+  '$RemoteNodeBin/corepack' pnpm build
 fi
 
 systemctl --user restart ai-platform-backend.service

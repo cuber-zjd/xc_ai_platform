@@ -192,6 +192,7 @@ uv sync
 - 192.168.14.44 服务器固定使用原 git 工作目录 `/home/xinxi/ai_platform` 部署和运行，不再创建 `ai_platform_releases` 或 `ai_platform_current` 发布目录。
 - 跨会话部署唯一入口为仓库根目录 `scripts/deploy_server.ps1`。会话必须先在本地 `main` 精确提交本次文件并推送到发布仓库 `http://192.168.14.111:9055/zhangjide/ai_platform.git` 的 `main`，再执行 `powershell -ExecutionPolicy Bypass -File scripts/deploy_server.ps1 -ExpectedCommit <commit>`；仅后端变更可追加 `-BackendOnly`。脚本通过 `DeployRemoteUrl` 显式使用内网发布仓库，不依赖本地 `origin` 的 GitHub fetch URL；禁止临时拼接 `scp`、复制工作区或在服务器另建目录部署。
 - 部署脚本会校验本地分支、远端提交和服务器受跟踪文件状态，在服务器原目录执行 `git pull --ff-only`；随后按需执行 `uv sync --frozen`、`pnpm install --frozen-lockfile`、`pnpm build`，重启用户级前后端服务并检查 `8000/5173`。服务器存在受跟踪的未提交改动、HEAD 与指定提交不一致或健康检查失败时立即中止并保留现场。
+- 部署脚本不依赖非交互 SSH 的 shell 初始化文件，默认显式使用 `/home/xinxi/.local/bin/uv` 和 `/home/xinxi/.nvm/nvm-0.40.2/versions/node/v22.18.0/bin/corepack`；服务器升级 uv 或 Node 后必须同步调整 `RemoteUvPath` / `RemoteNodeBin` 参数及 systemd unit。
 - 部署前必须先确认当前运行进程、端口占用和其他服务，备份原目录或关键配置后再在 `/home/xinxi/ai_platform` 内同步代码、安装依赖、构建前端和重启服务。
 - 前后端使用用户级 `ai-platform-backend.service`、`ai-platform-frontend.service` 守护，服务工作目录必须指向 `/home/xinxi/ai_platform/backend` 和 `/home/xinxi/ai_platform/frontend`。
 - 要求未登录也能开机启动时，需要管理员执行 `loginctl enable-linger xinxi`；未启用 linger 时，用户级服务只在该用户的 systemd manager 存活期间运行。
