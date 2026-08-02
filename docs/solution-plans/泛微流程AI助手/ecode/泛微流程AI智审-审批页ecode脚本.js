@@ -552,7 +552,7 @@
     handle.onpointermove = function (event) {
       if (!resizing) return;
       var minWidth = Math.min(420, window.innerWidth - 32);
-      var maxWidth = Math.min(1100, window.innerWidth - 32);
+      var maxWidth = window.innerWidth - 16;
       var nextWidth = Math.max(minWidth, Math.min(maxWidth, startWidth + startX - event.clientX));
       panel.style.width = Math.round(nextWidth) + "px";
     };

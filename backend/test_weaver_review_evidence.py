@@ -260,3 +260,58 @@ def test_label_matching_accepts_main_table_suffix() -> None:
     service = WeaverReviewEvidenceService()
 
     assert service._label_matches("对账单号主表", {service._normalize_label("对账单号")}) is True
+
+
+def test_optional_unit_field_falls_back_to_dw_field_name() -> None:
+    service = WeaverReviewEvidenceService()
+    fields = [
+        {"fieldname": "dw", "detailtable": "formtable_main_1_dt1", "labelname": "计量"},
+    ]
+
+    field_name = service._optional_field(
+        fields,
+        "formtable_main_1_dt1",
+        ["计量单位", "单位"],
+        field_names=["dw"],
+    )
+
+    assert field_name == "dw"
+
+
+def test_non_exact_name_is_pending_when_other_values_match() -> None:
+    service = WeaverReviewEvidenceService()
+    item = {
+        "similarity": 0.95,
+        "unitMatched": True,
+        "quantityMatched": True,
+        "amountMatched": True,
+        "taxRateMatched": True,
+    }
+
+    assert service._name_needs_review(item) is True
+    assert (
+        service._row_status(
+            item,
+            ["unitMatched", "quantityMatched", "amountMatched", "taxRateMatched"],
+        )
+        == "warning"
+    )
+
+
+def test_unit_mismatch_is_error_even_when_name_needs_review() -> None:
+    service = WeaverReviewEvidenceService()
+    item = {
+        "similarity": 0.95,
+        "unitMatched": False,
+        "quantityMatched": True,
+        "amountMatched": True,
+        "taxRateMatched": True,
+    }
+
+    assert (
+        service._row_status(
+            item,
+            ["unitMatched", "quantityMatched", "amountMatched", "taxRateMatched"],
+        )
+        == "fail"
+    )

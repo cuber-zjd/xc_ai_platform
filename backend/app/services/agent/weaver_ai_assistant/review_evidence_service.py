@@ -313,7 +313,7 @@ class WeaverReviewEvidenceService:
             "description": self._identifier(item_description["fieldname"]),
             "code": self._optional_field(fields, item_table, ["采购物料编码", "物料编码"]),
             "specification": self._optional_field(fields, item_table, ["规格型号", "规格"]),
-            "unit": self._optional_field(fields, item_table, ["计量单位", "单位"]),
+            "unit": self._optional_field(fields, item_table, ["计量单位", "单位"], field_names=["dw"]),
             "quantity": self._optional_field(fields, item_table, ["凭证数量", "数量"]),
             "untaxedAmount": self._optional_field(fields, item_table, ["未税金额", "不含税金额"]),
             "taxedAmount": self._optional_field(fields, item_table, ["含税金额"]),
@@ -435,6 +435,7 @@ class WeaverReviewEvidenceService:
         total_ok = expected_total is not None and abs(invoice_total - expected_total) <= amount_tolerance
         invoice_check_ok = all(str(item.get("checkstatus") or "") == "1" for item in invoices)
         comparison_keys = [
+            "unitMatched",
             "quantityMatched",
             "amountMatched",
             "taxRateMatched",
@@ -446,7 +447,10 @@ class WeaverReviewEvidenceService:
             item
             for item in matches
             if not any(item.get(key) is False for key in comparison_keys)
-            and any(item.get(key) is None for key in comparison_keys)
+            and (
+                any(item.get(key) is None for key in comparison_keys)
+                or self._name_needs_review(item)
+            )
         ]
         detail_failed = bool(unmatched_invoice or unmatched_reconciliation or mismatch_matches)
         detail_pending = bool(pending_matches) and not detail_failed
@@ -467,7 +471,7 @@ class WeaverReviewEvidenceService:
             )
         if mismatch_matches:
             detail_parts.append(
-                "数量、金额或税率不一致："
+                "单位、数量、金额或税率不一致："
                 + self._format_numbered_items(
                     mismatch_matches,
                     lambda item: (
@@ -477,7 +481,9 @@ class WeaverReviewEvidenceService:
                 )
             )
         if pending_matches:
-            detail_parts.append(f"{len(pending_matches)} 项因发票或对账单缺少数量，需人工核对")
+            detail_parts.append(
+                f"{len(pending_matches)} 项因名称匹配度不足100%或比较数据缺失，需人工核对"
+            )
 
         checks = [
             {
@@ -523,10 +529,10 @@ class WeaverReviewEvidenceService:
                 "reconciliationAmount": item["reconciliationAmount"],
                 "invoiceTaxRates": item["invoiceTaxRates"],
                 "reconciliationTaxRates": item["reconciliationTaxRates"],
-                "nameStatus": "pass",
-                # 规格可能已并入对账物料描述，单位也可能未维护；两者只展示，不独立判定。
+                "nameStatus": "warning" if self._name_needs_review(item) else "pass",
+                # 规格可能已并入对账物料描述，只展示，不单独判定。
                 "specificationStatus": "unknown",
-                "unitStatus": "unknown",
+                "unitStatus": self._comparison_status(item["unitMatched"]),
                 "quantityStatus": self._comparison_status(item["quantityMatched"]),
                 "amountStatus": self._comparison_status(item["amountMatched"]),
                 "taxRateStatus": self._comparison_status(item["taxRateMatched"]),
@@ -620,6 +626,7 @@ class WeaverReviewEvidenceService:
 
     def _comparison_detail(self, item: dict[str, Any]) -> str:
         labels = {
+            "unitMatched": "单位",
             "quantityMatched": "数量",
             "amountMatched": "未税金额",
             "taxRateMatched": "税率",
@@ -635,11 +642,19 @@ class WeaverReviewEvidenceService:
             name_detail = "语义服务不可用，名称按高置信相似度匹配"
         else:
             name_detail = "采购物料描述与发票名称加规格一致"
+        if self._name_needs_review(item):
+            pending.insert(0, "名称匹配度不足100%")
         if problems:
             return f"{name_detail}；" + "、".join(problems)
         if pending:
             return f"{name_detail}；" + "；".join(pending) + "，需人工核对"
-        return f"{name_detail}；数量、未税金额和税率一致"
+        return f"{name_detail}；单位、数量、未税金额和税率一致"
+
+    def _name_needs_review(self, item: dict[str, Any]) -> bool:
+        try:
+            return float(item.get("similarity")) < 0.9999
+        except (TypeError, ValueError):
+            return True
 
     def _comparison_status(self, value: bool | None) -> str:
         if value is True:
@@ -652,7 +667,7 @@ class WeaverReviewEvidenceService:
         values = [item.get(key) for key in keys]
         if any(value is False for value in values):
             return "fail"
-        if any(value is None for value in values):
+        if any(value is None for value in values) or self._name_needs_review(item):
             return "warning"
         return "pass"
 
@@ -1253,13 +1268,26 @@ class WeaverReviewEvidenceService:
                     return field
         raise ValueError(f"建模表单缺少字段：{'/'.join(labels)}")
 
-    def _optional_field(self, fields: list[dict[str, Any]], detail_table: str, labels: list[str]) -> str | None:
+    def _optional_field(
+        self,
+        fields: list[dict[str, Any]],
+        detail_table: str,
+        labels: list[str],
+        *,
+        field_names: list[str] | None = None,
+    ) -> str | None:
+        expected_field_names = {self._text(value).lower() for value in field_names or []}
         for label in labels:
             for field in fields:
                 if self._text(field.get("detailtable")).lower() != detail_table.lower():
                     continue
                 if self._normalize_label(field.get("labelname")) == self._normalize_label(label):
                     return self._identifier(field.get("fieldname"))
+        for field in fields:
+            if self._text(field.get("detailtable")).lower() != detail_table.lower():
+                continue
+            if self._text(field.get("fieldname")).lower() in expected_field_names:
+                return self._identifier(field.get("fieldname"))
         return None
 
     def _missing_evidence(self, detail: str) -> dict[str, Any]:
