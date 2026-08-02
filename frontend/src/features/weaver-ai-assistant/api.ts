@@ -9,6 +9,8 @@ import type {
   WeaverReviewNodeStatus,
   WeaverReviewRequest,
   WeaverReviewResponse,
+  WeaverReviewTestRequest,
+  WeaverReviewTestResponse,
   WeaverReviewRule,
   WeaverReviewRulePayload,
   WeaverWorkflowRule,
@@ -345,6 +347,30 @@ export async function runWeaverPreReview(
   return result.data;
 }
 
+export async function runWeaverTestReview(
+  aiSign: string,
+  payload: WeaverReviewTestRequest,
+): Promise<WeaverReviewTestResponse> {
+  const safeAiSign = normalizeHeaderValue(aiSign, "ai_sign");
+  const response = await fetch(`${apiBaseUrl}/weaver/ai-assistant/review/test`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "ai-sign": safeAiSign,
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const detail = await readErrorDetail(response);
+    throw new Error(detail || `测试智审请求失败：${response.status}`);
+  }
+  const result = (await response.json()) as Result<WeaverReviewTestResponse>;
+  if (result.code !== 200 || !result.data) {
+    throw new Error(result.msg || "测试智审失败");
+  }
+  return result.data;
+}
+
 export async function fetchLatestWeaverReview(
   aiSign: string,
   workflowId: string,
@@ -437,6 +463,15 @@ function normalizeHeaderValue(value: string, name: string) {
     throw new Error(`${name} 只能使用英文、数字和常见符号，请检查 ecode 传入的密钥是否写成了中文`);
   }
   return normalized;
+}
+
+async function readErrorDetail(response: Response) {
+  try {
+    const payload = await response.json() as { detail?: string; msg?: string };
+    return payload.detail || payload.msg || "";
+  } catch {
+    return "";
+  }
 }
 
 function handleSseBlock(block: string, handlers: StreamHandlers) {

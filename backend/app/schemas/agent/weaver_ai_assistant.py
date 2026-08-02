@@ -205,6 +205,13 @@ class WeaverReviewRequest(BaseModel):
     extra: dict[str, Any] = Field(default_factory=dict)
 
 
+class WeaverReviewTestRequest(BaseModel):
+    env: str = "default"
+    workflow_id: str = Field(alias="workflowId")
+    workflow_name: str | None = Field(default=None, alias="workflowName")
+    request_id: str = Field(alias="requestId", min_length=1, max_length=80)
+
+
 class WeaverReviewCheckItem(BaseModel):
     name: str
     status: Literal["pass", "warning", "fail", "unknown"] = "unknown"
@@ -291,3 +298,11 @@ class WeaverReviewResponse(BaseModel):
     record: WeaverReviewRecordRead
     result: WeaverReviewResult
     matched_rules: list[WeaverReviewRuleRead] = Field(default_factory=list, alias="matchedRules")
+
+
+class WeaverReviewTestResponse(BaseModel):
+    record: WeaverReviewRecordRead
+    result: WeaverReviewResult
+    matched_rules: list[WeaverReviewRuleRead] = Field(default_factory=list, alias="matchedRules")
+    source_node_id: str | None = Field(default=None, alias="sourceNodeId")
+    source_node_name: str | None = Field(default=None, alias="sourceNodeName")

@@ -16,7 +16,7 @@ import {
   X,
 } from "lucide-react";
 
-import { fetchLatestWeaverReview, fetchWeaverFieldConfig, runWeaverPreReview } from "../api";
+import { fetchLatestWeaverReview, fetchWeaverFieldConfig, runWeaverPreReview, runWeaverTestReview } from "../api";
 import { WeaverAssistantAvatar } from "../components/WeaverAssistantAvatar";
 import type {
   WeaverFieldConfigResponse,
@@ -40,13 +40,19 @@ export default function WeaverReviewEmbedPage() {
   const reviewerUserId = query.get("reviewer_user_id") || query.get("reviewerUserId") || "";
   const reviewerName = query.get("reviewer_name") || query.get("reviewerName") || "";
   const autoRun = query.get("auto_run") === "1" || query.get("autoRun") === "1";
+  const testMode = query.get("test_mode") === "1" || query.get("testMode") === "1";
 
-  const [context, setContext] = useState<WeaverFormContext>({ env });
+  const [context, setContext] = useState<WeaverFormContext>({
+    env,
+    baseInfo: testMode ? { workflowid: queryWorkflowId, workflowname: queryWorkflowName, requestid: queryRequestId } : {},
+  });
   const [record, setRecord] = useState<WeaverReviewRecord | null>(null);
   const [result, setResult] = useState<WeaverReviewResult | null>(null);
   const [metadata, setMetadata] = useState<WeaverFieldConfigResponse | null>(null);
   const [loading, setLoading] = useState(false);
-  const [message, setMessage] = useState("正在等待泛微页面上下文...");
+  const [message, setMessage] = useState(
+    testMode ? "测试智审将读取该请求的数据库快照，并忽略其当前节点。" : "正在等待泛微页面上下文...",
+  );
   const [error, setError] = useState("");
 
   const workflowId = String(context.baseInfo?.workflowid || context.baseInfo?.workflowId || queryWorkflowId || "");
@@ -59,15 +65,18 @@ export default function WeaverReviewEmbedPage() {
     queryWorkflowName ||
     metadata?.workflowName ||
     "当前流程";
-  const nodeName =
+  const resolvedNodeName =
     record?.nodeName ||
     queryNodeName ||
     readBaseInfoText(context.baseInfo, ["nodename", "nodeName", "node_name"]) ||
     metadata?.nodes?.find((item) => String(item.nodeId) === nodeId)?.nodeName ||
     "当前节点";
+  const nodeName = testMode
+    ? `测试审批 · ${record?.nodeName || "忽略当前节点"}`
+    : resolvedNodeName;
 
   const loadLatest = useCallback(async () => {
-    if (!aiSign || !workflowId) return;
+    if (testMode || !aiSign || !workflowId) return;
     setError("");
     try {
       const data = await fetchLatestWeaverReview(aiSign, workflowId, {
@@ -80,7 +89,7 @@ export default function WeaverReviewEmbedPage() {
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "智审记录加载失败");
     }
-  }, [aiSign, context.env, env, nodeId, requestId, workflowId]);
+  }, [aiSign, context.env, env, nodeId, requestId, testMode, workflowId]);
 
   useEffect(() => {
     if (!aiSign || !workflowId) {
@@ -109,41 +118,53 @@ export default function WeaverReviewEmbedPage() {
       setError("未识别到 workflowId，无法进行 AI 智审。");
       return;
     }
+    if (testMode && !requestId) {
+      setError("请输入需要测试的 requestId。");
+      return;
+    }
     setLoading(true);
     setError("");
     setMessage("AI 正在预审当前流程，请稍等...");
     try {
-      const response = await runWeaverPreReview(aiSign, {
-        context: {
-          ...context,
-          env: context.env || env,
-          baseInfo: {
-            ...(context.baseInfo || {}),
-            workflowid: workflowId,
-            workflowname: workflowName,
-            requestid: requestId,
-            nodeid: nodeId,
-            nodename: nodeName,
-          },
-        },
-        triggerType: "manual",
-        operation: "review",
-        currentNodeId: nodeId || null,
-        currentNodeName: nodeName === "当前节点" ? null : nodeName,
-        reviewer: reviewerUserId || reviewerName ? { userId: reviewerUserId, userName: reviewerName } : null,
-      });
+      const response = testMode
+        ? await runWeaverTestReview(aiSign, {
+            env: context.env || env,
+            workflowId,
+            workflowName,
+            requestId,
+          })
+        : await runWeaverPreReview(aiSign, {
+            context: {
+              ...context,
+              env: context.env || env,
+              baseInfo: {
+                ...(context.baseInfo || {}),
+                workflowid: workflowId,
+                workflowname: workflowName,
+                requestid: requestId,
+                nodeid: nodeId,
+                nodename: nodeName,
+              },
+            },
+            triggerType: "manual",
+            operation: "review",
+            currentNodeId: nodeId || null,
+            currentNodeName: nodeName === "当前节点" ? null : nodeName,
+            reviewer: reviewerUserId || reviewerName ? { userId: reviewerUserId, userName: reviewerName } : null,
+          });
       setResult(response.result);
       setRecord(response.record);
-      setMessage("AI 智审已完成。");
+      setMessage(testMode ? "测试智审已完成，结果已独立保存。" : "AI 智审已完成。");
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "AI 智审失败");
       setMessage("");
     } finally {
       setLoading(false);
     }
-  }, [aiSign, context, env, nodeId, nodeName, requestId, reviewerName, reviewerUserId, workflowId, workflowName]);
+  }, [aiSign, context, env, nodeId, nodeName, requestId, reviewerName, reviewerUserId, testMode, workflowId, workflowName]);
 
   useEffect(() => {
+    if (testMode) return;
     const handleMessage = (event: MessageEvent) => {
       const data = event.data;
       if (!data || typeof data !== "object") return;
@@ -156,7 +177,7 @@ export default function WeaverReviewEmbedPage() {
     window.parent.postMessage({ type: "WEAVER_AI_REVIEW_READY" }, targetOrigin);
     window.parent.postMessage({ type: "WEAVER_AI_REQUEST_CONTEXT", requestId: `review-${Date.now()}` }, targetOrigin);
     return () => window.removeEventListener("message", handleMessage);
-  }, [targetOrigin]);
+  }, [targetOrigin, testMode]);
 
   useEffect(() => {
     void loadLatest();
@@ -187,7 +208,9 @@ export default function WeaverReviewEmbedPage() {
               />
             </span>
             <div className="min-w-0">
-              <h1 className="truncate text-[23px] font-bold leading-tight text-[#101b32]">流程 AI 智审</h1>
+              <h1 className="truncate text-[23px] font-bold leading-tight text-[#101b32]">
+                {testMode ? "流程 AI 测试智审" : "流程 AI 智审"}
+              </h1>
               <div className="mt-1.5 flex items-center gap-2 text-[13px] font-medium text-[#63718b]">
                 <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.72)]" />
                 {loading ? "在线 · 正在生成审批建议" : displayResult ? "在线 · 审批建议已就绪" : "在线 · 随时可以发起预审"}
@@ -302,7 +325,7 @@ export default function WeaverReviewEmbedPage() {
       <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-[#eef2f7] bg-white px-6 py-4">
         <div className="flex min-w-0 items-center gap-2 text-sm text-slate-500">
           <Info className="h-5 w-5 shrink-0 text-slate-400" />
-          <span>{record ? "结果仅作为审批参考" : "预审不会自动审批流程"}</span>
+          <span>{testMode ? "测试结果独立保存，不影响正式智审" : record ? "结果仅作为审批参考" : "预审不会自动审批流程"}</span>
         </div>
         <button
           type="button"
@@ -311,7 +334,7 @@ export default function WeaverReviewEmbedPage() {
           className="inline-flex h-12 shrink-0 items-center gap-2 rounded-full border border-[#8a87ff] bg-[linear-gradient(135deg,#8a75ff,#527df8)] px-6 text-base font-semibold text-white shadow-[0_10px_24px_rgba(99,102,241,0.24)] transition hover:-translate-y-0.5 hover:shadow-[0_14px_28px_rgba(99,102,241,0.3)] disabled:translate-y-0 disabled:opacity-60"
         >
           {loading ? <Loader2 className="h-5 w-5 animate-spin" /> : record ? <RefreshCw className="h-5 w-5" /> : <ClipboardCheck className="h-5 w-5" />}
-          {record ? "重新智审" : "立即智审"}
+          {testMode ? (record ? "重新测试" : "开始测试") : record ? "重新智审" : "立即智审"}
         </button>
       </footer>
     </div>

@@ -201,6 +201,7 @@ uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - 流程 AI 智审规则使用 `weaver_ai_review_rule` 表保存，按 `env + workflow_id + node_id + reviewer_user_id` 逐级匹配；智审记录使用 `weaver_ai_review_record` 保存表单快照、规则快照和模型结论。
 - 智审规则声明的只读证据工具由 `backend/app/services/agent/weaver_ai_assistant/review_evidence_service.py` 执行；工具必须先通过泛微元数据解析和数据库标识符校验，只允许参数化 `SELECT`，确定性失败结论不得被模型覆盖或用于自动替审。
 - 智审主入口为 `POST /ai-api/v1/weaver/ai-assistant/review/precheck`，只返回风险等级、检查项、建议结论和建议审批意见；任何自动替审能力必须先通过规则授权并保留审计记录。
+- 智审配置页测试入口使用 `POST /ai-api/v1/weaver/ai-assistant/review/test`：按当前环境、当前配置流程和输入的 `requestId` 从泛微数据库读取主表、明细表及只读证据，忽略请求当前节点和节点启用开关；测试记录只能写入 `weaver_ai_review_test_record`，不得进入正式记录查询或触发流程动作。
 - 泛微助手模型选择优先读取 `WEAVER_AI_MODEL_NAME`；未配置时按 `WEAVER_AI_MODEL_CAPABILITY` 选择模型，默认使用 `complex-reasoning`，避免复杂流程规则被轻量模型弱化。
 - ecode 或泛微页面调用该接口时使用 `ai-sign` 请求头，校验逻辑复用 `deps.verify_external_ai_sign`。
 - 聊天主入口为 `POST /ai-api/v1/weaver/ai-assistant/chat/stream`，以 SSE 推送 `message_delta`、`actions`、`done`；`/chat` 仅作为非流式兼容入口保留。

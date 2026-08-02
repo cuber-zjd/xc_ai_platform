@@ -89,3 +89,26 @@ class WeaverAiReviewRecord(BaseDBModel, table=True):
     form_snapshot: dict[str, Any] | None = Field(default=None, sa_type=JSONB, description="表单上下文快照")
     review_result: dict[str, Any] | None = Field(default=None, sa_type=JSONB, description="完整智审结果")
     status: str = Field(default="completed", index=True, max_length=30)
+
+
+class WeaverAiReviewTestRecord(BaseDBModel, table=True):
+    """泛微流程 AI 测试智审记录，与正式智审记录物理隔离。"""
+
+    __tablename__ = "weaver_ai_review_test_record"
+
+    env: str = Field(default="default", index=True, max_length=80, description="泛微环境 key")
+    workflow_id: str = Field(index=True, max_length=80, description="配置页所属 workflowid")
+    workflow_name: str | None = Field(default=None, max_length=300, description="流程名称快照")
+    request_id: str = Field(index=True, max_length=80, description="用于测试的泛微 requestid")
+    source_node_id: str | None = Field(default=None, index=True, max_length=80, description="请求当前真实节点 ID")
+    source_node_name: str | None = Field(default=None, max_length=200, description="请求当前真实节点名称")
+    risk_level: str = Field(default="medium", index=True, max_length=30)
+    decision_suggestion: str = Field(default="manual_review", index=True, max_length=40)
+    summary: str = Field(default="")
+    suggested_opinion: str | None = Field(default=None)
+    confidence: float | None = Field(default=None)
+    can_auto_approve: bool = Field(default=False, description="仅记录模型判断，测试模式永不触发审批")
+    rule_snapshot: list[dict[str, Any]] | None = Field(default=None, sa_type=JSONB)
+    form_snapshot: dict[str, Any] | None = Field(default=None, sa_type=JSONB)
+    review_result: dict[str, Any] | None = Field(default=None, sa_type=JSONB)
+    status: str = Field(default="completed", index=True, max_length=30)

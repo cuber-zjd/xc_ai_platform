@@ -277,3 +277,15 @@ export interface WeaverReviewResponse {
   result: WeaverReviewResult;
   matchedRules: WeaverReviewRule[];
 }
+
+export interface WeaverReviewTestRequest {
+  env: string;
+  workflowId: string;
+  workflowName?: string | null;
+  requestId: string;
+}
+
+export interface WeaverReviewTestResponse extends WeaverReviewResponse {
+  sourceNodeId?: string | null;
+  sourceNodeName?: string | null;
+}

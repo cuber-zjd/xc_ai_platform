@@ -20,12 +20,24 @@
 - 智审规则维护：`/api/v1/weaver/ai-assistant/review-rules`
 - 节点启用范围：`GET/PUT /ai-api/v1/weaver/ai-assistant/review/node-configs`
 - 节点生效状态：`GET /ai-api/v1/weaver/ai-assistant/review/node-status`
+- 测试审批：`POST /ai-api/v1/weaver/ai-assistant/review/test`
 
 ## 数据表
 
 - `weaver_ai_review_rule`：按 `env + workflow_id + node_id + reviewer_user_id` 维护智审规则。
 - `weaver_ai_review_node_config`：按 `env + workflow_id + node_id` 唯一维护节点总开关、审批页入口和自动预审开关；未配置默认关闭。
 - `weaver_ai_review_record`：保存每次智审结果，包括风险等级、建议结论、检查项、缺失材料、关注点和建议审批意见。
+- `weaver_ai_review_test_record`：独立保存配置页测试审批的表单快照、规则快照、来源节点和模型结果，不进入正式智审记录链路。
+
+## 测试审批（2026-08-03）
+
+- 入口位于“流程 AI 智审控制”页右上角，点击“测试审批”后输入当前流程中的 `requestId`。
+- 平台校验该请求确实属于当前配置流程，随后从所选环境的泛微数据库读取流程主表、全部明细表和规则声明的只读证据。
+- 测试时忽略请求当前所在节点、节点启用开关和自动预审开关，并加载当前流程全部启用的智审规则；真实当前节点仅作为来源信息展示和留档。
+- 结果弹窗直接复用审批侧栏的风险卡、检查项和明细对比表，避免测试页与审批人看到的效果不一致。
+- 测试结果只写入 `weaver_ai_review_test_record`，不会被“最近一次智审”读取，不进入正式审计统计，也不会触发审批、退回、提交或自动替审。
+- `requestId` 不存在、属于其他流程、流程主表无数据或数据库环境未配置时直接给出明确错误，不调用模型。
+- 本功能完全位于平台前后端，现有智审配置页 ecode 无需修改；平台部署更新后原入口自动出现“测试审批”按钮。
 
 ## 泛微侧代码
 

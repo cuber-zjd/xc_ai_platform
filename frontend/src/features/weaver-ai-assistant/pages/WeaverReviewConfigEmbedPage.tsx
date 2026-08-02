@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { CheckCircle2, GitBranch, Loader2, Plus, Save, ShieldCheck, Trash2 } from "lucide-react";
+import { CheckCircle2, ClipboardCheck, GitBranch, Loader2, Plus, Save, ShieldCheck, Trash2, X } from "lucide-react";
 
 import {
   createWeaverReviewRule,
@@ -69,6 +69,9 @@ export default function WeaverReviewConfigEmbedPage() {
   const [savingNodeId, setSavingNodeId] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [testDialogOpen, setTestDialogOpen] = useState(false);
+  const [testRequestId, setTestRequestId] = useState("");
+  const [testReviewUrl, setTestReviewUrl] = useState("");
 
   const activeCount = rules.filter((rule) => rule.enabled).length;
   const enabledNodeCount = nodeConfigs.filter((item) => item.enabled).length;
@@ -108,6 +111,38 @@ export default function WeaverReviewConfigEmbedPage() {
     }
     void loadRules();
   }, [aiSign, workflowId, loadRules]);
+
+  useEffect(() => {
+    const handleMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      if (event.data?.type === "WEAVER_AI_REVIEW_CLOSE") {
+        setTestDialogOpen(false);
+      }
+    };
+    window.addEventListener("message", handleMessage);
+    return () => window.removeEventListener("message", handleMessage);
+  }, []);
+
+  function startTestReview() {
+    const requestId = testRequestId.trim();
+    if (!requestId) {
+      setError("请输入需要测试的 requestId。");
+      return;
+    }
+    const params = new URLSearchParams({
+      ai_sign: aiSign,
+      env,
+      workflow_id: workflowId,
+      workflow_name: workflowName,
+      request_id: requestId,
+      test_mode: "1",
+      auto_run: "1",
+      target_origin: window.location.origin,
+      run_id: String(Date.now()),
+    });
+    setError("");
+    setTestReviewUrl(`/weaver/assistant/review?${params.toString()}`);
+  }
 
   async function handleSave() {
     if (!form.ruleTitle.trim() || !form.ruleContent.trim()) {
@@ -211,14 +246,27 @@ export default function WeaverReviewConfigEmbedPage() {
               {workflowName || "当前流程"} · 环境：{env}
             </div>
           </div>
-          <button
-            type="button"
-            onClick={() => setForm({ ...emptyForm, nodeId: defaultNodeId, nodeName: defaultNodeName, reviewerUserId: defaultReviewerUserId, reviewerName: defaultReviewerName })}
-            className="inline-flex h-9 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
-          >
-            <Plus className="h-4 w-4" />
-            新建
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setTestReviewUrl("");
+                setTestDialogOpen(true);
+              }}
+              className="inline-flex h-9 items-center gap-2 rounded-md border border-teal-200 bg-teal-50 px-3 text-sm font-medium text-teal-700 transition hover:bg-teal-100"
+            >
+              <ClipboardCheck className="h-4 w-4" />
+              测试审批
+            </button>
+            <button
+              type="button"
+              onClick={() => setForm({ ...emptyForm, nodeId: defaultNodeId, nodeName: defaultNodeName, reviewerUserId: defaultReviewerUserId, reviewerName: defaultReviewerName })}
+              className="inline-flex h-9 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+            >
+              <Plus className="h-4 w-4" />
+              新建
+            </button>
+          </div>
         </div>
       </header>
 
@@ -521,6 +569,59 @@ export default function WeaverReviewConfigEmbedPage() {
           </div>
         </section>
       </main>
+      {testDialogOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 p-5 backdrop-blur-[2px]">
+          <section className="flex h-[88vh] w-full max-w-[820px] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex shrink-0 items-center justify-between gap-4 border-b border-slate-200 px-5 py-3.5">
+              <div>
+                <div className="text-base font-semibold text-slate-900">测试审批</div>
+                <div className="mt-0.5 text-xs text-slate-500">忽略请求当前节点，结果单独保存，不影响正式智审。</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setTestDialogOpen(false)}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-md text-slate-500 transition hover:bg-slate-100 hover:text-slate-800"
+                title="关闭"
+                aria-label="关闭测试审批"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="flex shrink-0 items-end gap-3 border-b border-slate-200 bg-slate-50 px-5 py-3">
+              <label className="min-w-0 flex-1">
+                <span className="text-xs font-medium text-slate-600">Request ID</span>
+                <input
+                  value={testRequestId}
+                  onChange={(event) => setTestRequestId(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") startTestReview();
+                  }}
+                  placeholder="请输入需要测试的 requestId"
+                  className="mt-1 h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none transition focus:border-teal-500 focus:ring-2 focus:ring-teal-500/15"
+                  autoFocus
+                />
+              </label>
+              <button
+                type="button"
+                onClick={startTestReview}
+                className="inline-flex h-10 shrink-0 items-center gap-2 rounded-md bg-teal-700 px-4 text-sm font-medium text-white transition hover:bg-teal-800"
+              >
+                <ClipboardCheck className="h-4 w-4" />
+                开始测试
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 bg-slate-100">
+              {testReviewUrl ? (
+                <iframe title="测试智审结果" src={testReviewUrl} className="h-full w-full border-0" />
+              ) : (
+                <div className="flex h-full items-center justify-center px-6 text-center text-sm text-slate-500">
+                  输入当前流程中的 requestId，系统会读取其表单及明细数据并生成模拟智审结果。
+                </div>
+              )}
+            </div>
+          </section>
+        </div>
+      ) : null}
     </div>
   );
 }

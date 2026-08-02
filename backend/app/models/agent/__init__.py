@@ -13,6 +13,7 @@ from app.models.agent.weaver_ai_assistant import (
     WeaverAiReviewNodeConfig,
     WeaverAiReviewRecord,
     WeaverAiReviewRule,
+    WeaverAiReviewTestRecord,
     WeaverAiWorkflowRule,
 )
 from app.models.agent import insight
@@ -31,5 +32,6 @@ __all__ = [
     "WeaverAiReviewRule",
     "WeaverAiReviewNodeConfig",
     "WeaverAiReviewRecord",
+    "WeaverAiReviewTestRecord",
     "insight",
 ]

@@ -14,6 +14,8 @@ from app.schemas.agent.weaver_ai_assistant import (
     WeaverReviewNodeStatus,
     WeaverReviewRequest,
     WeaverReviewResponse,
+    WeaverReviewTestRequest,
+    WeaverReviewTestResponse,
     WeaverReviewRuleCreate,
     WeaverReviewRuleRead,
     WeaverReviewRuleUpdate,
@@ -194,6 +196,18 @@ async def weaver_ai_pre_review(
         data = await weaver_ai_review_service.pre_review(db, request)
     except WeaverReviewNodeDisabledError as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    return Result.success(data=data)
+
+
+@router.post("/review/test", response_model=Result[WeaverReviewTestResponse])
+async def test_weaver_ai_review(
+    request: WeaverReviewTestRequest,
+    db: AsyncSession = Depends(get_db),
+) -> Result[WeaverReviewTestResponse]:
+    try:
+        data = await weaver_ai_review_service.test_review(db, request)
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
     return Result.success(data=data)
 
 

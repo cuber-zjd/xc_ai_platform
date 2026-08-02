@@ -1,4 +1,6 @@
+import asyncio
 import json
+import re
 from datetime import datetime
 from typing import Any
 
@@ -10,8 +12,16 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from app.core.config import settings
 from app.core.llm_factory import LLMFactory
 from app.core.logger import logger
-from app.models.agent.weaver_ai_assistant import WeaverAiReviewNodeConfig, WeaverAiReviewRecord, WeaverAiReviewRule
+from app.models.agent.weaver_ai_assistant import (
+    WeaverAiReviewNodeConfig,
+    WeaverAiReviewRecord,
+    WeaverAiReviewRule,
+    WeaverAiReviewTestRecord,
+)
 from app.schemas.agent.weaver_ai_assistant import (
+    WeaverFieldConfigResponse,
+    WeaverFieldContext,
+    WeaverFormContext,
     WeaverReviewNodeConfigRead,
     WeaverReviewNodeConfigUpdate,
     WeaverReviewNodeStatus,
@@ -22,7 +32,10 @@ from app.schemas.agent.weaver_ai_assistant import (
     WeaverReviewRuleCreate,
     WeaverReviewRuleRead,
     WeaverReviewRuleUpdate,
+    WeaverReviewTestRequest,
+    WeaverReviewTestResponse,
 )
+from app.services.agent.weaver_ai_assistant.assistant_service import weaver_ai_assistant_service
 from app.services.agent.weaver_ai_assistant.review_evidence_service import weaver_review_evidence_service
 
 
@@ -32,6 +45,8 @@ class WeaverReviewNodeDisabledError(PermissionError):
 
 class WeaverAiReviewService:
     """泛微流程 AI 智审服务。"""
+
+    IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
     async def list_rules(
         self,
@@ -275,6 +290,197 @@ class WeaverAiReviewService:
             result=result,
             matchedRules=rules,
         )
+
+    async def test_review(self, db: AsyncSession, payload: WeaverReviewTestRequest) -> WeaverReviewTestResponse:
+        env = self.normalize_env(payload.env)
+        workflow_id = str(payload.workflow_id).strip()
+        request_id = str(payload.request_id).strip()
+        metadata = await weaver_ai_assistant_service.get_field_config(workflow_id, env)
+        context, extra, source_node_id, source_node_name = await asyncio.to_thread(
+            self._load_test_request_context,
+            env,
+            workflow_id,
+            request_id,
+            metadata,
+        )
+        review_request = WeaverReviewRequest(
+            context=context,
+            triggerType="manual",
+            operation="test_review",
+            currentNodeId=None,
+            currentNodeName="测试审批（忽略当前节点）",
+            extra=extra,
+        )
+        rules = await self.load_all_enabled_rules_for_test(db, env, workflow_id)
+        tool_evidence = await weaver_review_evidence_service.collect(review_request, rules)
+        result = await self.invoke_review_model(review_request, rules, tool_evidence)
+        result = self.merge_tool_evidence(result, tool_evidence)
+        form_snapshot = review_request.model_dump(by_alias=True)
+        if tool_evidence:
+            form_snapshot["reviewEvidence"] = tool_evidence
+
+        record = WeaverAiReviewTestRecord(
+            env=env,
+            workflow_id=workflow_id,
+            workflow_name=metadata.workflow_name or payload.workflow_name,
+            request_id=request_id,
+            source_node_id=source_node_id or None,
+            source_node_name=source_node_name or None,
+            risk_level=result.risk_level,
+            decision_suggestion=result.decision_suggestion,
+            summary=result.summary,
+            suggested_opinion=result.suggested_opinion,
+            confidence=result.confidence,
+            can_auto_approve=result.can_auto_approve,
+            rule_snapshot=[rule.model_dump(by_alias=True) for rule in rules],
+            form_snapshot=form_snapshot,
+            review_result=result.model_dump(by_alias=True),
+            status="completed",
+        )
+        db.add(record)
+        await db.commit()
+        await db.refresh(record)
+        logger.info(
+            "泛微流程 AI 测试智审完成: "
+            f"env={env}, workflow_id={workflow_id}, request_id={request_id}, "
+            f"source_node_id={source_node_id}, risk={result.risk_level}"
+        )
+        return WeaverReviewTestResponse(
+            record=self.to_test_record_read(record),
+            result=result,
+            matchedRules=rules,
+            sourceNodeId=source_node_id or None,
+            sourceNodeName=source_node_name or None,
+        )
+
+    async def load_all_enabled_rules_for_test(
+        self,
+        db: AsyncSession,
+        env: str,
+        workflow_id: str,
+    ) -> list[WeaverReviewRuleRead]:
+        statement = (
+            select(WeaverAiReviewRule)
+            .where(
+                WeaverAiReviewRule.env == self.normalize_env(env),
+                WeaverAiReviewRule.workflow_id == str(workflow_id),
+                WeaverAiReviewRule.enabled == True,  # noqa: E712
+                WeaverAiReviewRule.status == "active",
+                WeaverAiReviewRule.is_deleted == 0,
+            )
+            .order_by(WeaverAiReviewRule.priority.asc(), WeaverAiReviewRule.id.asc())
+            .limit(100)
+        )
+        return [self.to_rule_read(row) for row in (await db.exec(statement)).all()]
+
+    def _load_test_request_context(
+        self,
+        env: str,
+        workflow_id: str,
+        request_id: str,
+        metadata: WeaverFieldConfigResponse,
+    ) -> tuple[WeaverFormContext, dict[str, Any], str, str]:
+        db_config = weaver_ai_assistant_service._get_weaver_db_config(env)
+        if not db_config:
+            raise ValueError(f"未配置泛微数据库环境：{env}")
+        with weaver_ai_assistant_service._connect_weaver_mysql(db_config) as conn:
+            with conn.cursor() as cursor:
+                request_row = weaver_ai_assistant_service._fetch_one(
+                    cursor,
+                    """
+                    SELECT rb.requestid, rb.workflowid, rb.currentnodeid, rb.requestname,
+                           rb.creater, rb.createdate, rb.createtime, nb.nodename
+                    FROM workflow_requestbase rb
+                    LEFT JOIN workflow_nodebase nb ON nb.id = rb.currentnodeid
+                    WHERE rb.requestid = %s
+                    """,
+                    (request_id,),
+                )
+                if not request_row:
+                    raise ValueError(f"未找到 requestId={request_id} 的流程请求")
+                actual_workflow_id = self.text(request_row.get("workflowid"))
+                if actual_workflow_id != workflow_id:
+                    raise ValueError(
+                        f"requestId={request_id} 属于流程 {actual_workflow_id}，与当前配置流程 {workflow_id} 不一致"
+                    )
+
+                main_table = self._safe_identifier(metadata.main_table, "流程主表")
+                main_row = weaver_ai_assistant_service._fetch_one(
+                    cursor,
+                    f"SELECT * FROM `{main_table}` WHERE `requestid` = %s ORDER BY `id` DESC LIMIT 1",
+                    (request_id,),
+                )
+                if not main_row:
+                    raise ValueError(f"流程主表未找到 requestId={request_id} 的表单数据")
+
+                field_contexts: dict[str, WeaverFieldContext] = {}
+                detail_field_groups: dict[str, list[Any]] = {}
+                for field in metadata.fields:
+                    if field.detail_table:
+                        detail_field_groups.setdefault(field.detail_table, []).append(field)
+                        continue
+                    value = main_row.get(self.text(field.field_name).lower())
+                    field_contexts[field.field_id] = WeaverFieldContext(
+                        label=field.label,
+                        fieldId=field.field_id,
+                        type=field.type,
+                        writable=False,
+                        value=value,
+                        displayValue=value,
+                        visible=True,
+                        readonlyReason="测试智审从泛微数据库读取",
+                    )
+
+                detail_rows: dict[str, list[dict[str, Any]]] = {}
+                main_id = main_row.get("id")
+                detail_key = self._safe_identifier(metadata.detail_key_field or "mainid", "明细关联字段")
+                for table_name, fields in detail_field_groups.items():
+                    safe_table = self._safe_identifier(table_name, "流程明细表")
+                    rows = weaver_ai_assistant_service._fetch_all(
+                        cursor,
+                        f"SELECT * FROM `{safe_table}` WHERE `{detail_key}` = %s ORDER BY `id` LIMIT 500",
+                        (main_id,),
+                    )
+                    detail_rows[safe_table] = [
+                        {
+                            field.label: row.get(self.text(field.field_name).lower())
+                            for field in fields
+                        }
+                        for row in rows
+                    ]
+
+        source_node_id = self.text(request_row.get("currentnodeid"))
+        source_node_name = self.text(request_row.get("nodename"))
+        base_info = {
+            "requestid": request_id,
+            "workflowid": workflow_id,
+            "workflowname": metadata.workflow_name or "",
+            "requestname": self.text(request_row.get("requestname")),
+            "currentnodeid": source_node_id,
+            "currentnodename": source_node_name,
+            "creater": self.text(request_row.get("creater")),
+            "createdate": self.text(request_row.get("createdate")),
+            "createtime": self.text(request_row.get("createtime")),
+        }
+        context = WeaverFormContext(
+            env=env,
+            baseInfo=base_info,
+            fields=field_contexts,
+        )
+        extra = {
+            "testMode": True,
+            "ignoreCurrentNode": True,
+            "sourceCurrentNodeId": source_node_id,
+            "sourceCurrentNodeName": source_node_name,
+            "detailRows": detail_rows,
+        }
+        return context, extra, source_node_id, source_node_name
+
+    def _safe_identifier(self, value: Any, label: str) -> str:
+        identifier = self.text(value).strip()
+        if not identifier or not self.IDENTIFIER_PATTERN.fullmatch(identifier):
+            raise ValueError(f"{label}不合法")
+        return identifier
 
     async def latest_record(
         self,
@@ -597,6 +803,26 @@ class WeaverAiReviewService:
             submitterName=row.submitter_name,
             reviewerUserId=row.reviewer_user_id,
             reviewerName=row.reviewer_name,
+            riskLevel=row.risk_level,
+            decisionSuggestion=row.decision_suggestion,
+            summary=row.summary,
+            suggestedOpinion=row.suggested_opinion,
+            confidence=row.confidence,
+            canAutoApprove=row.can_auto_approve,
+            reviewResult=row.review_result or {},
+            status=row.status,
+        )
+
+    def to_test_record_read(self, row: WeaverAiReviewTestRecord) -> WeaverReviewRecordRead:
+        return WeaverReviewRecordRead(
+            id=row.id or 0,
+            env=row.env,
+            workflowId=row.workflow_id,
+            workflowName=row.workflow_name,
+            requestId=row.request_id,
+            nodeId=row.source_node_id,
+            nodeName=row.source_node_name,
+            triggerType="test",
             riskLevel=row.risk_level,
             decisionSuggestion=row.decision_suggestion,
             summary=row.summary,
