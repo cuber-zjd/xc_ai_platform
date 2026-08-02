@@ -10,6 +10,40 @@ from app.services.agent.insight.feishu_monthly_report_service import (
     InsightFeishuMonthlyReportService,
 )
 from app.services.agent.insight.company_context import insight_company_business_context
+from app.models.agent.insight.feishu_brief import InsightFeishuBriefPlan
+from app.services.agent.insight.feishu_brief_service import InsightFeishuBriefService
+
+
+class InsightFeishuBriefScheduleTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.service = InsightFeishuBriefService()
+
+    def test_month_end_schedule_uses_actual_last_day(self) -> None:
+        next_run = self.service._next_run_time(
+            "monthly",
+            "10:30",
+            None,
+            31,
+            base=datetime(2027, 2, 1, 9, 0),
+        )
+        self.assertEqual(next_run, datetime(2027, 2, 28, 10, 30))
+
+    def test_month_end_schedule_uses_current_month_materials(self) -> None:
+        plan = InsightFeishuBriefPlan(
+            plan_uid="test-month-end",
+            plan_name="月末月报",
+            schedule_frequency="monthly",
+            day_of_month=31,
+            time_of_day="10:30",
+        )
+        start, end = self.service._period_bounds(
+            plan,
+            now=datetime(2026, 8, 31, 10, 30),
+            trigger_type="brief_scheduler",
+            requested_start=None,
+        )
+        self.assertEqual(start, datetime(2026, 8, 1))
+        self.assertEqual(end, datetime(2026, 8, 31, 10, 30))
 
 
 class InsightMonthlyReportServiceTest(unittest.TestCase):

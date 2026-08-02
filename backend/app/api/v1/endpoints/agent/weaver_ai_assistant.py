@@ -9,6 +9,9 @@ from app.schemas.agent.weaver_ai_assistant import (
     WeaverAssistantChatResponse,
     WeaverFieldConfigResponse,
     WeaverReviewRecordRead,
+    WeaverReviewNodeConfigRead,
+    WeaverReviewNodeConfigUpdate,
+    WeaverReviewNodeStatus,
     WeaverReviewRequest,
     WeaverReviewResponse,
     WeaverReviewRuleCreate,
@@ -20,7 +23,10 @@ from app.schemas.agent.weaver_ai_assistant import (
 )
 from app.schemas.result import Result
 from app.services.agent.weaver_ai_assistant.assistant_service import weaver_ai_assistant_service
-from app.services.agent.weaver_ai_assistant.review_service import weaver_ai_review_service
+from app.services.agent.weaver_ai_assistant.review_service import (
+    WeaverReviewNodeDisabledError,
+    weaver_ai_review_service,
+)
 from app.services.agent.weaver_ai_assistant.workflow_rule_service import weaver_workflow_rule_service
 
 router = APIRouter(dependencies=[Depends(deps.verify_external_ai_sign)])
@@ -143,12 +149,51 @@ async def delete_weaver_review_rule(
     return Result.success(data=True)
 
 
+@router.get("/review/node-configs", response_model=Result[list[WeaverReviewNodeConfigRead]])
+async def list_weaver_review_node_configs(
+    workflow_id: str = Query(..., description="泛微流程 ID"),
+    env: str | None = Query(None, description="泛微环境 key"),
+    db: AsyncSession = Depends(get_db),
+) -> Result[list[WeaverReviewNodeConfigRead]]:
+    data = await weaver_ai_review_service.list_node_configs(db, env or "default", workflow_id)
+    return Result.success(data=data)
+
+
+@router.put("/review/node-configs/{node_id}", response_model=Result[WeaverReviewNodeConfigRead])
+async def save_weaver_review_node_config(
+    node_id: str,
+    request: WeaverReviewNodeConfigUpdate,
+    db: AsyncSession = Depends(get_db),
+) -> Result[WeaverReviewNodeConfigRead]:
+    if str(request.node_id) != str(node_id):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="路径节点 ID 与请求内容不一致")
+    try:
+        data = await weaver_ai_review_service.upsert_node_config(db, request)
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)) from error
+    return Result.success(data=data)
+
+
+@router.get("/review/node-status", response_model=Result[WeaverReviewNodeStatus])
+async def get_weaver_review_node_status(
+    workflow_id: str = Query(..., description="泛微流程 ID"),
+    node_id: str = Query(..., description="泛微节点 ID"),
+    env: str | None = Query(None, description="泛微环境 key"),
+    db: AsyncSession = Depends(get_db),
+) -> Result[WeaverReviewNodeStatus]:
+    data = await weaver_ai_review_service.get_node_status(db, env or "default", workflow_id, node_id)
+    return Result.success(data=data)
+
+
 @router.post("/review/precheck", response_model=Result[WeaverReviewResponse])
 async def weaver_ai_pre_review(
     request: WeaverReviewRequest,
     db: AsyncSession = Depends(get_db),
 ) -> Result[WeaverReviewResponse]:
-    data = await weaver_ai_review_service.pre_review(db, request)
+    try:
+        data = await weaver_ai_review_service.pre_review(db, request)
+    except WeaverReviewNodeDisabledError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
     return Result.success(data=data)
 
 

@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 
+import httpx
 from bs4 import BeautifulSoup
 
 from app.models.agent.insight import InsightCrawlerChannel, InsightCrawlResult
@@ -7,7 +8,9 @@ from app.schemas.agent.insight.crawl import InsightSearchDiscoveryRequest
 from app.services.agent.insight.ai_review_service import insight_ai_review_service
 from app.services.agent.insight.crawler.content_cleaner import insight_content_cleaner
 from app.services.agent.insight.crawler.firecrawl_client import firecrawl_client
-from app.services.agent.insight.crawler.search_service import insight_search_discovery_service
+from app.services.agent.insight.crawler.search_service import (
+    insight_search_discovery_service,
+)
 
 
 def _crawl_result(*, published_at: datetime | None, verified: bool) -> InsightCrawlResult:
@@ -77,6 +80,19 @@ def test_visible_article_time_wins_over_dynamic_seo_time() -> None:
     )
 
     assert metadata["publishedTime"].endswith("2026年07月28日 16:31")
+
+
+def test_direct_http_decoder_supports_gbk_html() -> None:
+    html = (
+        '<html><head><meta charset="gb2312"><title>净利下跌38%</title></head>'
+        '<body>中国旺旺</body></html>'
+    )
+    response = httpx.Response(200, content=html.encode("gb18030"))
+
+    decoded = firecrawl_client._decode_response_text(response)
+
+    assert "净利下跌38%" in decoded
+    assert "中国旺旺" in decoded
 
 
 def test_daily_window_rejects_old_or_unverified_publish_time() -> None:

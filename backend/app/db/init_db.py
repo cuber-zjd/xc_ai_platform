@@ -33,6 +33,7 @@ async def init_db():
         await _ensure_insight_feishu_brief_columns(conn)
         await _ensure_insight_crawler_channel_values(conn)
         await _ensure_weaver_ai_workflow_rule_indexes(conn)
+        await _ensure_weaver_ai_review_node_config_indexes(conn)
     
     # 初始化种子数据
     await _seed_contract_rules()
@@ -58,6 +59,16 @@ async def _ensure_weaver_ai_workflow_rule_indexes(conn):
         text(
             "CREATE INDEX IF NOT EXISTS ix_weaver_ai_workflow_rule_lookup "
             "ON weaver_ai_workflow_rule (env, workflow_id, enabled, is_deleted, priority)"
+        )
+    )
+
+
+async def _ensure_weaver_ai_review_node_config_indexes(conn):
+    """补齐泛微流程 AI 智审节点开关查询索引。"""
+    await conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_weaver_ai_review_node_config_lookup "
+            "ON weaver_ai_review_node_config (env, workflow_id, node_id, enabled, automatic_review_enabled, is_deleted)"
         )
     )
 

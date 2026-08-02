@@ -1,3 +1,4 @@
+import asyncio
 from decimal import Decimal
 
 from app.services.agent.weaver_ai_assistant.review_evidence_service import WeaverReviewEvidenceService
@@ -68,6 +69,185 @@ def test_item_matching_rejects_conflicting_specification() -> None:
     )
 
     assert score < 0.78
+
+
+def test_invoice_name_and_specification_match_combined_reconciliation_material() -> None:
+    service = WeaverReviewEvidenceService()
+    reconciliation_items = service._aggregate_reconciliation_items(
+        [
+            {
+                "materialdesc": "纸箱_非转基因一级大豆油（福建军供）/4.5公斤*4",
+                "voucherquantity": "8",
+                "totalnontaxamount": "100",
+                "taxrate": "9",
+            }
+        ],
+        {
+            "description": "materialdesc",
+            "code": None,
+            "specification": None,
+            "unit": None,
+            "quantity": "voucherquantity",
+            "untaxedAmount": "totalnontaxamount",
+            "taxedAmount": None,
+            "taxRate": "taxrate",
+        },
+    )
+    invoice_items = service._aggregate_invoice_items(
+        [
+            {
+                "items": [
+                    {
+                        "invoiceserviceyype": "纸箱_非转基因一级大豆油（福建军供）",
+                        "specification": "4.5公斤*4",
+                        "unit": "个",
+                        "unitnumber": None,
+                        "unitnumber2": "8",
+                        "pricewithouttax": "100",
+                        "taxrate": "9",
+                    }
+                ]
+            }
+        ]
+    )
+
+    matches, unmatched_invoice, unmatched_reconciliation = service._match_items(
+        invoice_items,
+        reconciliation_items,
+        similarity_threshold=0.78,
+        amount_tolerance=Decimal("0.10"),
+    )
+
+    assert len(matches) == 1
+    assert matches[0]["invoiceName"] == "纸箱_非转基因一级大豆油（福建军供）"
+    assert matches[0]["invoiceSpecification"] == "4.5公斤*4"
+    assert matches[0]["reconciliationSpecification"] == "4.5公斤*4"
+    assert matches[0]["specificationMatched"] is True
+    assert matches[0]["quantityMatched"] is True
+    assert unmatched_invoice == []
+    assert unmatched_reconciliation == []
+
+
+def test_hybrid_matching_uses_ai_for_semantically_equivalent_complex_names() -> None:
+    service = WeaverReviewEvidenceService()
+    invoice_items = service._aggregate_invoice_items(
+        [
+            {
+                "items": [
+                    {
+                        "invoiceserviceyype": "工业涂料 环氧树脂漆",
+                        "specification": "灰 20千克",
+                        "unitnumber": "3",
+                        "pricewithouttax": "1200",
+                        "taxrate": "13",
+                    }
+                ]
+            }
+        ]
+    )
+    reconciliation_items = service._aggregate_reconciliation_items(
+        [
+            {
+                "materialdesc": "加厚耐磨环氧底漆灰色20KG",
+                "voucherquantity": "3",
+                "totalnontaxamount": "1200",
+                "taxrate": "13",
+            }
+        ],
+        {
+            "description": "materialdesc",
+            "code": None,
+            "specification": None,
+            "unit": None,
+            "quantity": "voucherquantity",
+            "untaxedAmount": "totalnontaxamount",
+            "taxedAmount": None,
+            "taxRate": "taxrate",
+        },
+    )
+
+    async def fake_semantic_model(_: dict) -> dict:
+        return {
+            "matches": [
+                {
+                    "invoiceId": "I0",
+                    "reconciliationId": "R0",
+                    "confidence": 0.95,
+                    "reason": "均为灰色20KG环氧树脂类工业涂料",
+                }
+            ]
+        }
+
+    service._invoke_semantic_match_model = fake_semantic_model  # type: ignore[method-assign]
+    matches, unmatched_invoice, unmatched_reconciliation = asyncio.run(
+        service._match_items_hybrid(
+            invoice_items,
+            reconciliation_items,
+            similarity_threshold=0.78,
+            amount_tolerance=Decimal("0.10"),
+            semantic_confidence_threshold=0.72,
+        )
+    )
+
+    assert len(matches) == 1
+    assert matches[0]["matchMethod"] == "ai_semantic"
+    assert matches[0]["similarity"] == 0.95
+    assert matches[0]["quantityMatched"] is True
+    assert unmatched_invoice == []
+    assert unmatched_reconciliation == []
+
+
+def test_hybrid_matching_rejects_unlisted_or_low_confidence_ai_pairs() -> None:
+    service = WeaverReviewEvidenceService()
+    invoice_items = service._aggregate_invoice_items(
+        [{"items": [{"invoiceserviceyype": "工业涂料", "pricewithouttax": "10"}]}]
+    )
+    reconciliation_items = service._aggregate_reconciliation_items(
+        [{"materialdesc": "办公用纸", "totalnontaxamount": "10"}],
+        {
+            "description": "materialdesc",
+            "code": None,
+            "specification": None,
+            "unit": None,
+            "quantity": None,
+            "untaxedAmount": "totalnontaxamount",
+            "taxedAmount": None,
+            "taxRate": None,
+        },
+    )
+
+    async def fake_semantic_model(_: dict) -> dict:
+        return {
+            "matches": [
+                {
+                    "invoiceId": "I0",
+                    "reconciliationId": "R0",
+                    "confidence": 0.4,
+                    "reason": "证据不足",
+                },
+                {
+                    "invoiceId": "I0",
+                    "reconciliationId": "R99",
+                    "confidence": 0.99,
+                    "reason": "非法候选",
+                },
+            ]
+        }
+
+    service._invoke_semantic_match_model = fake_semantic_model  # type: ignore[method-assign]
+    matches, unmatched_invoice, unmatched_reconciliation = asyncio.run(
+        service._match_items_hybrid(
+            invoice_items,
+            reconciliation_items,
+            similarity_threshold=0.78,
+            amount_tolerance=Decimal("0.10"),
+            semantic_confidence_threshold=0.72,
+        )
+    )
+
+    assert matches == []
+    assert len(unmatched_invoice) == 1
+    assert len(unmatched_reconciliation) == 1
 
 
 def test_prefer_text_value_uses_business_number_before_browser_id() -> None:

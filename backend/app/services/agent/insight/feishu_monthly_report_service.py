@@ -1131,7 +1131,7 @@ facts_to_recheck、strengths。
 
     def _title(self, company_name: str, period_end: datetime) -> str:
         short_name = "健源" if "健源" in company_name else "御馨" if "御馨" in company_name else company_name
-        return f"{short_name}｜{period_end.year}年{period_end.month}月市场洞察月度简报"
+        return f"{short_name}｜{period_end.year}年{period_end.month}月市场洞察月度报告"
 
     def _sanitize_markdown(
         self,

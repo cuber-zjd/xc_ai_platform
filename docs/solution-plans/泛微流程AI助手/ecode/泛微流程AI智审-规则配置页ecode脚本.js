@@ -13,9 +13,9 @@
   // 现场配置区
   // ========================
   var ENABLE_AI_REVIEW_CONFIG = true;
-  var AI_PLATFORM_BASE_URL = "http://192.168.8.79:5173";
+  var AI_PLATFORM_BASE_URL = "http://192.168.14.44:5173";
   var AI_SIGN = "xc-fw-1af7cc98-66ed-4d55-a4cc-c6240b1f1c3c";
-  var WEAVER_ENV = "test";
+  var WEAVER_ENV = "prod";
 
   var mounted = false;
   var tabId = "weaver-ai-review-config-tab";

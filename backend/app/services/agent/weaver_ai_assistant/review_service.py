@@ -10,8 +10,11 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from app.core.config import settings
 from app.core.llm_factory import LLMFactory
 from app.core.logger import logger
-from app.models.agent.weaver_ai_assistant import WeaverAiReviewRecord, WeaverAiReviewRule
+from app.models.agent.weaver_ai_assistant import WeaverAiReviewNodeConfig, WeaverAiReviewRecord, WeaverAiReviewRule
 from app.schemas.agent.weaver_ai_assistant import (
+    WeaverReviewNodeConfigRead,
+    WeaverReviewNodeConfigUpdate,
+    WeaverReviewNodeStatus,
     WeaverReviewRecordRead,
     WeaverReviewRequest,
     WeaverReviewResponse,
@@ -21,6 +24,10 @@ from app.schemas.agent.weaver_ai_assistant import (
     WeaverReviewRuleUpdate,
 )
 from app.services.agent.weaver_ai_assistant.review_evidence_service import weaver_review_evidence_service
+
+
+class WeaverReviewNodeDisabledError(PermissionError):
+    """当前流程节点未开启对应的智审方式。"""
 
 
 class WeaverAiReviewService:
@@ -118,6 +125,103 @@ class WeaverAiReviewService:
         await db.commit()
         return True
 
+    async def list_node_configs(
+        self,
+        db: AsyncSession,
+        env: str,
+        workflow_id: str,
+    ) -> list[WeaverReviewNodeConfigRead]:
+        statement = (
+            select(WeaverAiReviewNodeConfig)
+            .where(
+                WeaverAiReviewNodeConfig.env == self.normalize_env(env),
+                WeaverAiReviewNodeConfig.workflow_id == str(workflow_id),
+                WeaverAiReviewNodeConfig.is_deleted == 0,
+            )
+            .order_by(WeaverAiReviewNodeConfig.id.asc())
+        )
+        rows = list((await db.exec(statement)).all())
+        return [self.to_node_config_read(row) for row in rows]
+
+    async def upsert_node_config(
+        self,
+        db: AsyncSession,
+        payload: WeaverReviewNodeConfigUpdate,
+    ) -> WeaverReviewNodeConfigRead:
+        env = self.normalize_env(payload.env)
+        workflow_id = str(payload.workflow_id).strip()
+        node_id = str(payload.node_id).strip()
+        if not workflow_id or not node_id:
+            raise ValueError("流程 ID 和节点 ID 不能为空")
+
+        statement = select(WeaverAiReviewNodeConfig).where(
+            WeaverAiReviewNodeConfig.env == env,
+            WeaverAiReviewNodeConfig.workflow_id == workflow_id,
+            WeaverAiReviewNodeConfig.node_id == node_id,
+        )
+        row = (await db.exec(statement)).first()
+        if row is None:
+            row = WeaverAiReviewNodeConfig(env=env, workflow_id=workflow_id, node_id=node_id)
+            db.add(row)
+
+        row.workflow_name = self.empty_to_none(payload.workflow_name)
+        row.node_name = self.empty_to_none(payload.node_name)
+        row.enabled = payload.enabled
+        row.show_entry = payload.show_entry if payload.enabled else False
+        row.automatic_review_enabled = payload.automatic_review_enabled if payload.enabled else False
+        row.status = "active"
+        row.is_deleted = 0
+        row.update_time = datetime.now()
+        await db.commit()
+        await db.refresh(row)
+        return self.to_node_config_read(row)
+
+    async def get_node_status(
+        self,
+        db: AsyncSession,
+        env: str,
+        workflow_id: str,
+        node_id: str,
+    ) -> WeaverReviewNodeStatus:
+        normalized_env = self.normalize_env(env)
+        normalized_workflow_id = str(workflow_id).strip()
+        normalized_node_id = str(node_id).strip()
+        statement = select(WeaverAiReviewNodeConfig).where(
+            WeaverAiReviewNodeConfig.env == normalized_env,
+            WeaverAiReviewNodeConfig.workflow_id == normalized_workflow_id,
+            WeaverAiReviewNodeConfig.node_id == normalized_node_id,
+            WeaverAiReviewNodeConfig.status == "active",
+            WeaverAiReviewNodeConfig.is_deleted == 0,
+        )
+        row = (await db.exec(statement)).first()
+        enabled = bool(row and row.enabled)
+        return WeaverReviewNodeStatus(
+            env=normalized_env,
+            workflowId=normalized_workflow_id,
+            nodeId=normalized_node_id,
+            configured=row is not None,
+            enabled=enabled,
+            showEntry=bool(enabled and row and row.show_entry),
+            automaticReviewEnabled=bool(enabled and row and row.automatic_review_enabled),
+        )
+
+    async def ensure_node_review_enabled(
+        self,
+        db: AsyncSession,
+        env: str,
+        workflow_id: str,
+        node_id: str,
+        trigger_type: str,
+    ) -> WeaverReviewNodeStatus:
+        if not str(node_id).strip():
+            raise WeaverReviewNodeDisabledError("未识别当前审批节点，AI 智审未执行")
+        node_status = await self.get_node_status(db, env, workflow_id, node_id)
+        if not node_status.enabled:
+            raise WeaverReviewNodeDisabledError("当前节点未在智审配置页启用，AI 智审未执行")
+        if trigger_type in {"submit", "action"} and not node_status.automatic_review_enabled:
+            raise WeaverReviewNodeDisabledError("当前节点未开启自动预审，AI 智审未执行")
+        return node_status
+
     async def pre_review(self, db: AsyncSession, payload: WeaverReviewRequest) -> WeaverReviewResponse:
         env = self.normalize_env(payload.context.env)
         workflow_id = self.workflow_id(payload)
@@ -125,6 +229,7 @@ class WeaverAiReviewService:
         node_id = self.text(payload.current_node_id or payload.context.base_info.get("nodeid") or payload.context.base_info.get("nodeId"))
         node_name = self.text(payload.current_node_name)
         reviewer_user_id = self.text(payload.reviewer.user_id if payload.reviewer else None)
+        await self.ensure_node_review_enabled(db, env, workflow_id, node_id, payload.trigger_type)
         rules = await self.load_enabled_rules(db, env, workflow_id, node_id, reviewer_user_id)
 
         tool_evidence = await weaver_review_evidence_service.collect(payload, rules)
@@ -461,6 +566,20 @@ class WeaverAiReviewService:
             autoReviewMode=row.auto_review_mode,
             enabled=row.enabled,
             priority=row.priority,
+            status=row.status,
+        )
+
+    def to_node_config_read(self, row: WeaverAiReviewNodeConfig) -> WeaverReviewNodeConfigRead:
+        return WeaverReviewNodeConfigRead(
+            id=row.id or 0,
+            env=row.env,
+            workflowId=row.workflow_id,
+            workflowName=row.workflow_name,
+            nodeId=row.node_id,
+            nodeName=row.node_name,
+            enabled=row.enabled,
+            showEntry=row.show_entry,
+            automaticReviewEnabled=row.automatic_review_enabled,
             status=row.status,
         )
 

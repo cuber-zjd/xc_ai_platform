@@ -1,5 +1,6 @@
 from typing import Any
 
+from sqlalchemy import UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlmodel import Field
 
@@ -40,6 +41,25 @@ class WeaverAiReviewRule(BaseDBModel, table=True):
     auto_review_mode: str = Field(default="suggestion", index=True, max_length=30, description="suggestion/assist/auto")
     enabled: bool = Field(default=True, index=True, description="是否启用")
     priority: int = Field(default=100, index=True, description="优先级，数字越小越靠前")
+    status: str = Field(default="active", index=True, max_length=30)
+
+
+class WeaverAiReviewNodeConfig(BaseDBModel, table=True):
+    """泛微流程节点的 AI 智审启用范围。"""
+
+    __tablename__ = "weaver_ai_review_node_config"
+    __table_args__ = (
+        UniqueConstraint("env", "workflow_id", "node_id", name="uq_weaver_ai_review_node_config_scope"),
+    )
+
+    env: str = Field(default="default", index=True, max_length=80, description="泛微环境 key")
+    workflow_id: str = Field(index=True, max_length=80, description="泛微 workflowid")
+    workflow_name: str | None = Field(default=None, max_length=300, description="流程名称快照")
+    node_id: str = Field(index=True, max_length=80, description="泛微节点 ID")
+    node_name: str | None = Field(default=None, max_length=200, description="节点名称快照")
+    enabled: bool = Field(default=False, index=True, description="是否启用当前节点智审")
+    show_entry: bool = Field(default=True, description="是否在审批页显示智审入口")
+    automatic_review_enabled: bool = Field(default=False, index=True, description="是否允许提交或 Action 自动预审")
     status: str = Field(default="active", index=True, max_length=30)
 
 

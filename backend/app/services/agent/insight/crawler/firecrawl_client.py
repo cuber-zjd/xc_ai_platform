@@ -1,6 +1,7 @@
 import asyncio
 import ipaddress
 import json
+import re
 import socket
 from typing import Any
 from urllib.parse import urljoin, urlparse
@@ -108,7 +109,8 @@ class FirecrawlClient:
                 for value in ("text/html", "text/plain", "application/xhtml+xml")
             ):
                 raise ValueError(f"直接 HTTP 抽取不支持该内容类型：{content_type[:100]}")
-        soup = BeautifulSoup(response.text, "lxml")
+        response_text = self._decode_response_text(response)
+        soup = BeautifulSoup(response_text, "lxml")
         metadata = self._extract_page_metadata(soup, str(response.url))
         metadata_url = self._metadata_fallback_url(str(response.url))
         if not metadata.get("publishedTime") and metadata_url:
@@ -122,7 +124,7 @@ class FirecrawlClient:
                     metadata_response = await metadata_client.get(metadata_url)
                     metadata_response.raise_for_status()
                 desktop_metadata = self._extract_page_metadata(
-                    BeautifulSoup(metadata_response.text, "lxml"),
+                    BeautifulSoup(self._decode_response_text(metadata_response), "lxml"),
                     str(metadata_response.url),
                 )
                 metadata = metadata | desktop_metadata
@@ -137,7 +139,43 @@ class FirecrawlClient:
             raise ValueError("直接 HTTP 抽取未获得足够正文")
         title = soup.title.get_text(" ", strip=True) if soup.title else None
         metadata["title"] = metadata.get("title") or title
-        return {"markdown": content, "html": response.text, "metadata": metadata}
+        return {"markdown": content, "html": response_text, "metadata": metadata}
+
+    @staticmethod
+    def _decode_response_text(response: httpx.Response) -> str:
+        """按页面声明和字节可解码性处理中文媒体常见的 GBK/GB2312 页面。"""
+        content = response.content
+        if not content:
+            return ""
+
+        head = content[:8192].decode("ascii", errors="ignore")
+        meta_match = re.search(
+            r"charset\s*=\s*['\"]?\s*([a-zA-Z0-9._-]+)",
+            head,
+            flags=re.IGNORECASE,
+        )
+        candidates: list[str] = []
+        if meta_match:
+            candidates.append(meta_match.group(1))
+        content_type = response.headers.get("content-type", "")
+        header_match = re.search(r"charset\s*=\s*([a-zA-Z0-9._-]+)", content_type, re.IGNORECASE)
+        if header_match:
+            candidates.append(header_match.group(1))
+        candidates.extend(("utf-8", "gb18030"))
+
+        seen: set[str] = set()
+        for candidate in candidates:
+            normalized = candidate.strip().lower().replace("_", "-")
+            if normalized in {"gbk", "gb2312", "x-gbk"}:
+                normalized = "gb18030"
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            try:
+                return content.decode(normalized)
+            except (LookupError, UnicodeDecodeError):
+                continue
+        return content.decode("utf-8", errors="replace")
 
     def _extract_page_metadata(self, soup: BeautifulSoup, source_url: str) -> dict[str, Any]:
         metadata: dict[str, Any] = {"source_url": source_url}

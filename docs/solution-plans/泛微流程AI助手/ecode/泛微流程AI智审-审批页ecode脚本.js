@@ -13,9 +13,9 @@
   // 现场配置区
   // ========================
   var ENABLE_WEAVER_AI_REVIEW = true;
-  var AI_PLATFORM_BASE_URL = "http://192.168.8.79:5173";
+  var AI_PLATFORM_BASE_URL = "http://192.168.14.44:5173";
   var AI_SIGN = "xc-fw-1af7cc98-66ed-4d55-a4cc-c6240b1f1c3c";
-  var WEAVER_ENV = "test";
+  var WEAVER_ENV = "prod";
   var AI_ICON_URL = AI_PLATFORM_BASE_URL.replace(/\/$/, "") + "/ai/weaver-assistant/mascot-selected.png";
 
   // ========================
@@ -26,12 +26,25 @@
   var buttonId = "weaver-ai-review-button";
   var panelId = "weaver-ai-review-panel";
   var iframeId = "weaver-ai-review-iframe";
+  var nodeStatusCache = {};
+  var statusTargetKey = "";
+  var statusRequest = null;
+  var lastStatusCheckAt = 0;
+  var NODE_STATUS_CACHE_MS = 60000;
+  var NODE_STATUS_RETRY_MS = 10000;
 
   function aiLog() {
     if (!window.console || !console.log) return;
     var args = Array.prototype.slice.call(arguments);
     args.unshift("[泛微流程AI智审]");
     console.log.apply(console, args);
+  }
+
+  function aiWarn() {
+    if (!window.console || !console.warn) return;
+    var args = Array.prototype.slice.call(arguments);
+    args.unshift("[泛微流程AI智审]");
+    console.warn.apply(console, args);
   }
 
   function safeGetBaseInfo() {
@@ -132,6 +145,98 @@
     var pathname = window.location.pathname || "";
     var isRequestRoute = hash.indexOf("#/main/workflow/req") === 0 || pathname.indexOf("/workflow/") >= 0;
     return isRequestRoute && getWorkflowPageMode() === "process";
+  }
+
+  function getReviewTarget() {
+    var workflowId = getWorkflowId();
+    var nodeId = getNodeId();
+    return {
+      workflowId: workflowId,
+      nodeId: nodeId,
+      key: WEAVER_ENV + ":" + workflowId + ":" + nodeId,
+    };
+  }
+
+  function fetchNodeReviewStatus(target) {
+    var params = new URLSearchParams({
+      env: WEAVER_ENV,
+      workflow_id: target.workflowId,
+      node_id: target.nodeId,
+    });
+    var url =
+      AI_PLATFORM_BASE_URL.replace(/\/$/, "") +
+      "/ai-api/v1/weaver/ai-assistant/review/node-status?" +
+      params.toString();
+    return window
+      .fetch(url, {
+        method: "GET",
+        headers: { "ai-sign": AI_SIGN },
+      })
+      .then(function (response) {
+        if (!response.ok) throw new Error("节点智审状态请求失败：" + response.status);
+        return response.json();
+      })
+      .then(function (result) {
+        if (!result || result.code !== 200 || !result.data) {
+          throw new Error((result && result.msg) || "节点智审状态返回异常");
+        }
+        return result.data;
+      });
+  }
+
+  function applyNodeReviewStatus(status) {
+    var shouldMount = Boolean(status && status.enabled && status.showEntry);
+    if (shouldMount) {
+      if (!mounted || !document.getElementById(buttonId)) {
+        mounted = false;
+        mount();
+      }
+      return;
+    }
+    if (mounted) unmount();
+  }
+
+  function syncReviewEntry(force) {
+    if (!ENABLE_WEAVER_AI_REVIEW || !isApprovalPage()) {
+      if (mounted) unmount();
+      return;
+    }
+
+    var target = getReviewTarget();
+    if (!target.workflowId || !target.nodeId) {
+      if (mounted) unmount();
+      return;
+    }
+    if (statusTargetKey !== target.key) {
+      statusTargetKey = target.key;
+      statusRequest = null;
+      lastStatusCheckAt = 0;
+      if (mounted) unmount();
+    }
+
+    var now = Date.now();
+    var cached = nodeStatusCache[target.key];
+    if (!force && cached && now - cached.checkedAt < NODE_STATUS_CACHE_MS) {
+      applyNodeReviewStatus(cached.status);
+      return;
+    }
+    if (!force && !cached && lastStatusCheckAt && now - lastStatusCheckAt < NODE_STATUS_RETRY_MS) return;
+    if (statusRequest) return;
+
+    lastStatusCheckAt = now;
+    statusRequest = fetchNodeReviewStatus(target)
+      .then(function (status) {
+        nodeStatusCache[target.key] = { status: status, checkedAt: Date.now() };
+        aiLog("已读取当前节点智审启用状态", status);
+        applyNodeReviewStatus(status);
+      })
+      .catch(function (error) {
+        aiLog("读取当前节点智审启用状态失败，将稍后重试", error);
+        if (mounted) unmount();
+      })
+      .then(function () {
+        statusRequest = null;
+      });
   }
 
   function getCurrentUser() {
@@ -367,6 +472,94 @@
     });
   }
 
+  function getSavedPanelWidth() {
+    var fallback = 500;
+    try {
+      var saved = Number(window.localStorage.getItem("weaver-ai-review-panel-width"));
+      return saved >= 420 ? saved : fallback;
+    } catch (error) {
+      return fallback;
+    }
+  }
+
+  function enablePanelResize(panel, iframe) {
+    var handle = document.createElement("div");
+    handle.title = "拖动调整智审面板宽度";
+    handle.setAttribute("aria-label", "拖动调整智审面板宽度");
+    handle.style.cssText = [
+      "position:absolute",
+      "left:0",
+      "top:110px",
+      "bottom:70px",
+      "z-index:4",
+      "width:12px",
+      "cursor:ew-resize",
+      "touch-action:none",
+    ].join(";");
+
+    var indicator = document.createElement("span");
+    indicator.style.cssText = [
+      "position:absolute",
+      "left:3px",
+      "top:50%",
+      "width:3px",
+      "height:52px",
+      "border-radius:999px",
+      "background:rgba(96,165,250,.38)",
+      "transform:translateY(-50%)",
+      "transition:background .2s ease,box-shadow .2s ease",
+    ].join(";");
+    handle.appendChild(indicator);
+    panel.appendChild(handle);
+
+    var resizing = false;
+    var startX = 0;
+    var startWidth = 0;
+
+    function finishResize() {
+      if (!resizing) return;
+      resizing = false;
+      iframe.style.pointerEvents = "";
+      document.body.style.userSelect = "";
+      document.body.style.cursor = "";
+      indicator.style.background = "rgba(96,165,250,.38)";
+      indicator.style.boxShadow = "";
+      try {
+        window.localStorage.setItem("weaver-ai-review-panel-width", String(Math.round(panel.getBoundingClientRect().width)));
+      } catch (error) {
+        aiWarn("保存智审面板宽度失败", error);
+      }
+    }
+
+    handle.onpointerenter = function () {
+      indicator.style.background = "rgba(37,99,235,.72)";
+    };
+    handle.onpointerleave = function () {
+      if (!resizing) indicator.style.background = "rgba(96,165,250,.38)";
+    };
+    handle.onpointerdown = function (event) {
+      resizing = true;
+      startX = event.clientX;
+      startWidth = panel.getBoundingClientRect().width;
+      iframe.style.pointerEvents = "none";
+      document.body.style.userSelect = "none";
+      document.body.style.cursor = "ew-resize";
+      indicator.style.background = "#2563eb";
+      indicator.style.boxShadow = "0 0 10px rgba(59,130,246,.55)";
+      if (handle.setPointerCapture) handle.setPointerCapture(event.pointerId);
+      event.preventDefault();
+    };
+    handle.onpointermove = function (event) {
+      if (!resizing) return;
+      var minWidth = Math.min(420, window.innerWidth - 32);
+      var maxWidth = Math.min(1100, window.innerWidth - 32);
+      var nextWidth = Math.max(minWidth, Math.min(maxWidth, startWidth + startX - event.clientX));
+      panel.style.width = Math.round(nextWidth) + "px";
+    };
+    handle.onpointerup = finishResize;
+    handle.onpointercancel = finishResize;
+  }
+
   function mount() {
     if (!ENABLE_WEAVER_AI_REVIEW || mounted || !isApprovalPage()) return;
     removeElementById("ai-flow-float-button");
@@ -436,7 +629,7 @@
       "right:24px",
       "bottom:24px",
       "z-index:999997",
-      "width:500px",
+      "width:" + getSavedPanelWidth() + "px",
       "height:80vh",
       "max-width:calc(100vw - 32px)",
       "max-height:calc(100vh - 48px)",
@@ -452,6 +645,7 @@
     iframe.title = "流程AI智审";
     iframe.style.cssText = "width:100%;height:100%;border:0;background:#fff;";
     panel.appendChild(iframe);
+    enablePanelResize(panel, iframe);
 
     document.body.appendChild(button);
     document.body.appendChild(panel);
@@ -484,22 +678,15 @@
   }
 
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", mount);
+    document.addEventListener("DOMContentLoaded", function () {
+      syncReviewEntry(true);
+    });
   } else {
-    mount();
+    syncReviewEntry(true);
   }
 
   window.setInterval(function () {
-    if (isApprovalPage()) {
-      if (!mounted || !document.getElementById(buttonId)) {
-        mounted = false;
-        mount();
-      }
-      return;
-    }
-    if (mounted) {
-      aiLog("检测到已离开审批页面，卸载 AI 智审入口", { pageMode: getWorkflowPageMode() });
-      unmount();
-    }
-  }, 800);
+    var retryDue = !nodeStatusCache[statusTargetKey] && Date.now() - lastStatusCheckAt >= NODE_STATUS_RETRY_MS;
+    syncReviewEntry(retryDue);
+  }, 1200);
 })();

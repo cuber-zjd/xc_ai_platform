@@ -140,6 +140,40 @@ export interface WeaverReviewRulePayload {
   priority: number;
 }
 
+export interface WeaverReviewNodeConfig {
+  id: number;
+  env: string;
+  workflowId: string;
+  workflowName?: string | null;
+  nodeId: string;
+  nodeName?: string | null;
+  enabled: boolean;
+  showEntry: boolean;
+  automaticReviewEnabled: boolean;
+  status: string;
+}
+
+export interface WeaverReviewNodeConfigPayload {
+  env: string;
+  workflowId: string;
+  workflowName?: string | null;
+  nodeId: string;
+  nodeName?: string | null;
+  enabled: boolean;
+  showEntry: boolean;
+  automaticReviewEnabled: boolean;
+}
+
+export interface WeaverReviewNodeStatus {
+  env: string;
+  workflowId: string;
+  nodeId: string;
+  configured: boolean;
+  enabled: boolean;
+  showEntry: boolean;
+  automaticReviewEnabled: boolean;
+}
+
 export interface WeaverReviewActor {
   userId?: string | null;
   userName?: string | null;
@@ -169,11 +203,25 @@ export interface WeaverReviewComparisonRow {
   reconciliationSequence?: string | null;
   invoiceName?: string | null;
   reconciliationName?: string | null;
+  invoiceSpecification?: string | null;
+  reconciliationSpecification?: string | null;
+  invoiceUnit?: string | null;
+  reconciliationUnit?: string | null;
+  invoiceQuantity?: string | null;
+  reconciliationQuantity?: string | null;
   invoiceAmount?: string | null;
   reconciliationAmount?: string | null;
-  invoiceTaxRates: string[];
-  reconciliationTaxRates: string[];
+  invoiceTaxRates?: string[];
+  reconciliationTaxRates?: string[];
+  nameStatus?: "pass" | "fail" | "unknown";
+  specificationStatus?: "pass" | "fail" | "unknown";
+  unitStatus?: "pass" | "fail" | "unknown";
+  quantityStatus?: "pass" | "fail" | "unknown";
+  amountStatus?: "pass" | "fail" | "unknown";
+  taxRateStatus?: "pass" | "fail" | "unknown";
   similarity?: number | null;
+  matchMethod?: "exact_normalized" | "ai_semantic" | "fallback_fuzzy" | "unmatched";
+  matchReason?: string;
   status: "pass" | "warning" | "fail";
   detail: string;
 }

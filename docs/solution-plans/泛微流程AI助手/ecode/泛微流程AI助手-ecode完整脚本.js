@@ -14,10 +14,10 @@
   // =========================
   var ENABLE_AI_FLOW_ASSISTANT = true;
   var ENABLE_ON_PROCESS_PAGE = false;
-  var AI_PLATFORM_BASE_URL = "http://192.168.8.79:5173";
+  var AI_PLATFORM_BASE_URL = "http://192.168.14.44:5173";
   var AI_ICON_URL = AI_PLATFORM_BASE_URL.replace(/\/$/, "") + "/ai/weaver-assistant/mascot-selected.png";
   var AI_SIGN = "xc-fw-1af7cc98-66ed-4d55-a4cc-c6240b1f1c3c";
-  var WEAVER_ENV = "test";
+  var WEAVER_ENV = "prod";
 
   // =========================
   // 内部状态

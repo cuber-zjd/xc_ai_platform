@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import {
   AlertTriangle,
   BarChart3,
@@ -21,6 +22,7 @@ import type {
   WeaverFieldConfigResponse,
   WeaverFormContext,
   WeaverReviewRecord,
+  WeaverReviewComparisonRow,
   WeaverReviewComparisonTable,
   WeaverReviewResult,
 } from "../types";
@@ -390,7 +392,20 @@ function normalizeRecordResult(record: WeaverReviewRecord | null): WeaverReviewR
 
 function ComparisonTableCard({ table }: { table: WeaverReviewComparisonTable }) {
   const [open, setOpen] = useState(true);
+  const [viewMode, setViewMode] = useState<"exception_first" | "reconciliation_order" | "exceptions_only">("exception_first");
   const failedCount = table.rows.filter((row) => row.status === "fail").length;
+  const pendingCount = table.rows.filter((row) => row.status === "warning").length;
+  const visibleRows = useMemo(() => {
+    const indexed = table.rows.map((row, index) => ({ row, index }));
+    if (viewMode === "exceptions_only") {
+      return indexed.filter(({ row }) => row.status === "fail").map(({ row }) => row);
+    }
+    if (viewMode === "exception_first") {
+      const rank = { fail: 0, warning: 1, pass: 2 };
+      indexed.sort((left, right) => rank[left.row.status] - rank[right.row.status] || left.index - right.index);
+    }
+    return indexed.map(({ row }) => row);
+  }, [table.rows, viewMode]);
 
   return (
     <section className="overflow-hidden rounded-2xl border border-[#dfe8f5] bg-white shadow-[0_10px_28px_rgba(56,83,130,0.05)]">
@@ -408,8 +423,8 @@ function ComparisonTableCard({ table }: { table: WeaverReviewComparisonTable }) 
           </span>
         </span>
         <span className="flex shrink-0 items-center gap-2">
-          <span className={`text-xs font-medium ${failedCount ? "text-red-600" : "text-teal-600"}`}>
-            {failedCount ? `${failedCount} 项异常` : "全部一致"}
+          <span className={`text-xs font-medium ${failedCount ? "text-red-600" : pendingCount ? "text-amber-600" : "text-teal-600"}`}>
+            {failedCount ? `${failedCount} 项异常` : pendingCount ? `${pendingCount} 项待核对` : "全部一致"}
           </span>
           <ChevronDown className={`h-4 w-4 text-slate-400 transition-transform ${open ? "rotate-180" : ""}`} />
         </span>
@@ -424,33 +439,66 @@ function ComparisonTableCard({ table }: { table: WeaverReviewComparisonTable }) 
             <ComparisonMetric label="对账单价税合计" value={formatMoney(table.reconciliationTotal)} />
           </div>
 
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#edf1f7] bg-white px-3 py-2.5">
+            <div className="inline-flex rounded-lg border border-[#dfe7f3] bg-[#f7f9fc] p-0.5 text-[11px]">
+              <ComparisonViewButton active={viewMode === "exception_first"} onClick={() => setViewMode("exception_first")}>
+                异常优先
+              </ComparisonViewButton>
+              <ComparisonViewButton active={viewMode === "reconciliation_order"} onClick={() => setViewMode("reconciliation_order")}>
+                对账顺序
+              </ComparisonViewButton>
+              <ComparisonViewButton active={viewMode === "exceptions_only"} onClick={() => setViewMode("exceptions_only")}>
+                仅看异常
+              </ComparisonViewButton>
+            </div>
+            <span className="text-[11px] text-[#7b899f]">
+              显示 {visibleRows.length} / {table.rows.length} 项
+            </span>
+          </div>
+
           <div className="max-h-[360px] overflow-auto">
-            <table className="min-w-[980px] w-full border-collapse text-left text-xs">
+            <table className="min-w-[1390px] w-full border-collapse text-left text-xs">
               <thead className="sticky top-0 z-10 bg-[#f6f8fc] text-[#66758f] shadow-[0_1px_0_#e7ecf4]">
                 <tr>
                   <th className="w-16 px-3 py-2.5 font-medium">序号</th>
-                  <th className="min-w-[220px] px-3 py-2.5 font-medium">对账物料</th>
-                  <th className="min-w-[220px] px-3 py-2.5 font-medium">发票商品</th>
+                  <th className="min-w-[210px] px-3 py-2.5 font-medium">对账物料</th>
+                  <th className="min-w-[250px] px-3 py-2.5 font-medium">发票商品（名称+规格）</th>
+                  <th className="min-w-[110px] px-3 py-2.5 font-medium">单位</th>
+                  <th className="min-w-[120px] px-3 py-2.5 font-medium">数量</th>
                   <th className="w-28 px-3 py-2.5 text-right font-medium">对账未税金额</th>
                   <th className="w-28 px-3 py-2.5 text-right font-medium">发票未税金额</th>
-                  <th className="w-24 px-3 py-2.5 font-medium">税率</th>
-                  <th className="w-20 px-3 py-2.5 font-medium">匹配度</th>
+                  <th className="min-w-[120px] px-3 py-2.5 font-medium">税率</th>
+                  <th className="w-24 px-3 py-2.5 font-medium">名称置信度</th>
                   <th className="w-20 px-3 py-2.5 font-medium">结果</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#edf1f6]">
-                {table.rows.map((row, index) => (
-                  <tr key={`${row.invoiceName}-${row.reconciliationName}-${index}`} className={row.status === "fail" ? "bg-red-50/70" : "bg-white"} title={row.detail}>
+                {visibleRows.map((row, index) => (
+                  <tr
+                    key={`${row.reconciliationSequence}-${row.invoiceName}-${row.reconciliationName}-${index}`}
+                    className={row.status === "fail" ? "bg-red-50/70" : row.status === "warning" ? "bg-amber-50/60" : "bg-white"}
+                    title={row.detail}
+                  >
                     <td className="px-3 py-3 align-top font-medium tabular-nums text-[#52627c]">{row.reconciliationSequence || "-"}</td>
-                    <td className="px-3 py-3 align-top leading-5 text-[#263753]" title={row.reconciliationName || ""}>{row.reconciliationName || "-"}</td>
-                    <td className="px-3 py-3 align-top leading-5 text-[#263753]" title={row.invoiceName || ""}>{row.invoiceName || "-"}</td>
-                    <td className="px-3 py-3 text-right align-top tabular-nums text-[#263753]">{formatMoney(row.reconciliationAmount)}</td>
-                    <td className="px-3 py-3 text-right align-top tabular-nums text-[#263753]">{formatMoney(row.invoiceAmount)}</td>
-                    <td className="px-3 py-3 align-top text-[#52627c]">{formatTaxRates(row.invoiceTaxRates, row.reconciliationTaxRates)}</td>
+                    <td className={comparisonValueClass(row.nameStatus)} title={row.reconciliationName || ""}>{row.reconciliationName || "-"}</td>
+                    <td className={comparisonValueClass(row.nameStatus)} title={formatInvoiceProduct(row)}>
+                      <div>{row.invoiceName || "-"}</div>
+                      {row.invoiceSpecification ? <div className="mt-1 text-[11px] font-normal text-[#71809a]">规格：{row.invoiceSpecification}</div> : null}
+                      {row.matchMethod === "ai_semantic" ? (
+                        <div className="mt-1 inline-flex rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-700">
+                          AI语义匹配
+                        </div>
+                      ) : null}
+                    </td>
+                    <td className="px-3 py-3 align-top"><PairComparisonCell left={row.reconciliationUnit} right={row.invoiceUnit} /></td>
+                    <td className="px-3 py-3 align-top"><PairComparisonCell left={row.reconciliationQuantity} right={row.invoiceQuantity} status={row.quantityStatus} numeric /></td>
+                    <td className={comparisonMoneyClass(row.amountStatus)}>{formatMoney(row.reconciliationAmount)}</td>
+                    <td className={comparisonMoneyClass(row.amountStatus)}>{formatMoney(row.invoiceAmount)}</td>
+                    <td className="px-3 py-3 align-top"><PairComparisonCell left={formatRates(row.reconciliationTaxRates)} right={formatRates(row.invoiceTaxRates)} status={row.taxRateStatus} /></td>
                     <td className="px-3 py-3 align-top tabular-nums text-[#52627c]">{formatSimilarity(row.similarity)}</td>
                     <td className="px-3 py-3 align-top">
-                      <span className={`inline-flex rounded-full px-2 py-1 text-[11px] font-medium ${row.status === "fail" ? "bg-red-100 text-red-700" : "bg-teal-50 text-teal-700"}`}>
-                        {row.status === "fail" ? "异常" : "一致"}
+                      <span className={`inline-flex rounded-full px-2 py-1 text-[11px] font-medium ${comparisonResultClass(row.status)}`}>
+                        {row.status === "fail" ? "异常" : row.status === "warning" ? "待核对" : "一致"}
                       </span>
                     </td>
                   </tr>
@@ -459,12 +507,62 @@ function ComparisonTableCard({ table }: { table: WeaverReviewComparisonTable }) 
             </table>
           </div>
           <div className="border-t border-[#edf1f6] bg-[#fbfcff] px-4 py-2.5 text-[11px] leading-5 text-[#7b899f]">
-            物品名称允许受控近似匹配；金额差在规则配置的容差范围内按一致处理。悬停明细行可查看核对说明。
+            名称完全归一化一致时直接匹配；复杂名称由 AI 结合商品类别、用途、材质、规格和候选业务数据进行语义判断。结果再核对数量、金额和税率；缺少一侧数量时标记为“待核对”。悬停明细行可查看匹配依据。
           </div>
         </div>
       ) : null}
     </section>
   );
+}
+
+function ComparisonViewButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
+  return (
+    <button
+      type="button"
+      className={`rounded-md px-2.5 py-1.5 transition ${active ? "bg-white font-medium text-[#315fc7] shadow-sm" : "text-[#687790] hover:text-[#315fc7]"}`}
+      onClick={onClick}
+    >
+      {children}
+    </button>
+  );
+}
+
+function PairComparisonCell({
+  left,
+  right,
+  status,
+  numeric = false,
+}: {
+  left?: string | null;
+  right?: string | null;
+  status?: WeaverReviewComparisonRow["specificationStatus"];
+  numeric?: boolean;
+}) {
+  const valueClass = status === "fail" ? "font-semibold text-red-700" : status === "unknown" ? "text-amber-700" : "text-[#263753]";
+  return (
+    <div className={`space-y-1 leading-4 ${valueClass} ${numeric ? "tabular-nums" : ""}`}>
+      <div title={left || ""}><span className="mr-1 text-[10px] font-normal text-[#96a1b4]">对账</span>{left || "-"}</div>
+      <div title={right || ""}><span className="mr-1 text-[10px] font-normal text-[#96a1b4]">发票</span>{right || "-"}</div>
+    </div>
+  );
+}
+
+function comparisonValueClass(status?: WeaverReviewComparisonRow["nameStatus"]) {
+  return `px-3 py-3 align-top leading-5 ${status === "fail" ? "font-semibold text-red-700" : "text-[#263753]"}`;
+}
+
+function formatInvoiceProduct(row: WeaverReviewComparisonRow) {
+  return [row.invoiceName, row.invoiceSpecification].filter(Boolean).join(" ") || "";
+}
+
+function comparisonMoneyClass(status?: WeaverReviewComparisonRow["amountStatus"]) {
+  return `px-3 py-3 text-right align-top tabular-nums ${status === "fail" ? "font-semibold text-red-700" : "text-[#263753]"}`;
+}
+
+function comparisonResultClass(status: WeaverReviewComparisonRow["status"]) {
+  if (status === "fail") return "bg-red-100 text-red-700";
+  if (status === "warning") return "bg-amber-100 text-amber-700";
+  return "bg-teal-50 text-teal-700";
 }
 
 function ComparisonMetric({ label, value }: { label: string; value: string }) {
@@ -482,10 +580,8 @@ function formatMoney(value?: string | null) {
   return Number.isFinite(number) ? number.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : value;
 }
 
-function formatTaxRates(invoiceRates: string[], reconciliationRates: string[]) {
-  const left = invoiceRates.length ? invoiceRates.map((value) => `${value}%`).join("/") : "-";
-  const right = reconciliationRates.length ? reconciliationRates.map((value) => `${value}%`).join("/") : "-";
-  return left === right ? left : `${left} / ${right}`;
+function formatRates(rates?: string[]) {
+  return rates?.length ? rates.map((value) => `${value}%`).join("/") : "-";
 }
 
 function formatSimilarity(value?: number | null) {

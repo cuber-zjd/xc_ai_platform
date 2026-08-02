@@ -51,12 +51,16 @@ var AI_ICON_URL = AI_PLATFORM_BASE_URL + "/ai/weaver-assistant/mascot-selected.p
 ## AI 智审脚本包含能力
 
 - 审批页脚本仅在已有 `requestid/resourceid` 的流程处理页面添加“AI智审”悬浮入口，发起页不会挂载。
+- 审批页会先按 `env + workflowId + nodeId` 查询平台节点开关；只有配置页启用了当前节点并勾选“显示审批页入口”才挂载图标。状态缓存 60 秒，未配置、关闭或接口失败时均不显示入口。
 - 两份 ecode 即使被同一泛微全局加载器同时加载，也会按页面类型互斥并主动清理错误入口，避免右下角两个图标重叠。
 - 审批页会只读采集当前表单字段和值作为智审依据，但不会执行填单动作，也不会自动审批、退回或提交。
 - 点击后使用同一套助手形象和展开转场打开平台 `/weaver/assistant/review` iframe，读取最近一次预审结果，或手动发起“立即智审”。
+- 智审面板左边缘支持拖拽调整宽度，范围为 420-1100px 且不超过当前视口；宽度会保存在浏览器本地，下次打开沿用。
 - 智审面板通过 `postMessage` 读取当前页面上下文，平台接口统一使用 `/ai-api/v1/weaver/ai-assistant/*`。
 - 规则配置脚本会在流程路径设置页追加“AI智审规则”页签，打开平台 `/weaver/assistant/review-config`。
 - 智审规则按 `env + workflowId + nodeId + reviewerUserId` 维护，支持流程通用、节点级和审批人个人口径。
+- 配置页会读取泛微数据库中的中文节点列表；节点总开关与规则相互独立。关闭节点不会删除规则，但手动智审、Action 自动预审都会被后端统一阻止。
+- “自动预审”开关只放行 `submit/action` 类型调用；当前版本没有泛微智审定时扫描器。后续若增加定时扫描，也必须复用同一节点开关，不得绕过配置直接运行。
 - 初版 AI 智审只生成风险等级、检查项、建议结论和建议审批意见，不自动保存、提交、审批或退回。
 
 ## 助手形象资源
@@ -74,7 +78,7 @@ Java Action 文件放在：
 docs/solution-plans/泛微流程AI助手/java/WeaverAiReviewAction.java
 ```
 
-建议先挂在测试流程的“节点后附加操作”，参数至少配置：
+只有需要提交后立即预审的流程才需要挂 Action；仅在审批页由用户手动智审时不需要 Action。Action 参数至少配置：
 
 ```text
 platformBaseUrl = http://你的平台后端地址:8000
@@ -83,3 +87,5 @@ env = test
 ```
 
 默认情况下，Action 调用失败不会阻断泛微流程；只有显式配置 `blockOnRiskLevel=blocked` 或 `blockOnRiskLevel=high,blocked` 时，才会按风险等级阻断。
+
+节点未在智审配置页同时开启“智审”和“自动预审”时，后端会拒绝 Action 的预审请求，不调用证据工具和大模型。

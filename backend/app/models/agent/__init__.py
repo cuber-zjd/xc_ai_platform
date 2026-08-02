@@ -9,7 +9,12 @@ from app.models.agent.sap_assistant import (
     SapSystemConfig,
     SapToolCall,
 )
-from app.models.agent.weaver_ai_assistant import WeaverAiReviewRecord, WeaverAiReviewRule, WeaverAiWorkflowRule
+from app.models.agent.weaver_ai_assistant import (
+    WeaverAiReviewNodeConfig,
+    WeaverAiReviewRecord,
+    WeaverAiReviewRule,
+    WeaverAiWorkflowRule,
+)
 from app.models.agent import insight
 
 __all__ = [
@@ -24,6 +29,7 @@ __all__ = [
     "SapToolCall",
     "WeaverAiWorkflowRule",
     "WeaverAiReviewRule",
+    "WeaverAiReviewNodeConfig",
     "WeaverAiReviewRecord",
     "insight",
 ]

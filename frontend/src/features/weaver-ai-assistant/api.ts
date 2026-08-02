@@ -4,6 +4,9 @@ import type {
   WeaverFieldConfigResponse,
   WeaverFormContext,
   WeaverReviewRecord,
+  WeaverReviewNodeConfig,
+  WeaverReviewNodeConfigPayload,
+  WeaverReviewNodeStatus,
   WeaverReviewRequest,
   WeaverReviewResponse,
   WeaverReviewRule,
@@ -246,6 +249,77 @@ export async function deleteWeaverReviewRule(aiSign: string, ruleId: number): Pr
   if (!response.ok) {
     throw new Error(`智审规则删除失败：${response.status}`);
   }
+}
+
+export async function fetchWeaverReviewNodeConfigs(
+  aiSign: string,
+  workflowId: string,
+  env?: string,
+): Promise<WeaverReviewNodeConfig[]> {
+  const safeAiSign = normalizeHeaderValue(aiSign, "ai_sign");
+  const params = new URLSearchParams({ workflow_id: workflowId });
+  if (env) params.set("env", env);
+  const response = await fetch(`${apiBaseUrl}/weaver/ai-assistant/review/node-configs?${params.toString()}`, {
+    method: "GET",
+    headers: { "ai-sign": safeAiSign },
+  });
+  if (!response.ok) {
+    throw new Error(`智审节点配置加载失败：${response.status}`);
+  }
+  const result = (await response.json()) as Result<WeaverReviewNodeConfig[]>;
+  if (result.code !== 200) {
+    throw new Error(result.msg || "智审节点配置加载失败");
+  }
+  return result.data || [];
+}
+
+export async function saveWeaverReviewNodeConfig(
+  aiSign: string,
+  payload: WeaverReviewNodeConfigPayload,
+): Promise<WeaverReviewNodeConfig> {
+  const safeAiSign = normalizeHeaderValue(aiSign, "ai_sign");
+  const response = await fetch(
+    `${apiBaseUrl}/weaver/ai-assistant/review/node-configs/${encodeURIComponent(payload.nodeId)}`,
+    {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "ai-sign": safeAiSign,
+      },
+      body: JSON.stringify(payload),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`智审节点配置保存失败：${response.status}`);
+  }
+  const result = (await response.json()) as Result<WeaverReviewNodeConfig>;
+  if (result.code !== 200 || !result.data) {
+    throw new Error(result.msg || "智审节点配置保存失败");
+  }
+  return result.data;
+}
+
+export async function fetchWeaverReviewNodeStatus(
+  aiSign: string,
+  workflowId: string,
+  nodeId: string,
+  env?: string,
+): Promise<WeaverReviewNodeStatus> {
+  const safeAiSign = normalizeHeaderValue(aiSign, "ai_sign");
+  const params = new URLSearchParams({ workflow_id: workflowId, node_id: nodeId });
+  if (env) params.set("env", env);
+  const response = await fetch(`${apiBaseUrl}/weaver/ai-assistant/review/node-status?${params.toString()}`, {
+    method: "GET",
+    headers: { "ai-sign": safeAiSign },
+  });
+  if (!response.ok) {
+    throw new Error(`智审节点状态加载失败：${response.status}`);
+  }
+  const result = (await response.json()) as Result<WeaverReviewNodeStatus>;
+  if (result.code !== 200 || !result.data) {
+    throw new Error(result.msg || "智审节点状态加载失败");
+  }
+  return result.data;
 }
 
 export async function runWeaverPreReview(

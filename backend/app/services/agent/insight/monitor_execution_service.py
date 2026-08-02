@@ -973,21 +973,70 @@ class InsightMonitorExecutionService:
                 "fulltext_summary": fulltext_summary,
             }
 
-        tasks: list[asyncio.Task] = []
+        task_entries: list[
+            tuple[asyncio.Task[dict[str, Any]], GroupedDiscoveryBatch, InsightChannel]
+        ] = []
         if bocha_channel:
-            tasks.extend(
-                asyncio.create_task(run_one(batch, bocha_channel, "bocha", freshness_override))
+            task_entries.extend(
+                (
+                    asyncio.create_task(run_one(batch, bocha_channel, "bocha", freshness_override)),
+                    batch,
+                    bocha_channel,
+                )
                 for batch in bocha_batches
             )
         if doubao_channel:
-            tasks.extend(
-                asyncio.create_task(
-                    run_one(batch, doubao_channel, "doubao_web_search", freshness_override)
+            task_entries.extend(
+                (
+                    asyncio.create_task(
+                        run_one(batch, doubao_channel, "doubao_web_search", freshness_override)
+                    ),
+                    batch,
+                    doubao_channel,
                 )
                 for batch in doubao_batches
             )
-        if tasks:
-            batch_logs = [await task for task in asyncio.as_completed(tasks)]
+        if task_entries:
+            tasks = [entry[0] for entry in task_entries]
+            phase_timeout = max(
+                settings.INSIGHT_SCHEDULER_GROUPED_PHASE_TIMEOUT_SECONDS,
+                60,
+            )
+            done, pending = await asyncio.wait(tasks, timeout=phase_timeout)
+            for task in done:
+                try:
+                    batch_logs.append(task.result())
+                except Exception as exc:
+                    batch_logs.append(
+                        {
+                            "status": "failed",
+                            "error": f"{exc.__class__.__name__}: {str(exc) or '分组任务异常'}"[:500],
+                        }
+                    )
+            if pending:
+                logger.warning(
+                    "Insight 分组搜索阶段达到总时限: timeout={}s completed={} pending={}",
+                    phase_timeout,
+                    len(done),
+                    len(pending),
+                )
+                pending_set = set(pending)
+                for task, batch, channel in task_entries:
+                    if task not in pending_set:
+                        continue
+                    task.cancel()
+                    batch_logs.append(
+                        {
+                            "group_key": batch.group_key,
+                            "group_name": batch.group_name,
+                            "channel_code": channel.channel_code,
+                            "query": batch.query,
+                            "status": "failed",
+                            "error": f"分组搜索阶段超过总时限 {phase_timeout} 秒，已跳过并继续执行重点网站",
+                            "phase_timeout": True,
+                        }
+                    )
+                await asyncio.gather(*pending, return_exceptions=True)
 
         if by_monitor:
             async with async_session() as status_db:

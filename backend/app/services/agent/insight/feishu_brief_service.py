@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import calendar
 import json
 import re
 from dataclasses import dataclass
@@ -1449,10 +1450,10 @@ class InsightFeishuBriefService:
                     button_text = "打开并审阅"
                 else:
                     message = (
-                        f"**{settings.INSIGHT_FEISHU_BRIEF_BOT_NAME}已发布本期简报**\n"
-                        "点击下方按钮查看完整内容与原文链接。"
+                        "**本月市场洞察报告已发布**\n"
+                        "点击下方按钮查看报告全文及相关信息来源。"
                     )
-                    button_text = "打开云文档"
+                    button_text = "查看月度报告" if "月度报告" in title else "查看完整报告"
                 await self._request(
                     "POST",
                     "/open-apis/im/v1/messages",
@@ -1962,13 +1963,19 @@ class InsightFeishuBriefService:
             if candidate <= now:
                 candidate += timedelta(days=7)
         else:
-            target_day = min(max(day_of_month or 1, 1), 28)
+            configured_day = min(max(day_of_month or 1, 1), 31)
+            target_day = min(configured_day, calendar.monthrange(candidate.year, candidate.month)[1])
             candidate = candidate.replace(day=target_day)
             if candidate <= now:
                 if candidate.month == 12:
                     candidate = candidate.replace(year=candidate.year + 1, month=1)
                 else:
                     candidate = candidate.replace(month=candidate.month + 1)
+                target_day = min(
+                    configured_day,
+                    calendar.monthrange(candidate.year, candidate.month)[1],
+                )
+                candidate = candidate.replace(day=target_day)
         return candidate.replace(tzinfo=None)
 
     def _period_bounds(
@@ -1994,6 +2001,8 @@ class InsightFeishuBriefService:
         if plan.schedule_frequency != "monthly":
             return now - timedelta(days=plan.material_days), now
         if self._is_scheduled_trigger(trigger_type):
+            if plan.day_of_month == 31:
+                return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0), now
             current_month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
             previous_month_end = current_month_start - timedelta(microseconds=1)
             previous_month_start = previous_month_end.replace(day=1, hour=0, minute=0, second=0, microsecond=0)

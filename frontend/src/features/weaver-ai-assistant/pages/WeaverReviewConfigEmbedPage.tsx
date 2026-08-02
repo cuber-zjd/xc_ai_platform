@@ -1,13 +1,22 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { CheckCircle2, Loader2, Plus, Save, ShieldCheck, Trash2 } from "lucide-react";
+import { CheckCircle2, GitBranch, Loader2, Plus, Save, ShieldCheck, Trash2 } from "lucide-react";
 
 import {
   createWeaverReviewRule,
   deleteWeaverReviewRule,
+  fetchWeaverFieldConfig,
+  fetchWeaverReviewNodeConfigs,
   fetchWeaverReviewRules,
+  saveWeaverReviewNodeConfig,
   updateWeaverReviewRule,
 } from "../api";
-import type { WeaverReviewRule, WeaverReviewRulePayload } from "../types";
+import type {
+  WeaverNodeConfigItem,
+  WeaverReviewNodeConfig,
+  WeaverReviewNodeConfigPayload,
+  WeaverReviewRule,
+  WeaverReviewRulePayload,
+} from "../types";
 
 interface ReviewRuleForm {
   id?: number;
@@ -52,21 +61,39 @@ export default function WeaverReviewConfigEmbedPage() {
   const defaultReviewerName = query.get("reviewer_name") || query.get("reviewerName") || "";
 
   const [rules, setRules] = useState<WeaverReviewRule[]>([]);
+  const [nodes, setNodes] = useState<WeaverNodeConfigItem[]>([]);
+  const [nodeConfigs, setNodeConfigs] = useState<WeaverReviewNodeConfig[]>([]);
   const [form, setForm] = useState<ReviewRuleForm>({ ...emptyForm, nodeId: defaultNodeId, nodeName: defaultNodeName, reviewerUserId: defaultReviewerUserId, reviewerName: defaultReviewerName });
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [savingNodeId, setSavingNodeId] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
   const activeCount = rules.filter((rule) => rule.enabled).length;
+  const enabledNodeCount = nodeConfigs.filter((item) => item.enabled).length;
+  const nodeConfigMap = useMemo(
+    () => new Map(nodeConfigs.map((item) => [item.nodeId, item])),
+    [nodeConfigs],
+  );
 
   const loadRules = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      const data = await fetchWeaverReviewRules(aiSign, workflowId, { env });
-      setRules(data);
-      setMessage(data.length ? "已加载当前流程的 AI 智审规则。" : "当前流程还没有配置 AI 智审规则。");
+      const [ruleData, fieldConfig, nodeConfigData] = await Promise.all([
+        fetchWeaverReviewRules(aiSign, workflowId, { env }),
+        fetchWeaverFieldConfig(aiSign, workflowId, env),
+        fetchWeaverReviewNodeConfigs(aiSign, workflowId, env),
+      ]);
+      setRules(ruleData);
+      setNodes(fieldConfig.nodes || []);
+      setNodeConfigs(nodeConfigData);
+      setMessage(
+        nodeConfigData.some((item) => item.enabled)
+          ? "已加载当前流程的节点启用范围与智审规则。"
+          : "当前流程尚未启用任何智审节点。",
+      );
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "智审规则加载失败");
     } finally {
@@ -135,6 +162,42 @@ export default function WeaverReviewConfigEmbedPage() {
     }
   }
 
+  async function handleNodeConfigChange(
+    node: WeaverNodeConfigItem,
+    changes: Partial<WeaverReviewNodeConfigPayload>,
+  ) {
+    const current = nodeConfigMap.get(node.nodeId);
+    const payload: WeaverReviewNodeConfigPayload = {
+      env,
+      workflowId,
+      workflowName: workflowName || null,
+      nodeId: node.nodeId,
+      nodeName: node.nodeName || null,
+      enabled: current?.enabled || false,
+      showEntry: current?.showEntry || false,
+      automaticReviewEnabled: current?.automaticReviewEnabled || false,
+      ...changes,
+    };
+    setSavingNodeId(node.nodeId);
+    setError("");
+    try {
+      const saved = await saveWeaverReviewNodeConfig(aiSign, payload);
+      setNodeConfigs((items) => {
+        const remaining = items.filter((item) => item.nodeId !== saved.nodeId);
+        return [...remaining, saved];
+      });
+      setMessage(
+        saved.enabled
+          ? `已启用“${node.nodeName}”的 AI 智审。`
+          : `已关闭“${node.nodeName}”的 AI 智审，审批页入口和自动预审均不会运行。`,
+      );
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "智审节点配置保存失败");
+    } finally {
+      setSavingNodeId("");
+    }
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-950">
       <header className="border-b border-slate-200 bg-white px-5 py-4">
@@ -145,7 +208,7 @@ export default function WeaverReviewConfigEmbedPage() {
               流程 AI 智审控制
             </div>
             <div className="mt-1 text-xs text-slate-500">
-              环境：{env} · 流程 ID：{workflowId || "未识别"} {workflowName ? `· ${workflowName}` : ""}
+              {workflowName || "当前流程"} · 环境：{env}
             </div>
           </div>
           <button
@@ -160,6 +223,121 @@ export default function WeaverReviewConfigEmbedPage() {
       </header>
 
       <main className="grid gap-4 p-4 lg:grid-cols-[minmax(300px,380px)_1fr]">
+        <section className="rounded-lg border border-slate-200 bg-white lg:col-span-2">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
+            <div>
+              <div className="flex items-center gap-2 text-sm font-semibold">
+                <GitBranch className="h-4 w-4 text-teal-600" />
+                智审启用节点
+              </div>
+              <p className="mt-1 text-xs text-slate-500">
+                只有这里启用的节点才显示智审入口；自动预审需单独开启。未配置节点默认关闭。
+              </p>
+            </div>
+            <span className="rounded-md bg-teal-50 px-2 py-1 text-xs text-teal-700">
+              已启用 {enabledNodeCount} / {nodes.length} 个节点
+            </span>
+          </div>
+          <div className="grid gap-2 p-3 md:grid-cols-2 xl:grid-cols-3">
+            {loading ? (
+              <div className="col-span-full flex h-20 items-center justify-center text-sm text-slate-500">
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                正在读取流程节点
+              </div>
+            ) : nodes.length ? (
+              nodes.map((node) => {
+                const config = nodeConfigMap.get(node.nodeId);
+                const enabled = config?.enabled || false;
+                const nodeSaving = savingNodeId === node.nodeId;
+                return (
+                  <div
+                    key={node.nodeId}
+                    className={`rounded-md border p-3 transition ${
+                      enabled ? "border-teal-300 bg-teal-50/50" : "border-slate-200 bg-white"
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-semibold text-slate-800">{node.nodeName || "未命名节点"}</div>
+                        <div className="mt-1 text-xs text-slate-400">{node.nodeType || "流程审批节点"}</div>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={nodeSaving}
+                        onClick={() =>
+                          void handleNodeConfigChange(node, {
+                            enabled: !enabled,
+                            showEntry: !enabled,
+                            automaticReviewEnabled: false,
+                          })
+                        }
+                        className={`relative h-6 w-11 shrink-0 rounded-full transition ${
+                          enabled ? "bg-teal-600" : "bg-slate-300"
+                        } disabled:opacity-60`}
+                        aria-label={enabled ? `关闭${node.nodeName}智审` : `启用${node.nodeName}智审`}
+                      >
+                        <span
+                          className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition ${
+                            enabled ? "translate-x-5" : "translate-x-0"
+                          }`}
+                        />
+                      </button>
+                    </div>
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={!enabled || nodeSaving}
+                        onClick={() => void handleNodeConfigChange(node, { showEntry: !config?.showEntry })}
+                        className={`h-8 rounded-md border px-2.5 text-xs transition ${
+                          enabled && config?.showEntry
+                            ? "border-teal-200 bg-white text-teal-700"
+                            : "border-slate-200 bg-slate-50 text-slate-400"
+                        } disabled:cursor-not-allowed`}
+                      >
+                        {config?.showEntry ? "显示审批页入口" : "隐藏审批页入口"}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!enabled || nodeSaving}
+                        onClick={() =>
+                          void handleNodeConfigChange(node, {
+                            automaticReviewEnabled: !config?.automaticReviewEnabled,
+                          })
+                        }
+                        className={`h-8 rounded-md border px-2.5 text-xs transition ${
+                          enabled && config?.automaticReviewEnabled
+                            ? "border-blue-200 bg-blue-50 text-blue-700"
+                            : "border-slate-200 bg-slate-50 text-slate-400"
+                        } disabled:cursor-not-allowed`}
+                      >
+                        {config?.automaticReviewEnabled ? "已开启自动预审" : "不开启自动预审"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setForm({
+                            ...emptyForm,
+                            nodeId: node.nodeId,
+                            nodeName: node.nodeName,
+                            reviewerUserId: defaultReviewerUserId,
+                            reviewerName: defaultReviewerName,
+                          })
+                        }
+                        className="ml-auto h-8 rounded-md px-2 text-xs font-medium text-slate-600 transition hover:bg-slate-100"
+                      >
+                        配置规则
+                      </button>
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <div className="col-span-full rounded-md bg-amber-50 px-3 py-5 text-center text-sm text-amber-800">
+                暂未从泛微数据库读取到流程节点，请检查当前环境数据库连接和流程 ID。
+              </div>
+            )}
+          </div>
+        </section>
         <section className="rounded-lg border border-slate-200 bg-white">
           <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
             <div className="text-sm font-semibold">已配置智审规则</div>

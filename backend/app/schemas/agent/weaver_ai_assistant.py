@@ -160,6 +160,32 @@ class WeaverReviewRuleRead(WeaverReviewRuleBase):
     status: str = "active"
 
 
+class WeaverReviewNodeConfigUpdate(BaseModel):
+    env: str = "default"
+    workflow_id: str = Field(alias="workflowId")
+    workflow_name: str | None = Field(default=None, alias="workflowName")
+    node_id: str = Field(alias="nodeId")
+    node_name: str | None = Field(default=None, alias="nodeName")
+    enabled: bool = False
+    show_entry: bool = Field(default=True, alias="showEntry")
+    automatic_review_enabled: bool = Field(default=False, alias="automaticReviewEnabled")
+
+
+class WeaverReviewNodeConfigRead(WeaverReviewNodeConfigUpdate):
+    id: int
+    status: str = "active"
+
+
+class WeaverReviewNodeStatus(BaseModel):
+    env: str
+    workflow_id: str = Field(alias="workflowId")
+    node_id: str = Field(alias="nodeId")
+    configured: bool = False
+    enabled: bool = False
+    show_entry: bool = Field(default=False, alias="showEntry")
+    automatic_review_enabled: bool = Field(default=False, alias="automaticReviewEnabled")
+
+
 class WeaverReviewActor(BaseModel):
     user_id: str | None = Field(default=None, alias="userId")
     user_name: str | None = Field(default=None, alias="userName")
@@ -189,11 +215,28 @@ class WeaverReviewComparisonRow(BaseModel):
     reconciliation_sequence: str | None = Field(default=None, alias="reconciliationSequence")
     invoice_name: str | None = Field(default=None, alias="invoiceName")
     reconciliation_name: str | None = Field(default=None, alias="reconciliationName")
+    invoice_specification: str | None = Field(default=None, alias="invoiceSpecification")
+    reconciliation_specification: str | None = Field(default=None, alias="reconciliationSpecification")
+    invoice_unit: str | None = Field(default=None, alias="invoiceUnit")
+    reconciliation_unit: str | None = Field(default=None, alias="reconciliationUnit")
+    invoice_quantity: str | None = Field(default=None, alias="invoiceQuantity")
+    reconciliation_quantity: str | None = Field(default=None, alias="reconciliationQuantity")
     invoice_amount: str | None = Field(default=None, alias="invoiceAmount")
     reconciliation_amount: str | None = Field(default=None, alias="reconciliationAmount")
     invoice_tax_rates: list[str] = Field(default_factory=list, alias="invoiceTaxRates")
     reconciliation_tax_rates: list[str] = Field(default_factory=list, alias="reconciliationTaxRates")
+    name_status: Literal["pass", "fail", "unknown"] = Field(default="unknown", alias="nameStatus")
+    specification_status: Literal["pass", "fail", "unknown"] = Field(default="unknown", alias="specificationStatus")
+    unit_status: Literal["pass", "fail", "unknown"] = Field(default="unknown", alias="unitStatus")
+    quantity_status: Literal["pass", "fail", "unknown"] = Field(default="unknown", alias="quantityStatus")
+    amount_status: Literal["pass", "fail", "unknown"] = Field(default="unknown", alias="amountStatus")
+    tax_rate_status: Literal["pass", "fail", "unknown"] = Field(default="unknown", alias="taxRateStatus")
     similarity: float | None = None
+    match_method: Literal["exact_normalized", "ai_semantic", "fallback_fuzzy", "unmatched"] = Field(
+        default="unmatched",
+        alias="matchMethod",
+    )
+    match_reason: str = Field(default="", alias="matchReason")
     status: Literal["pass", "warning", "fail"] = "pass"
     detail: str = ""
 

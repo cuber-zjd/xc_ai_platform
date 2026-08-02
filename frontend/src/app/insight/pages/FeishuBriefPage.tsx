@@ -328,7 +328,10 @@ export function FeishuBriefPage() {
                                     <InsightSelect
                                         label="每月执行日"
                                         value={String(form.day_of_month ?? 1)}
-                                        options={Array.from({ length: 28 }, (_, index) => ({ value: String(index + 1), label: `${index + 1} 日` }))}
+                                        options={[
+                                            ...Array.from({ length: 28 }, (_, index) => ({ value: String(index + 1), label: `${index + 1} 日` })),
+                                            { value: "31", label: "每月最后一天" },
+                                        ]}
                                         onChange={(value) => setForm((old) => ({ ...old, day_of_month: Number(value) }))}
                                     />
                                 ) : <div />}
@@ -538,7 +541,7 @@ function formatDateTime(value?: string | null) {
 
 function scheduleLabel(item: InsightFeishuBriefPlanRead) {
     if (item.schedule_frequency === "daily") return "每日";
-    if (item.schedule_frequency === "monthly") return `每月 ${item.day_of_month ?? 1} 日`;
+    if (item.schedule_frequency === "monthly") return item.day_of_month === 31 ? "每月最后一天" : `每月 ${item.day_of_month ?? 1} 日`;
     return `每${weekdayOptions[item.weekday ?? 0]?.label}`;
 }
 
