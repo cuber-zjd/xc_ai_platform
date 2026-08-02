@@ -64,6 +64,7 @@ finally {
 
 $installBackend = if ($SkipDependencies) { "false" } else { "true" }
 $installFrontend = if ($SkipDependencies -or $BackendOnly) { "false" } else { "true" }
+$buildFrontend = if ($BackendOnly) { "false" } else { "true" }
 $restartFrontend = if ($BackendOnly) { "false" } else { "true" }
 $remoteScript = @"
 set -euo pipefail
@@ -76,7 +77,7 @@ if [ ! -x '$RemoteUvPath' ]; then
   exit 20
 fi
 
-if $installFrontend && [ ! -x '$RemoteNodeBin/corepack' ]; then
+if $buildFrontend && [ ! -x '$RemoteNodeBin/corepack' ]; then
   echo '服务器 Node/corepack 不存在或不可执行：$RemoteNodeBin/corepack' >&2
   exit 20
 fi
@@ -111,6 +112,10 @@ fi
 if $installFrontend; then
   cd '$RemotePath/frontend'
   '$RemoteNodeBin/corepack' pnpm install --frozen-lockfile
+fi
+
+if $buildFrontend; then
+  cd '$RemotePath/frontend'
   '$RemoteNodeBin/corepack' pnpm build
 fi
 
