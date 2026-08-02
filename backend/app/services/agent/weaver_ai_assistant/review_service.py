@@ -250,9 +250,9 @@ class WeaverAiReviewService:
         tool_evidence = await weaver_review_evidence_service.collect(payload, rules)
         result = await self.invoke_review_model(payload, rules, tool_evidence)
         result = self.merge_tool_evidence(result, tool_evidence)
-        form_snapshot = payload.model_dump(by_alias=True)
+        form_snapshot = self.to_json_compatible(payload.model_dump(by_alias=True))
         if tool_evidence:
-            form_snapshot["reviewEvidence"] = tool_evidence
+            form_snapshot["reviewEvidence"] = self.to_json_compatible(tool_evidence)
         record = WeaverAiReviewRecord(
             env=env,
             workflow_id=workflow_id,
@@ -315,9 +315,9 @@ class WeaverAiReviewService:
         tool_evidence = await weaver_review_evidence_service.collect(review_request, rules)
         result = await self.invoke_review_model(review_request, rules, tool_evidence)
         result = self.merge_tool_evidence(result, tool_evidence)
-        form_snapshot = review_request.model_dump(by_alias=True)
+        form_snapshot = self.to_json_compatible(review_request.model_dump(by_alias=True))
         if tool_evidence:
-            form_snapshot["reviewEvidence"] = tool_evidence
+            form_snapshot["reviewEvidence"] = self.to_json_compatible(tool_evidence)
 
         record = WeaverAiReviewTestRecord(
             env=env,
@@ -571,7 +571,7 @@ class WeaverAiReviewService:
                     "suggestedOpinion, checks[{name,status(pass/warning/fail/unknown),detail}], missingMaterials[], concerns[], confidence, canAutoApprove。"
                 )
             ),
-            HumanMessage(content=json.dumps(prompt_payload, ensure_ascii=False)),
+            HumanMessage(content=json.dumps(prompt_payload, ensure_ascii=False, default=str)),
         ]
         try:
             response = await self.invoke_model(messages)
@@ -845,6 +845,10 @@ class WeaverAiReviewService:
         if not isinstance(value, dict):
             return {}
         return {str(key): item for key, item in value.items() if item not in (None, "")}
+
+    def to_json_compatible(self, value: Any) -> Any:
+        """将 MySQL Decimal、日期等数据库值转换为可持久化的 JSON 值。"""
+        return json.loads(json.dumps(value, ensure_ascii=False, default=str))
 
     def empty_to_none(self, value: Any) -> str | None:
         text = self.text(value).strip()

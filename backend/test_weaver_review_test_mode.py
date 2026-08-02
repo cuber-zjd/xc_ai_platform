@@ -1,4 +1,5 @@
 import asyncio
+from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
 from app.models.agent.weaver_ai_assistant import (
@@ -7,6 +8,7 @@ from app.models.agent.weaver_ai_assistant import (
 )
 from app.schemas.agent.weaver_ai_assistant import (
     WeaverFieldConfigResponse,
+    WeaverFieldContext,
     WeaverFormContext,
     WeaverReviewResult,
     WeaverReviewTestRequest,
@@ -39,6 +41,14 @@ def test_test_review_ignores_node_switch_and_uses_separate_record(monkeypatch) -
     context = WeaverFormContext(
         env="prod",
         baseInfo={"workflowid": "433", "requestid": "1994995"},
+        fields={
+            "field100": WeaverFieldContext(
+                label="本次支付金额",
+                fieldId="field100",
+                value=Decimal("423613.30"),
+                displayValue=Decimal("423613.30"),
+            )
+        },
     )
     expected_result = WeaverReviewResult(
         summary="测试智审完成",
@@ -79,6 +89,7 @@ def test_test_review_ignores_node_switch_and_uses_separate_record(monkeypatch) -
     assert not isinstance(db.added, WeaverAiReviewRecord)
     assert db.added.source_node_id == "9001"
     assert db.added.request_id == "1994995"
+    assert db.added.form_snapshot["context"]["fields"]["field100"]["value"] == "423613.30"
     assert response.record.trigger_type == "test"
     assert response.source_node_name == "财务审批"
     service.ensure_node_review_enabled.assert_not_awaited()
