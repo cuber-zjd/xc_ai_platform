@@ -3,6 +3,7 @@
     [string]$User = "xinxi",
     [string]$RemotePath = "/home/xinxi/ai_platform",
     [string]$Branch = "main",
+    [string]$DeployRemoteUrl = "http://192.168.14.111:9055/zhangjide/ai_platform.git",
     [string]$ExpectedCommit = "",
     [string]$SshKey = "$HOME/.ssh/ai_platform_deploy_ed25519",
     [switch]$BackendOnly,
@@ -49,10 +50,10 @@ try {
         }
     }
 
-    Invoke-CheckedCommand -FilePath $gitExecutable -Arguments @("fetch", "origin", $Branch)
-    & $gitExecutable merge-base --is-ancestor $ExpectedCommit "origin/$Branch"
+    Invoke-CheckedCommand -FilePath $gitExecutable -Arguments @("fetch", $DeployRemoteUrl, $Branch)
+    & $gitExecutable merge-base --is-ancestor $ExpectedCommit "FETCH_HEAD"
     if ($LASTEXITCODE -ne 0) {
-        throw "提交 $ExpectedCommit 尚未推送到 origin/$Branch，请先提交并推送。"
+        throw "提交 $ExpectedCommit 尚未推送到发布仓库 $DeployRemoteUrl 的 $Branch 分支，请先提交并推送。"
     }
 }
 finally {
@@ -79,9 +80,9 @@ if [ -n "`$(git status --porcelain --untracked-files=no)" ]; then
 fi
 
 old_commit="`$(git rev-parse HEAD)"
-git fetch origin '$Branch'
-git merge-base --is-ancestor '$ExpectedCommit' 'origin/$Branch'
-git pull --ff-only origin '$Branch'
+git fetch '$DeployRemoteUrl' '$Branch'
+git merge-base --is-ancestor '$ExpectedCommit' FETCH_HEAD
+git merge --ff-only FETCH_HEAD
 
 new_commit="`$(git rev-parse HEAD)"
 if [ "`$new_commit" != '$ExpectedCommit' ]; then
