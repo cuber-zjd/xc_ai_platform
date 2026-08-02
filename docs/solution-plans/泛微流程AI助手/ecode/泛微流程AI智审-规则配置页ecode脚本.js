@@ -77,33 +77,45 @@
   }
 
   function findPrimaryTabBar() {
-    var candidates = Array.prototype.slice.call(document.querySelectorAll("div, ul"));
+    var candidates = Array.prototype.slice.call(
+      document.querySelectorAll(".ant-tabs-nav, [role='tablist']")
+    );
     return candidates.find(function (node) {
-      var text = (node.innerText || "").replace(/\s+/g, "");
-      return text.indexOf("基础设置") >= 0 && text.indexOf("高级设置") >= 0 && node.querySelectorAll("span,div,li,a").length >= 4;
+      var tabs = Array.prototype.slice.call(node.querySelectorAll("[role='tab'], .ant-tabs-tab"));
+      var labels = tabs.map(function (tab) {
+        return (tab.textContent || "").replace(/\s+/g, "");
+      });
+      return (
+        labels.indexOf("基础设置") >= 0 &&
+        labels.indexOf("表单管理") >= 0 &&
+        labels.indexOf("流转设置") >= 0 &&
+        labels.indexOf("高级设置") >= 0
+      );
     });
   }
 
   function findAdvancedTab(tabBar) {
     if (!tabBar) return null;
-    var nodes = Array.prototype.slice.call(tabBar.querySelectorAll("div,span,li,a,button"));
+    var nodes = Array.prototype.slice.call(tabBar.querySelectorAll("[role='tab'], .ant-tabs-tab"));
     for (var i = 0; i < nodes.length; i += 1) {
       var text = (nodes[i].textContent || "").replace(/\s+/g, "");
-      if (text !== "高级设置") continue;
-      var current = nodes[i];
-      while (current.parentElement && current.parentElement !== tabBar) {
-        current = current.parentElement;
-      }
-      return current;
+      if (text === "高级设置") return nodes[i];
     }
     return null;
   }
 
   function findContentHost(tabBar) {
-    var current = tabBar;
-    for (var i = 0; i < 5 && current; i += 1) {
-      if (current.parentElement && current.parentElement.clientHeight > 220) return current.parentElement;
+    var outerTabs = tabBar && tabBar.closest ? tabBar.closest(".outter-tabs") : null;
+    var current = outerTabs ? outerTabs.parentElement : null;
+    while (current && current !== document.body) {
+      if (current.querySelector && current.querySelector(".baseTab-content")) {
+        return current;
+      }
       current = current.parentElement;
+    }
+    var content = document.querySelector(".baseTab-content");
+    if (content && content.parentElement) {
+      return content.parentElement;
     }
     return document.body;
   }
@@ -164,12 +176,20 @@
 
     var tab = document.createElement("div");
     tab.id = tabId;
-    tab.innerText = "AI智审规则";
+    tab.className = advancedTab && advancedTab.className
+      ? String(advancedTab.className).replace(/ant-tabs-tab-active/g, "").trim()
+      : "ant-tabs-tab";
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-selected", "false");
+    var tabInner = document.createElement("div");
+    tabInner.className = "ant-tabs-tab-inner";
+    tabInner.innerText = "AI智审规则";
+    tab.appendChild(tabInner);
     tab.style.cssText = [
       "display:inline-flex",
       "align-items:center",
-      "height:40px",
-      "padding:0 18px",
+      "height:48px",
+      "padding:0 16px",
       "cursor:pointer",
       "font-size:14px",
       "color:#334155",
@@ -191,7 +211,7 @@
       "position:absolute",
       "left:0",
       "right:0",
-      "top:44px",
+      "top:48px",
       "bottom:0",
       "z-index:20",
       "background:#fff",
