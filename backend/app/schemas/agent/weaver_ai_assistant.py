@@ -232,7 +232,7 @@ class WeaverReviewComparisonRow(BaseModel):
     reconciliation_amount: str | None = Field(default=None, alias="reconciliationAmount")
     invoice_tax_rates: list[str] = Field(default_factory=list, alias="invoiceTaxRates")
     reconciliation_tax_rates: list[str] = Field(default_factory=list, alias="reconciliationTaxRates")
-    name_status: Literal["pass", "fail", "unknown"] = Field(default="unknown", alias="nameStatus")
+    name_status: Literal["pass", "warning", "fail", "unknown"] = Field(default="unknown", alias="nameStatus")
     specification_status: Literal["pass", "fail", "unknown"] = Field(default="unknown", alias="specificationStatus")
     unit_status: Literal["pass", "fail", "unknown"] = Field(default="unknown", alias="unitStatus")
     quantity_status: Literal["pass", "fail", "unknown"] = Field(default="unknown", alias="quantityStatus")

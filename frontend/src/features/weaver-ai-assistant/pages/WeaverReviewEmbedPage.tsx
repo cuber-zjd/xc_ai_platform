@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import {
   AlertTriangle,
@@ -54,6 +54,8 @@ export default function WeaverReviewEmbedPage() {
     testMode ? "测试智审将读取该请求的数据库快照，并忽略其当前节点。" : "正在等待泛微页面上下文...",
   );
   const [error, setError] = useState("");
+  const autoRunStartedRef = useRef(false);
+  const requestInFlightRef = useRef(false);
 
   const workflowId = String(context.baseInfo?.workflowid || context.baseInfo?.workflowId || queryWorkflowId || "");
   const requestId = String(context.baseInfo?.requestid || context.baseInfo?.requestId || queryRequestId || "");
@@ -110,6 +112,7 @@ export default function WeaverReviewEmbedPage() {
   }, [aiSign, context.env, env, workflowId]);
 
   const handleReview = useCallback(async () => {
+    if (requestInFlightRef.current) return;
     if (!aiSign) {
       setError("缺少 ai_sign，无法调用平台智审接口。");
       return;
@@ -122,6 +125,7 @@ export default function WeaverReviewEmbedPage() {
       setError("请输入需要测试的 requestId。");
       return;
     }
+    requestInFlightRef.current = true;
     setLoading(true);
     setError("");
     setMessage("AI 正在预审当前流程，请稍等...");
@@ -159,6 +163,7 @@ export default function WeaverReviewEmbedPage() {
       setError(requestError instanceof Error ? requestError.message : "AI 智审失败");
       setMessage("");
     } finally {
+      requestInFlightRef.current = false;
       setLoading(false);
     }
   }, [aiSign, context, env, nodeId, nodeName, requestId, reviewerName, reviewerUserId, testMode, workflowId, workflowName]);
@@ -184,9 +189,10 @@ export default function WeaverReviewEmbedPage() {
   }, [loadLatest]);
 
   useEffect(() => {
-    if (!autoRun || record || result || loading || !workflowId) return;
+    if (!autoRun || autoRunStartedRef.current || record || result || !workflowId) return;
+    autoRunStartedRef.current = true;
     void handleReview();
-  }, [autoRun, handleReview, loading, record, result, workflowId]);
+  }, [autoRun, handleReview, record, result, workflowId]);
 
   return (
     <div className="flex h-screen min-h-0 flex-col overflow-hidden bg-[#fbfdff] text-[#12203a]">
