@@ -174,6 +174,13 @@ class Settings(BaseSettings):
     WEAVER_AI_MODEL_CAPABILITY: str = "complex-reasoning"  # 泛微流程 AI 助手默认使用更强推理模型能力
     WEAVER_AI_ENABLE_REASONING: bool = False  # 模型支持 reasoning 时可开启；本地小模型建议保持关闭
     WEAVER_AI_FIELD_CONFIG_CACHE_TTL_SECONDS: int = 600  # 泛微字段元数据缓存时长，减少重复连接泛微数据库
+    WEAVER_AI_REVIEW_SCHEDULER_ENABLED: bool = True  # 是否启用泛微待办自动预审扫描器
+    WEAVER_AI_REVIEW_SCHEDULER_AUTO_START: bool = True  # 后端启动时是否自动启动扫描器
+    WEAVER_AI_REVIEW_SCHEDULER_INTERVAL_SECONDS: int = 60  # 扫描间隔，最低 30 秒
+    WEAVER_AI_REVIEW_SCHEDULER_BATCH_LIMIT: int = 10  # 单轮最多执行的审批人待办数
+    WEAVER_AI_REVIEW_SCHEDULER_CONCURRENCY: int = 2  # 单轮自动预审并发数
+    WEAVER_AI_REVIEW_SCHEDULER_STARTUP_DELAY_SECONDS: int = 10  # 启动后首次扫描延迟
+    WEAVER_AI_REVIEW_SCHEDULER_MAX_ATTEMPTS: int = 3  # 单个待办自动预审最大重试次数
 
     # Security
     SECRET_KEY: str = "change_this_to_a_secure_random_string_in_production"

@@ -26,12 +26,15 @@
   var buttonId = "weaver-ai-review-button";
   var panelId = "weaver-ai-review-panel";
   var iframeId = "weaver-ai-review-iframe";
+  var reminderId = "weaver-ai-review-reminder";
   var nodeStatusCache = {};
   var statusTargetKey = "";
   var statusRequest = null;
   var lastStatusCheckAt = 0;
   var NODE_STATUS_CACHE_MS = 60000;
   var NODE_STATUS_RETRY_MS = 10000;
+  var REMINDER_POLL_MS = 60000;
+  var reminderTimer = null;
 
   function aiLog() {
     if (!window.console || !console.log) return;
@@ -335,6 +338,7 @@
     var nodeId = encodeURIComponent(getNodeId());
     var nodeName = encodeURIComponent(getNodeName());
     var targetOrigin = encodeURIComponent(window.location.origin);
+    var currentUser = getCurrentUser();
     return (
       AI_PLATFORM_BASE_URL.replace(/\/$/, "") +
       "/ai/weaver/assistant/review?ai_sign=" +
@@ -351,9 +355,128 @@
       nodeId +
       "&node_name=" +
       nodeName +
+      "&reviewer_user_id=" +
+      encodeURIComponent(currentUser.userId || "") +
+      "&reviewer_name=" +
+      encodeURIComponent(currentUser.userName || "") +
       "&target_origin=" +
       targetOrigin
     );
+  }
+
+  function fetchLatestReview() {
+    var currentUser = getCurrentUser();
+    var params = new URLSearchParams({
+      env: WEAVER_ENV,
+      workflow_id: getWorkflowId(),
+      request_id: getRequestId(),
+      node_id: getNodeId(),
+    });
+    if (currentUser.userId) params.set("reviewer_user_id", currentUser.userId);
+    return window
+      .fetch(
+        AI_PLATFORM_BASE_URL.replace(/\/$/, "") +
+          "/ai-api/v1/weaver/ai-assistant/review/latest?" +
+          params.toString(),
+        { method: "GET", headers: { "ai-sign": AI_SIGN } }
+      )
+      .then(function (response) {
+        if (!response.ok) throw new Error("读取智审提醒失败：" + response.status);
+        return response.json();
+      })
+      .then(function (result) {
+        return result && result.code === 200 ? result.data : null;
+      });
+  }
+
+  function reminderStorageKey(record) {
+    return "weaver-ai-review-reminder-seen:" + WEAVER_ENV + ":" + String(record.id || "");
+  }
+
+  function markReminderSeen(record) {
+    if (!record) return;
+    try {
+      window.sessionStorage.setItem(reminderStorageKey(record), "1");
+    } catch (error) {}
+  }
+
+  function hasSeenReminder(record) {
+    try {
+      return window.sessionStorage.getItem(reminderStorageKey(record)) === "1";
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function showReviewReminder(record) {
+    if (!record || hasSeenReminder(record) || document.getElementById(reminderId)) return;
+    if (record.triggerType !== "action" && record.triggerType !== "submit") return;
+    var riskMap = {
+      low: { label: "低风险", color: "#047857", background: "#ecfdf5", border: "#a7f3d0" },
+      medium: { label: "需关注", color: "#b45309", background: "#fffbeb", border: "#fde68a" },
+      high: { label: "高风险", color: "#b91c1c", background: "#fef2f2", border: "#fecaca" },
+      blocked: { label: "暂无法判断", color: "#9a3412", background: "#fff7ed", border: "#fed7aa" },
+    };
+    var risk = riskMap[record.riskLevel] || riskMap.medium;
+    var reminder = document.createElement("button");
+    reminder.id = reminderId;
+    reminder.type = "button";
+    reminder.style.cssText = [
+      "position:fixed",
+      "right:28px",
+      "bottom:188px",
+      "z-index:999999",
+      "width:330px",
+      "max-width:calc(100vw - 40px)",
+      "padding:16px 17px",
+      "border:1px solid " + risk.border,
+      "border-radius:14px",
+      "background:#fff",
+      "box-shadow:0 18px 46px rgba(15,42,104,.2)",
+      "text-align:left",
+      "cursor:pointer",
+      "font-family:inherit",
+    ].join(";");
+    var summary = String(record.summary || "AI 已完成当前节点预审。");
+    if (summary.length > 115) summary = summary.slice(0, 115) + "...";
+    reminder.innerHTML =
+      '<span style="display:flex;align-items:center;justify-content:space-between;gap:12px">' +
+      '<strong style="font-size:15px;color:#14213d">AI 智审结果已就绪</strong>' +
+      '<span style="padding:3px 8px;border-radius:999px;font-size:12px;font-weight:700;color:' +
+      risk.color +
+      ";background:" +
+      risk.background +
+      '">' +
+      risk.label +
+      "</span></span>" +
+      '<span style="display:block;margin-top:9px;font-size:13px;line-height:1.65;color:#52617a">' +
+      summary.replace(/[<>&]/g, function (value) { return { "<": "&lt;", ">": "&gt;", "&": "&amp;" }[value]; }) +
+      "</span>" +
+      '<span style="display:block;margin-top:10px;font-size:13px;font-weight:700;color:#2563eb">点击查看审批详情 →</span>';
+    reminder.onclick = function () {
+      markReminderSeen(record);
+      removeElementById(reminderId);
+      openPanel();
+    };
+    document.body.appendChild(reminder);
+    if (reminder.animate) {
+      reminder.animate(
+        [
+          { opacity: 0, transform: "translateY(14px) scale(.96)" },
+          { opacity: 1, transform: "translateY(0) scale(1)" },
+        ],
+        { duration: 360, easing: "cubic-bezier(.16,1,.3,1)" }
+      );
+    }
+  }
+
+  function syncReviewReminder() {
+    if (!mounted || panelOpen || !getRequestId()) return;
+    fetchLatestReview()
+      .then(showReviewReminder)
+      .catch(function (error) {
+        aiLog("读取自动预审提醒失败，将稍后重试", error);
+      });
   }
 
   function postContext(messageType, requestId) {
@@ -407,6 +530,7 @@
 
   function openPanel() {
     panelOpen = true;
+    removeElementById(reminderId);
     var panel = document.getElementById(panelId);
     var iframe = document.getElementById(iframeId);
     animatePanel(true);
@@ -649,6 +773,8 @@
 
     document.body.appendChild(button);
     document.body.appendChild(panel);
+    window.setTimeout(syncReviewReminder, 500);
+    if (!reminderTimer) reminderTimer = window.setInterval(syncReviewReminder, REMINDER_POLL_MS);
 
     window.addEventListener("message", function (event) {
       var data = event.data;
@@ -673,6 +799,11 @@
   function unmount() {
     removeElementById(buttonId);
     removeElementById(panelId);
+    removeElementById(reminderId);
+    if (reminderTimer) {
+      window.clearInterval(reminderTimer);
+      reminderTimer = null;
+    }
     mounted = false;
     panelOpen = false;
   }

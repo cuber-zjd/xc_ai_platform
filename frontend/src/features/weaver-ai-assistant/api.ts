@@ -378,6 +378,7 @@ export async function fetchLatestWeaverReview(
     env?: string;
     requestId?: string;
     nodeId?: string;
+    reviewerUserId?: string;
   },
 ): Promise<WeaverReviewRecord | null> {
   const safeAiSign = normalizeHeaderValue(aiSign, "ai_sign");
@@ -385,6 +386,7 @@ export async function fetchLatestWeaverReview(
   if (options?.env) params.set("env", options.env);
   if (options?.requestId) params.set("request_id", options.requestId);
   if (options?.nodeId) params.set("node_id", options.nodeId);
+  if (options?.reviewerUserId) params.set("reviewer_user_id", options.reviewerUserId);
   const response = await fetch(`${apiBaseUrl}/weaver/ai-assistant/review/latest?${params.toString()}`, {
     method: "GET",
     headers: {

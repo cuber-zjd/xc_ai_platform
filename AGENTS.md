@@ -208,6 +208,7 @@ pnpm build
 - 后端接口统一挂载到 `/ai-api/v1/weaver/ai-assistant`，入口位于 `backend/app/ai-api/v1/endpoints/agent/weaver_ai_assistant.py`，服务层位于 `backend/app/services/agent/weaver_ai_assistant/`。
 - 流程规则保存在 `weaver_ai_workflow_rule` 表，聊天接口需要自动加载启用规则进入 AI 上下文，但仍不得突破字段可见、可写和安全边界。
 - 智审规则保存在 `weaver_ai_review_rule` 表，智审记录保存在 `weaver_ai_review_record` 表；初版只生成风险等级、检查项、建议结论和建议审批意见，不得直接保存、提交、审批、退回或越权替审。
+- 泛微自动预审由 `review_scheduler_service.py` 在 FastAPI 生命周期中启动，默认每 60 秒只扫描智审总开关与自动预审均开启的当前节点待办；`weaver_ai_review_scan_task` 负责审批人级幂等与失败重试。审批页按当前审批人读取结果，并由 ecode 展示一次性结果提醒。
 - 智审关联业务数据核验由 `review_evidence_service.py` 执行；规则只声明受控工具类型和建模查询 ID，服务端必须通过泛微元数据解析真实表字段、校验数据库标识符并使用参数化只读查询。工具明确判定的金额、税率、商品或材料不一致不得被模型覆盖为通过。
 - 泛微助手模型选择优先读取 `WEAVER_AI_MODEL_NAME`；未配置时按 `WEAVER_AI_MODEL_CAPABILITY` 选择模型，默认 `complex-reasoning`，用于提升流程特殊规则理解能力。
 - ecode 侧只保留悬浮图标、iframe 打开、`WfForm` 上下文采集和结构化动作执行；聊天面板、样式、AI 调用和业务逻辑由平台承载。

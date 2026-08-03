@@ -29,6 +29,9 @@ from app.services.agent.weaver_ai_assistant.review_service import (
     WeaverReviewNodeDisabledError,
     weaver_ai_review_service,
 )
+from app.services.agent.weaver_ai_assistant.review_scheduler_service import (
+    weaver_ai_review_scheduler_service,
+)
 from app.services.agent.weaver_ai_assistant.workflow_rule_service import weaver_workflow_rule_service
 
 router = APIRouter(dependencies=[Depends(deps.verify_external_ai_sign)])
@@ -217,7 +220,26 @@ async def get_weaver_latest_review(
     env: str | None = Query(None, description="泛微环境 key"),
     request_id: str | None = Query(None, description="泛微 requestid"),
     node_id: str | None = Query(None, description="泛微节点 ID"),
+    reviewer_user_id: str | None = Query(None, description="当前审批人用户 ID"),
     db: AsyncSession = Depends(get_db),
 ) -> Result[WeaverReviewRecordRead | None]:
-    data = await weaver_ai_review_service.latest_record(db, env or "default", workflow_id, request_id, node_id)
+    data = await weaver_ai_review_service.latest_record(
+        db,
+        env or "default",
+        workflow_id,
+        request_id,
+        node_id,
+        reviewer_user_id,
+    )
+    return Result.success(data=data)
+
+
+@router.get("/review/scheduler/status", response_model=Result[dict])
+async def get_weaver_review_scheduler_status() -> Result[dict]:
+    return Result.success(data=weaver_ai_review_scheduler_service.status())
+
+
+@router.post("/review/scheduler/run-once", response_model=Result[dict])
+async def run_weaver_review_scheduler_once() -> Result[dict]:
+    data = await weaver_ai_review_scheduler_service.run_once()
     return Result.success(data=data)

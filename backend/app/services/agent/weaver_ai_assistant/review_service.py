@@ -25,6 +25,7 @@ from app.schemas.agent.weaver_ai_assistant import (
     WeaverReviewNodeConfigRead,
     WeaverReviewNodeConfigUpdate,
     WeaverReviewNodeStatus,
+    WeaverReviewActor,
     WeaverReviewRecordRead,
     WeaverReviewRequest,
     WeaverReviewResponse,
@@ -353,6 +354,51 @@ class WeaverAiReviewService:
             sourceNodeName=source_node_name or None,
         )
 
+    async def build_scheduled_review_request(
+        self,
+        *,
+        env: str,
+        workflow_id: str,
+        request_id: str,
+        node_id: str,
+        node_name: str,
+        reviewer_user_id: str,
+        reviewer_name: str,
+    ) -> WeaverReviewRequest:
+        metadata = await weaver_ai_assistant_service.get_field_config(workflow_id, env)
+        context, extra, source_node_id, source_node_name = await asyncio.to_thread(
+            self._load_test_request_context,
+            env,
+            workflow_id,
+            request_id,
+            metadata,
+        )
+        if source_node_id != node_id:
+            raise ValueError(
+                f"流程已离开待扫描节点：预期节点 {node_id}，当前节点 {source_node_id or '未知'}"
+            )
+        context.base_info["nodeid"] = node_id
+        context.base_info["nodename"] = node_name or source_node_name
+        extra.update(
+            {
+                "testMode": False,
+                "ignoreCurrentNode": False,
+                "scheduledReview": True,
+            }
+        )
+        return WeaverReviewRequest(
+            context=context,
+            triggerType="action",
+            operation="scheduled_pre_review",
+            currentNodeId=node_id,
+            currentNodeName=node_name or source_node_name or None,
+            reviewer=WeaverReviewActor(
+                userId=reviewer_user_id or None,
+                userName=reviewer_name or None,
+            ),
+            extra=extra,
+        )
+
     async def load_all_enabled_rules_for_test(
         self,
         db: AsyncSession,
@@ -489,6 +535,7 @@ class WeaverAiReviewService:
         workflow_id: str,
         request_id: str | None = None,
         node_id: str | None = None,
+        reviewer_user_id: str | None = None,
     ) -> WeaverReviewRecordRead | None:
         statement = (
             select(WeaverAiReviewRecord)
@@ -504,6 +551,14 @@ class WeaverAiReviewService:
             statement = statement.where(WeaverAiReviewRecord.request_id == str(request_id))
         if node_id:
             statement = statement.where(WeaverAiReviewRecord.node_id == str(node_id))
+        if reviewer_user_id:
+            statement = statement.where(
+                or_(
+                    WeaverAiReviewRecord.reviewer_user_id == str(reviewer_user_id),
+                    WeaverAiReviewRecord.reviewer_user_id.is_(None),
+                    WeaverAiReviewRecord.reviewer_user_id == "",
+                )
+            )
         row = (await db.exec(statement)).first()
         return self.to_record_read(row) if row else None
 

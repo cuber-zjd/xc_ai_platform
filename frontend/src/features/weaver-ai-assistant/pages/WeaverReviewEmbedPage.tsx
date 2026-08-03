@@ -85,13 +85,14 @@ export default function WeaverReviewEmbedPage() {
         env: context.env || env,
         requestId,
         nodeId,
+        reviewerUserId,
       });
       setRecord(data);
       setMessage(data ? "已读取最近一次 AI 智审结果。" : "当前节点暂无 AI 智审结果，可手动发起预审。");
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "智审记录加载失败");
     }
-  }, [aiSign, context.env, env, nodeId, requestId, testMode, workflowId]);
+  }, [aiSign, context.env, env, nodeId, requestId, reviewerUserId, testMode, workflowId]);
 
   useEffect(() => {
     if (!aiSign || !workflowId) {

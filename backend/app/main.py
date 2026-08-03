@@ -25,14 +25,19 @@ async def lifespan(app: FastAPI):
     from app.services.agent.insight.feishu_brief_scheduler_service import (
         insight_feishu_brief_scheduler_service,
     )
+    from app.services.agent.weaver_ai_assistant.review_scheduler_service import (
+        weaver_ai_review_scheduler_service,
+    )
     await insight_scheduler_service.start_from_settings()
     await insight_feishu_brief_scheduler_service.start_from_settings()
+    await weaver_ai_review_scheduler_service.start_from_settings()
     
     logger.info("Startup: AI Platform Backend")
     yield
     # Shutdown: cleanup logic
     await insight_feishu_brief_scheduler_service.stop()
     await insight_scheduler_service.stop()
+    await weaver_ai_review_scheduler_service.stop()
     logger.info("Shutdown: AI Platform Backend")
 
 app = FastAPI(

@@ -112,3 +112,36 @@ class WeaverAiReviewTestRecord(BaseDBModel, table=True):
     form_snapshot: dict[str, Any] | None = Field(default=None, sa_type=JSONB)
     review_result: dict[str, Any] | None = Field(default=None, sa_type=JSONB)
     status: str = Field(default="completed", index=True, max_length=30)
+
+
+class WeaverAiReviewScanTask(BaseDBModel, table=True):
+    """泛微待办节点自动预审扫描任务。"""
+
+    __tablename__ = "weaver_ai_review_scan_task"
+    __table_args__ = (
+        UniqueConstraint(
+            "env",
+            "workflow_id",
+            "request_id",
+            "node_id",
+            "reviewer_user_id",
+            "operator_id",
+            name="uq_weaver_ai_review_scan_task_target",
+        ),
+    )
+
+    env: str = Field(default="default", index=True, max_length=80)
+    workflow_id: str = Field(index=True, max_length=80)
+    workflow_name: str | None = Field(default=None, max_length=300)
+    request_id: str = Field(index=True, max_length=80)
+    request_name: str | None = Field(default=None, max_length=500)
+    node_id: str = Field(index=True, max_length=80)
+    node_name: str | None = Field(default=None, max_length=200)
+    reviewer_user_id: str = Field(default="", index=True, max_length=80)
+    reviewer_name: str | None = Field(default=None, max_length=120)
+    operator_id: str = Field(index=True, max_length=80, description="workflow_currentoperator.id")
+    received_at: str | None = Field(default=None, max_length=40)
+    review_record_id: int | None = Field(default=None, index=True)
+    attempts: int = Field(default=0)
+    last_error: str | None = Field(default=None)
+    status: str = Field(default="pending", index=True, max_length=30)

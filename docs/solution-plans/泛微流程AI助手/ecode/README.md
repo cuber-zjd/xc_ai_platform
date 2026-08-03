@@ -60,7 +60,8 @@ var AI_ICON_URL = AI_PLATFORM_BASE_URL + "/ai/weaver-assistant/mascot-selected.p
 - 规则配置脚本会在流程路径设置页追加“AI智审规则”页签，打开平台 `/weaver/assistant/review-config`。
 - 智审规则按 `env + workflowId + nodeId + reviewerUserId` 维护，支持流程通用、节点级和审批人个人口径。
 - 配置页会读取泛微数据库中的中文节点列表；节点总开关与规则相互独立。关闭节点不会删除规则，但手动智审、Action 自动预审都会被后端统一阻止。
-- “自动预审”开关只放行 `submit/action` 类型调用；当前版本没有泛微智审定时扫描器。后续若增加定时扫描，也必须复用同一节点开关，不得绕过配置直接运行。
+- “自动预审”开关同时控制 `submit/action` 调用和平台一分钟待办扫描器；扫描器只处理智审总开关与自动预审均开启的节点，未开启节点不会查询业务证据或调用模型。
+- 自动预审完成后，审批页会在悬浮图标附近弹出一次结果摘要和风险等级提醒；点击提醒打开完整智审详情。提醒按审批人查询，当前浏览器会话内同一条结果不重复弹出。
 - 初版 AI 智审只生成风险等级、检查项、建议结论和建议审批意见，不自动保存、提交、审批或退回。
 
 ## 助手形象资源
@@ -78,7 +79,7 @@ Java Action 文件放在：
 docs/solution-plans/泛微流程AI助手/java/WeaverAiReviewAction.java
 ```
 
-只有需要提交后立即预审的流程才需要挂 Action；仅在审批页由用户手动智审时不需要 Action。Action 参数至少配置：
+Action 仅用于必须在提交后立即预审的场景；常规自动预审由平台一分钟扫描器统一完成，不需要逐节点挂 Action。选用 Action 时参数至少配置：
 
 ```text
 platformBaseUrl = http://你的平台后端地址:8000

@@ -13,6 +13,7 @@ from app.models.agent.weaver_ai_assistant import (
     WeaverAiReviewNodeConfig,
     WeaverAiReviewRecord,
     WeaverAiReviewRule,
+    WeaverAiReviewScanTask,
     WeaverAiReviewTestRecord,
     WeaverAiWorkflowRule,
 )
@@ -32,6 +33,7 @@ __all__ = [
     "WeaverAiReviewRule",
     "WeaverAiReviewNodeConfig",
     "WeaverAiReviewRecord",
+    "WeaverAiReviewScanTask",
     "WeaverAiReviewTestRecord",
     "insight",
 ]
