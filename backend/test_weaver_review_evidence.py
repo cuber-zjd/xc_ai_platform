@@ -315,3 +315,16 @@ def test_unit_mismatch_is_error_even_when_name_needs_review() -> None:
         )
         == "fail"
     )
+
+
+def test_invoice_unit_matches_reconciliation_candidate_units() -> None:
+    service = WeaverReviewEvidenceService()
+
+    assert service._compare_unit_sets({"套"}, {"套、双、副"}) is True
+    assert service._compare_unit_sets({"箱"}, {"套、双、副"}) is False
+
+
+def test_multiple_actual_units_are_not_treated_as_candidates() -> None:
+    service = WeaverReviewEvidenceService()
+
+    assert service._compare_unit_sets({"套", "双"}, {"套"}) is False

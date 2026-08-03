@@ -716,6 +716,34 @@ class WeaverReviewEvidenceService:
         normalized = re.sub(r"\s+", "", self._text(value).lower())
         return aliases.get(normalized, normalized)
 
+    def _normalize_unit_candidates(self, value: Any) -> set[str]:
+        return {
+            normalized
+            for item in re.split(r"[、,，/;；|]+", self._text(value))
+            if (normalized := self._normalize_unit(item))
+        }
+
+    def _compare_unit_sets(self, left: set[Any], right: set[Any]) -> bool | None:
+        if not left or not right:
+            return None
+
+        left_groups = [self._normalize_unit_candidates(value) for value in left]
+        right_groups = [self._normalize_unit_candidates(value) for value in right]
+        left_groups = [group for group in left_groups if group]
+        right_groups = [group for group in right_groups if group]
+        if not left_groups or not right_groups:
+            return None
+
+        left_values = set().union(*left_groups)
+        right_values = set().union(*right_groups)
+        left_is_candidates = len(left_groups) == 1 and len(left_groups[0]) > 1
+        right_is_candidates = len(right_groups) == 1 and len(right_groups[0]) > 1
+        if left_is_candidates and not right_is_candidates:
+            return right_values <= left_values
+        if right_is_candidates and not left_is_candidates:
+            return left_values <= right_values
+        return left_values == right_values
+
     def _compare_text_sets(
         self,
         left: set[Any],
@@ -1168,10 +1196,9 @@ class WeaverReviewEvidenceService:
                 reconciliation["specifications"],
                 self._normalize_specification,
             ),
-            "unitMatched": self._compare_text_sets(
+            "unitMatched": self._compare_unit_sets(
                 invoice["units"],
                 reconciliation["units"],
-                self._normalize_unit,
             ),
             "quantityMatched": self._compare_optional_decimals(
                 invoice["quantity"] if invoice["hasQuantity"] else None,
