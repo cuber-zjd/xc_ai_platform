@@ -8,16 +8,22 @@ def insight_company_business_context(company_name: str) -> str:
     if "健源" in company_name:
         return (
             "健源以玉米精深加工和淀粉糖为核心，重点关注果葡糖浆、麦芽糖浆、功能糖、"
-            "糖醇及其在饮料、茶咖、乳品、烘焙和食品加工中的应用；材料必须能落到"
-            "配方、采购、产能、价格、客户经营或监管准入。大豆蛋白、蛋白粉和豆粕不是"
-            "健源月报的核心业务，除非事件能直接影响玉米深加工或淀粉糖业务。"
+            "糖醇及其在饮料、茶咖、乳品、烘焙和食品加工中的应用。选材不仅包括直接出现"
+            "上述产品的资讯，也包括茶饮、饮料、烘焙、乳品等客户及潜在客户的新品、扩店、"
+            "销量、经营、渠道和供应链变化，以及食品消费、减糖趋势、监管政策、替代配料和"
+            "相关技术变化；只要能为销售、市场、研发、采购或经营判断提供清晰启示即可纳入。"
+            "大豆蛋白、蛋白粉和豆粕等御馨业务资讯，仅在能影响健源客户、替代配料、竞争格局"
+            "或食品行业需求时作为辅助材料，不得写成健源自身业务。"
         )
     if "御馨" in company_name:
         return (
             "御馨以大豆精深加工和植物蛋白为核心，重点关注大豆蛋白、蛋白粉、豆粕及其在"
-            "饮料、乳品、肉制品、烘焙和茶咖中的应用；客户、竞对和原料变化必须能落到"
-            "配方应用、采购需求、供应链、产能、价格或食品合规。果葡糖浆、麦芽糖浆、"
-            "功能糖和糖醇不是御馨月报的核心业务，除非事件能直接影响大豆或植物蛋白业务。"
+            "饮料、乳品、肉制品、烘焙和茶咖中的应用。选材不仅包括直接出现大豆或植物蛋白"
+            "的资讯，也包括上述客户及潜在客户的新品、扩店、销量、经营、渠道和供应链变化，"
+            "以及健康食品、植物基消费、食品监管、配方趋势、替代蛋白和相关技术变化；只要能"
+            "为销售、市场、研发、采购或经营判断提供清晰启示即可纳入。果葡糖浆、麦芽糖浆、"
+            "功能糖和糖醇等健源业务资讯，仅在能影响御馨客户、复配应用、竞争格局或食品行业"
+            "需求时作为辅助材料，不得写成御馨自身业务。"
         )
     return (
         "香驰控股主要从事大豆、玉米精深加工，产品涉及植物蛋白、蛋白粉、豆粕、粮油、"
@@ -30,7 +36,7 @@ def insight_company_material_rejection_reason(
     company_name: str,
     item: dict[str, Any],
 ) -> str | None:
-    """按产业公司边界拦截跨业务材料，避免仅靠模型相关性判断。"""
+    """只拦截明确错公司且无法形成业务启示的材料，宽口径价值判断交给编辑模型。"""
     headline_text = str(item.get("title") or "").lower()
     primary_text = " ".join(
         (
@@ -42,18 +48,6 @@ def insight_company_material_rejection_reason(
             _stringify_material_value(item.get("category")),
         )
     ).lower()
-
-    generic_policy_terms = (
-        "食品安全法",
-        "食品标识",
-        "食品监管",
-        "市场监管",
-        "进出口",
-        "海关",
-        "关税",
-        "外贸",
-    )
-    has_generic_policy = any(value in primary_text for value in generic_policy_terms)
 
     if "健源" in company_name:
         own_business = (
@@ -86,10 +80,15 @@ def insight_company_material_rejection_reason(
         )
         has_own_business = any(value in primary_text for value in own_business)
         headline_is_other_business = any(value in headline_text for value in other_business)
-        if headline_is_other_business and not has_own_business:
+        downstream_or_market_value = any(
+            value in primary_text
+            for value in (
+                "茶饮", "饮料", "咖啡", "乳品", "烘焙", "食品", "新品", "扩店",
+                "销量", "采购", "配方", "供应链", "消费", "减糖", "监管", "客户",
+            )
+        )
+        if headline_is_other_business and not has_own_business and not downstream_or_market_value:
             return "跨产业公司材料：大豆或植物蛋白为主，且无健源核心业务直接关系"
-        if not has_own_business and not has_generic_policy:
-            return "标题、摘要或监测主题缺少健源玉米深加工或糖类业务直接事实"
 
     if "御馨" in company_name:
         own_business = (
@@ -127,12 +126,15 @@ def insight_company_material_rejection_reason(
         )
         has_own_business = any(value in primary_text for value in own_business)
         headline_is_unrelated = any(value in headline_text for value in unrelated_business)
-        if headline_is_unrelated and not has_own_business:
+        downstream_or_market_value = any(
+            value in primary_text
+            for value in (
+                "饮料", "乳品", "肉制品", "烘焙", "茶饮", "咖啡", "食品", "新品",
+                "扩店", "销量", "采购", "配方", "供应链", "消费", "健康", "监管", "客户",
+            )
+        )
+        if headline_is_unrelated and not has_own_business and not downstream_or_market_value:
             return "跨产业公司材料：茶饮、糖类或玉米业务为主，且无御馨大豆或植物蛋白直接关系"
-        if not has_own_business:
-            if has_generic_policy:
-                return "通用政策未明确涉及御馨大豆、植物蛋白或其产品准入"
-            return "标题、摘要或监测主题缺少御馨大豆及植物蛋白业务的直接事实"
 
     return None
 

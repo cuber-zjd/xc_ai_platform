@@ -333,10 +333,10 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
         yuxin = insight_company_business_context("山东御馨生物科技股份有限公司")
         self.assertIn("果葡糖浆、麦芽糖浆", jianyuan)
         self.assertIn("大豆精深加工和植物蛋白", yuxin)
-        self.assertIn("不是健源月报的核心业务", jianyuan)
-        self.assertIn("不是御馨月报的核心业务", yuxin)
+        self.assertIn("茶饮、饮料、烘焙、乳品", jianyuan)
+        self.assertIn("客户及潜在客户", yuxin)
 
-    def test_cross_company_material_filter_keeps_only_direct_overlap(self) -> None:
+    def test_cross_company_material_filter_keeps_business_value_overlap(self) -> None:
         soybean_only = {
             "title": "禹王扩建大豆蛋白产线",
             "summary": "新增植物蛋白与豆粕产能。",
@@ -351,7 +351,7 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
                 soybean_only,
             )
         )
-        self.assertIsNotNone(
+        self.assertIsNone(
             self.service._cross_company_material_reason(
                 "山东香驰健源生物科技有限公司",
                 soybean_with_syrup,
@@ -372,7 +372,7 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
             "summary": "该设备用于提升生产线清洗效率。",
             "tags": "技术 专利",
         }
-        self.assertIsNotNone(
+        self.assertIsNone(
             self.service._cross_company_material_reason(
                 "山东香驰健源生物科技有限公司",
                 generic_patent,
@@ -394,7 +394,7 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
             "summary": "新品覆盖果茶和咖啡场景。",
             "business_insight": "可能带动香驰大豆蛋白需求",
         }
-        self.assertIsNotNone(
+        self.assertIsNone(
             self.service._cross_company_material_reason(
                 "山东御馨生物科技股份有限公司",
                 generic_customer,
@@ -405,7 +405,7 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
             "summary": "项目核心为玉米深加工，正文附带提及集团其他大豆业务。",
             "content": "集团同时经营大豆加工业务。",
         }
-        self.assertIsNotNone(
+        self.assertIsNone(
             self.service._cross_company_material_reason(
                 "山东御馨生物科技股份有限公司",
                 incidental_soybean,
@@ -426,7 +426,7 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
             "summary": "政策涉及糖醇和甜味剂产品的标识要求。",
             "tags": "食品监管",
         }
-        self.assertIsNotNone(
+        self.assertIsNone(
             self.service._cross_company_material_reason(
                 "山东御馨生物科技股份有限公司",
                 sugar_policy,
