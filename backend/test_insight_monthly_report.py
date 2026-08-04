@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import unittest
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+from app.core.llm_factory import LLMFactory
 from app.services.agent.insight.feishu_monthly_report_service import (
     MONTHLY_SECTIONS,
     InsightFeishuMonthlyReportService,
@@ -44,6 +47,59 @@ class InsightFeishuBriefScheduleTest(unittest.TestCase):
         )
         self.assertEqual(start, datetime(2026, 8, 1))
         self.assertEqual(end, datetime(2026, 8, 31, 10, 30))
+
+    def test_weekly_selection_keeps_supporting_evidence(self) -> None:
+        materials = [
+            {
+                "id": index,
+                "title": f"大豆蛋白客户产线动态 {index}",
+                "summary": f"客户新增植物蛋白产线并披露产能数据 {index}",
+                "source_url": f"https://example.com/{index}",
+                "publish_time": datetime(2026, 8, 1),
+                "category": "客户",
+            }
+            for index in range(1, 9)
+        ]
+        payload = {
+            "selected": [
+                {
+                    "id": index,
+                    "score": 82 if index <= 7 else 72,
+                    "category": "客户",
+                    "reason": "直接相关",
+                }
+                for index in range(1, 9)
+            ],
+            "rejected": [],
+        }
+        response = SimpleNamespace(content=json.dumps(payload, ensure_ascii=False))
+        with patch.object(LLMFactory, "safe_invoke", AsyncMock(return_value=response)):
+            selected, audit = asyncio.run(
+                self.service._select_materials(
+                    company_name="山东御馨生物科技股份有限公司",
+                    period_start=datetime(2026, 7, 28),
+                    period_end=datetime(2026, 8, 3, 23, 59, 59),
+                    materials=materials,
+                )
+            )
+        self.assertEqual(len(selected), 8)
+        self.assertEqual(selected[-1]["brief_role"], "supporting")
+        self.assertEqual(audit["selected"][-1]["score"], 72)
+
+    def test_replace_document_preserves_document_and_rewrites_blocks(self) -> None:
+        request = AsyncMock(
+            side_effect=[
+                {"items": [{"block_id": "old-1"}, {"block_id": "old-2"}]},
+                {},
+                {},
+            ]
+        )
+        with patch.object(self.service, "_request", request):
+            asyncio.run(self.service._replace_document_content("doc-1", "# 一、总览\n\n新内容"))
+        self.assertEqual(request.await_count, 3)
+        self.assertEqual(request.await_args_list[1].args[0], "DELETE")
+        self.assertEqual(request.await_args_list[1].kwargs["json"], {"start_index": 0, "end_index": 2})
+        self.assertIn("/doc-1/blocks/doc-1/children", request.await_args_list[2].args[1])
 
 
 class InsightMonthlyReportServiceTest(unittest.TestCase):

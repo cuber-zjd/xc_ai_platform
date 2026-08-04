@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import calendar
 import json
+import math
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -603,6 +604,77 @@ class InsightFeishuBriefService:
             await db.commit()
             raise
 
+    async def regenerate_run_in_place(
+        self,
+        db: AsyncSession,
+        run_id: int,
+    ) -> InsightFeishuBriefRunResponse:
+        """重新生成既有周报并覆盖原云文档，不改变待推送文档链接。"""
+        run = await db.get(InsightFeishuBriefRun, run_id)
+        if not run or run.is_deleted:
+            raise ValueError("飞书简报执行记录不存在")
+        if not run.document_id or not run.document_url:
+            raise ValueError("该执行记录尚未生成可覆盖的飞书云文档")
+        plan = await self._require_plan(db, run.plan_id)
+        if plan.schedule_frequency == "monthly":
+            raise ValueError("月报暂不支持通过周报重生成接口覆盖")
+
+        company = await self._require_company(db, plan.sys_company_id)
+        company_name = company.name if company else "香驰控股"
+        materials = await self._load_materials(
+            db,
+            sys_company_id=plan.sys_company_id,
+            period_start=run.period_start,
+            period_end=run.period_end,
+            limit=min(plan.max_materials, settings.INSIGHT_FEISHU_BRIEF_MAX_MATERIALS),
+        )
+        if len(materials) < 7:
+            raise ValueError(f"当前周期只有 {len(materials)} 条可用正式情报，不足以重新生成")
+
+        selected_materials, selection_audit = await self._select_materials(
+            company_name=company_name,
+            period_start=run.period_start,
+            period_end=run.period_end,
+            materials=materials,
+        )
+        if len(selected_materials) < 7:
+            raise ValueError(
+                f"当前周期有 {len(materials)} 条正式情报，但仅 {len(selected_materials)} 条通过相关性审校"
+            )
+        title, markdown = await self._generate_markdown(
+            company_name=company_name,
+            frequency=plan.schedule_frequency,
+            period_start=run.period_start,
+            period_end=run.period_end,
+            generated_at=datetime.now(),
+            materials=selected_materials,
+            original_material_count=len(materials),
+            prompt_override=plan.prompt_override,
+        )
+        await self._replace_document_content(run.document_id, markdown)
+
+        output_payload = dict(run.output_payload or {})
+        output_payload["material_selection"] = selection_audit
+        output_payload["regeneration"] = {
+            "regenerated_at": datetime.now().isoformat(),
+            "original_document_preserved": True,
+            "candidate_count": len(materials),
+            "selected_count": len(selected_materials),
+        }
+        run.material_count = len(selected_materials)
+        run.report_title = title
+        run.content_markdown = markdown
+        run.output_payload = output_payload
+        run.error_message = None
+        run.update_time = datetime.now()
+        db.add(run)
+        await db.commit()
+        await db.refresh(run)
+        return InsightFeishuBriefRunResponse(
+            run=self._run_read(run),
+            message="已重新生成并覆盖原飞书云文档，待推送链接保持不变",
+        )
+
     async def run_due_plans(
         self,
         db: AsyncSession,
@@ -871,6 +943,8 @@ class InsightFeishuBriefService:
             }
             for item in eligible_materials
         ]
+        target_min = min(len(eligible_materials), max(12, math.ceil(len(eligible_materials) * 0.6)))
+        target_max = min(len(eligible_materials), max(18, math.ceil(len(eligible_materials) * 0.75)), 30)
         prompt = f"""
 你是管理层简报的选材编辑。请从候选正式情报中筛出真正值得写入
 “{company_name}”简报的材料，不负责写报告。
@@ -894,12 +968,16 @@ class InsightFeishuBriefService:
 - 只有“可能相关”，却没有产品、客户、采购、配方、产能、销量或监管准入证据的材料。
 
 按相关性40%、时效性20%、证据具体度20%、来源可信度10%、管理价值10%评分。
-只有总分不低于75分才可入选，不得为凑够数量降低标准。相同事件只保留证据更强的一条。
-尽量保留10至16条；若高质量材料更少，可以少选，但至少需要7条才能生成固定导读。
+总分不低于78分标记为 primary，用于七条重点导读候选；68至77分标记为 supporting，
+只作为五类正文的补充证据。低于68分排除。相同事件可保留一条主证据和一条来源独立、
+能补充数字或经营动作的交叉证据，不要把所有补充证据误判为重复。
+本轮有{len(eligible_materials)}条通过硬规则的材料，目标保留{target_min}至{target_max}条；
+优先保证政策、竞对、客户、技术、原料中有真实材料的栏目获得覆盖，不得用弱相关材料凑栏目。
+若 primary 不足7条，可从高分 supporting 中补足导读候选，但不得降低68分底线。
 
 只返回 JSON：
 {{
-  "selected": [{{"id": 1, "score": 90, "category": "客户", "reason": "一句话"}}],
+  "selected": [{{"id": 1, "score": 90, "role": "primary", "category": "客户", "reason": "一句话"}}],
   "rejected": [{{"id": 2, "reason": "旧闻/弱相关/广告/重复/证据不足"}}]
 }}
 
@@ -949,12 +1027,14 @@ class InsightFeishuBriefService:
                 if warning in hard_reject_warnings:
                     enforced_rejected.append({"id": item_id, "reason": warning})
                     continue
-                if item_id in material_by_id and score >= 75 and item_id not in selected_ids:
+                if item_id in material_by_id and score >= 68 and item_id not in selected_ids:
+                    role = "primary" if score >= 78 else "supporting"
                     selected_ids.append(item_id)
                     selected_meta.append(
                         {
                             "id": item_id,
                             "score": score,
+                            "role": role,
                             "category": str(row.get("category") or ""),
                             "reason": str(row.get("reason") or "")[:300],
                         }
@@ -974,7 +1054,16 @@ class InsightFeishuBriefService:
             rejected_meta.extend(
                 row for row in deterministic_rejected if row["id"] not in rejected_ids
             )
-            selected = [material_by_id[item_id] for item_id in selected_ids]
+            selected_meta_by_id = {int(item["id"]): item for item in selected_meta}
+            selected = [
+                {
+                    **material_by_id[item_id],
+                    "editorial_score": selected_meta_by_id[item_id]["score"],
+                    "brief_role": selected_meta_by_id[item_id]["role"],
+                    "brief_category": selected_meta_by_id[item_id]["category"],
+                }
+                for item_id in selected_ids
+            ]
             return selected, {
                 "mode": "ai_editorial_selection",
                 "candidate_count": len(materials),
@@ -1102,6 +1191,7 @@ class InsightFeishuBriefService:
             f"第{self._week_of_month(period_end)}周信息简报"
         )
         period_text = self._period_text(period_start, period_end)
+        minimum_citations = min(len(materials), max(7, math.ceil(len(materials) * 0.65)))
         system_prompt = (
             "你是香驰控股管理层情报简报撰写人员。领导已经确定了报告格式，"
             "你的职责是严格套用，不得重新设计报告。只使用所给正式情报，不得虚构数字、"
@@ -1171,6 +1261,9 @@ class InsightFeishuBriefService:
     企业销量、营收或同店销售下滑，除非材料明确给出该因果证据。
 11. 五类正文和重点导读都不得写“香驰需、我司应、需关注、需警惕、需评估、建议”等行动建议。报告
     只陈述公开事实及材料明确支持的业务影响，不替领导下结论或安排后续动作。
+12. 材料中的 brief_role=primary 是主线事实，优先用于七条重点导读；brief_role=supporting 是补充证据，
+    应融入五类正文以补充数字、趋势或交叉印证，不要因为它不进入七条导读就完全忽略。
+13. 全文至少自然引用 {minimum_citations} 个不同来源；每条引用都必须承载具体事实，不得集中堆在段尾。
 
 # 二、重点情报导读
 
@@ -1323,6 +1416,30 @@ class InsightFeishuBriefService:
                 json={"children": blocks[index : index + 40], "index": index},
             )
         return document_id, f"https://feishu.cn/docx/{document_id}"
+
+    async def _replace_document_content(self, document_id: str, markdown: str) -> None:
+        """清空根节点下的旧内容并写入新内容，保留文档链接和既有权限。"""
+        data = await self._request(
+            "GET",
+            f"/open-apis/docx/v1/documents/{document_id}/blocks/{document_id}/children",
+            params={"page_size": 500, "document_revision_id": -1},
+        )
+        children = data.get("items") or []
+        if children:
+            await self._request(
+                "DELETE",
+                f"/open-apis/docx/v1/documents/{document_id}/blocks/{document_id}/children/batch_delete",
+                params={"document_revision_id": -1},
+                json={"start_index": 0, "end_index": len(children)},
+            )
+        blocks = self._markdown_blocks(markdown)
+        for index in range(0, len(blocks), 40):
+            await self._request(
+                "POST",
+                f"/open-apis/docx/v1/documents/{document_id}/blocks/{document_id}/children",
+                params={"document_revision_id": -1},
+                json={"children": blocks[index : index + 40], "index": index},
+            )
 
     async def _resolve_document_folder(
         self,
@@ -1913,6 +2030,12 @@ class InsightFeishuBriefService:
         output_urls = set(re.findall(r"https?://[^)\s]+", markdown))
         if output_urls - allowed_urls:
             errors.append("包含材料之外的来源链接")
+        required_source_count = min(len(allowed_urls), max(7, math.ceil(len(allowed_urls) * 0.65)))
+        if len(output_urls & allowed_urls) < required_source_count:
+            errors.append(
+                f"正文只使用了 {len(output_urls & allowed_urls)} 个不同来源，至少需要自然消化 "
+                f"{required_source_count} 个有效来源"
+            )
         return errors
 
     def _recipients(self, plan: InsightFeishuBriefPlan) -> list[InsightFeishuBriefRecipient]:

@@ -1466,6 +1466,24 @@ async def list_feishu_brief_runs(
     return Result.success(data=result)
 
 
+@router.post(
+    "/feishu-briefs/runs/{run_id}/regenerate",
+    response_model=Result[InsightFeishuBriefRunResponse],
+)
+async def regenerate_feishu_brief_run(
+    *,
+    run_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[InsightFeishuBriefRunResponse]:
+    _ensure_admin(current_user, "仅管理员可覆盖重生成飞书简报")
+    try:
+        result = await insight_feishu_brief_service.regenerate_run_in_place(db, run_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Result.success(data=result, msg=result.message)
+
+
 @router.post("/feishu-briefs/run-due", response_model=Result[InsightFeishuBriefDueRunResponse])
 async def run_due_feishu_brief_plans(
     *,
