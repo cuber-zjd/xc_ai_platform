@@ -132,6 +132,37 @@ class InsightFeishuBriefScheduleTest(unittest.TestCase):
         self.assertIn("包含材料未充分支撑的确定性需求、业绩因果或机会判断，需改为客观事实或审慎表述", errors)
         self.assertIn("正文夹带行动建议，需删除“香驰需、我司应、需关注、需警惕”等建议性表达", errors)
 
+    def test_weekly_validation_blocks_cross_business_competitor(self) -> None:
+        materials = [
+            {"id": index, "source_url": f"https://example.com/{index}", "title": f"材料 {index}"}
+            for index in range(1, 8)
+        ]
+        markdown = "\n".join(
+            [
+                "管理层情报简报｜2026年7月28日至8月3日｜生成时间：2026年8月4日",
+                "适用公司：御馨｜数据来源：情报管理多维表格·情报表｜原始候选 7 条",
+                "# 一、总览",
+                "# 政策",
+                "正文。",
+                "# 竞对",
+                "西王专精玉米油细分领域。",
+                "# 客户",
+                "正文。",
+                "# 技术",
+                "正文。",
+                "# 原料",
+                "正文。",
+                "# 二、重点情报导读",
+            ]
+            + [f"## [{index}. 事件 {index}](https://example.com/{index})" for index in range(1, 8)]
+        )
+        errors = self.service._validate_markdown(
+            markdown,
+            materials,
+            company_name="山东御馨生物科技股份有限公司",
+        )
+        self.assertIn("御馨竞对章节混入菜籽油或玉米油旁支品牌，必须删除并只保留大豆及植物蛋白主线", errors)
+
 
 class InsightMonthlyReportServiceTest(unittest.TestCase):
     def setUp(self) -> None:

@@ -1312,7 +1312,7 @@ class InsightFeishuBriefService:
                 materials,
             )
         )
-        errors = self._validate_markdown(markdown, materials)
+        errors = self._validate_markdown(markdown, materials, company_name=company_name)
         for format_round in range(2):
             if not errors:
                 break
@@ -1339,7 +1339,7 @@ class InsightFeishuBriefService:
                     materials,
                 )
             )
-            errors = self._validate_markdown(markdown, materials)
+            errors = self._validate_markdown(markdown, materials, company_name=company_name)
         if errors:
             raise ValueError(f"简报未通过固定格式检查：{'；'.join(errors)}")
         relevance_issues = await self._review_markdown_relevance(
@@ -1376,7 +1376,7 @@ class InsightFeishuBriefService:
                     materials,
                 )
             )
-            errors = self._validate_markdown(markdown, materials)
+            errors = self._validate_markdown(markdown, materials, company_name=company_name)
             if errors:
                 relevance_issues = errors
                 continue
@@ -1390,7 +1390,7 @@ class InsightFeishuBriefService:
                 )
             else:
                 relevance_issues = []
-        errors = self._validate_markdown(markdown, materials)
+        errors = self._validate_markdown(markdown, materials, company_name=company_name)
         if errors:
             raise ValueError(f"业务审校修订后仍未通过确定性检查：{'；'.join(errors)}")
         return title, markdown
@@ -1961,7 +1961,13 @@ class InsightFeishuBriefService:
             },
         }
 
-    def _validate_markdown(self, markdown: str, materials: list[dict[str, Any]]) -> list[str]:
+    def _validate_markdown(
+        self,
+        markdown: str,
+        materials: list[dict[str, Any]],
+        *,
+        company_name: str | None = None,
+    ) -> list[str]:
         errors: list[str] = []
         headings = ["# 一、总览", "# 政策", "# 竞对", "# 客户", "# 技术", "# 原料", "# 二、重点情报导读"]
         positions = [markdown.find(item) for item in headings]
@@ -1995,6 +2001,16 @@ class InsightFeishuBriefService:
         if re.search(r"(?<!\]\()https?://", markdown):
             errors.append("正文包含未嵌入语义短语的裸网址")
         body = markdown.split("# 二、重点情报导读", 1)[0]
+        competitor_match = re.search(r"^# 竞对\s*$([\s\S]*?)(?=^# )", body, flags=re.MULTILINE)
+        competitor_body = competitor_match.group(1) if competitor_match else ""
+        if company_name and "御馨" in company_name and re.search(
+            r"(?:长安花|西王|菜籽油|玉米油)", competitor_body
+        ):
+            errors.append("御馨竞对章节混入菜籽油或玉米油旁支品牌，必须删除并只保留大豆及植物蛋白主线")
+        if company_name and "健源" in company_name and re.search(
+            r"(?:大豆蛋白|豆粕|豆油|植物蛋白)", competitor_body
+        ):
+            errors.append("健源竞对章节混入大豆或植物蛋白旁支业务，必须删除并只保留玉米深加工及糖类主线")
         body_links = re.findall(r"\[([^\]]+)\]\((https?://[^)]+)\)", body)
         source_titles = {
             self._normalize_title(str(item.get("title") or ""))
