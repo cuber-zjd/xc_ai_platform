@@ -1197,7 +1197,11 @@ class InsightFeishuBriefService:
             f"第{self._week_of_month(period_end)}周信息简报"
         )
         period_text = self._period_text(period_start, period_end)
-        minimum_citations = min(len(materials), max(7, math.ceil(len(materials) * 0.65)))
+        # 有价值素材全部保留，但固定篇幅的周报不能按素材总量线性堆叠引用。
+        minimum_citations = min(
+            len(materials),
+            max(7, min(25, math.ceil(len(materials) * 0.35))),
+        )
         system_prompt = (
             "你是香驰控股管理层情报简报撰写人员。领导已经确定了报告格式，"
             "你的职责是严格套用，不得重新设计报告。只使用所给正式情报，不得虚构数字、"
