@@ -163,6 +163,23 @@ class InsightFeishuBriefScheduleTest(unittest.TestCase):
         )
         self.assertIn("御馨竞对章节混入菜籽油或玉米油旁支品牌，必须删除并只保留大豆及植物蛋白主线", errors)
 
+    def test_company_scope_normalizer_removes_only_cross_business_sentences(self) -> None:
+        markdown = (
+            "# 竞对\n\n"
+            "[ADM扩建大豆压榨产能](https://example.com/adm)，新增约70万吨年产能。"
+            "[西王专精玉米油](https://example.com/xw)，采用六重保鲜工艺。"
+            "[长安花布局菜籽油](https://example.com/ca)，完善全产业链。\n\n"
+            "# 客户\n\n客户正文。"
+        )
+        normalized = self.service._normalize_company_scope(
+            markdown,
+            "山东御馨生物科技股份有限公司",
+        )
+        self.assertIn("ADM扩建大豆压榨产能", normalized)
+        self.assertNotIn("西王专精玉米油", normalized)
+        self.assertNotIn("长安花布局菜籽油", normalized)
+        self.assertIn("# 客户", normalized)
+
 
 class InsightMonthlyReportServiceTest(unittest.TestCase):
     def setUp(self) -> None:

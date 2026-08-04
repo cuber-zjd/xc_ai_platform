@@ -1312,6 +1312,7 @@ class InsightFeishuBriefService:
                 materials,
             )
         )
+        markdown = self._normalize_company_scope(markdown, company_name)
         errors = self._validate_markdown(markdown, materials, company_name=company_name)
         for format_round in range(2):
             if not errors:
@@ -1339,6 +1340,7 @@ class InsightFeishuBriefService:
                     materials,
                 )
             )
+            markdown = self._normalize_company_scope(markdown, company_name)
             errors = self._validate_markdown(markdown, materials, company_name=company_name)
         if errors:
             raise ValueError(f"简报未通过固定格式检查：{'；'.join(errors)}")
@@ -1376,6 +1378,7 @@ class InsightFeishuBriefService:
                     materials,
                 )
             )
+            markdown = self._normalize_company_scope(markdown, company_name)
             errors = self._validate_markdown(markdown, materials, company_name=company_name)
             if errors:
                 relevance_issues = errors
@@ -1390,6 +1393,7 @@ class InsightFeishuBriefService:
                 )
             else:
                 relevance_issues = []
+        markdown = self._normalize_company_scope(markdown, company_name)
         errors = self._validate_markdown(markdown, materials, company_name=company_name)
         if errors:
             raise ValueError(f"业务审校修订后仍未通过确定性检查：{'；'.join(errors)}")
@@ -2413,6 +2417,28 @@ class InsightFeishuBriefService:
             ]
             normalized_lines.append("".join(kept).strip())
         return "\n".join(normalized_lines)
+
+    def _normalize_company_scope(self, markdown: str, company_name: str) -> str:
+        """确定性移除竞对章节中的跨产业旁支句，避免模型返修不稳定。"""
+        blocked_pattern: re.Pattern[str] | None = None
+        if "御馨" in company_name:
+            blocked_pattern = re.compile(r"(?:长安花|西王|菜籽油|玉米油)")
+        elif "健源" in company_name:
+            blocked_pattern = re.compile(r"(?:大豆蛋白|豆粕|豆油|植物蛋白)")
+        if blocked_pattern is None:
+            return markdown
+
+        section_pattern = re.compile(r"(^# 竞对\s*$)([\s\S]*?)(?=^# )", flags=re.MULTILINE)
+
+        def clean_section(match: re.Match[str]) -> str:
+            sentences = re.findall(r"[^。！？\n]+[。！？]?|\n+", match.group(2))
+            kept = [sentence for sentence in sentences if not blocked_pattern.search(sentence)]
+            content = "".join(kept).strip()
+            if not content:
+                content = "本期暂无值得重点关注的新增动态"
+            return f"{match.group(1)}\n\n{content}\n\n"
+
+        return section_pattern.sub(clean_section, markdown, count=1)
 
     def _has_conflicting_url_year(self, source_url: str, publish_time: Any) -> bool:
         if not source_url or not isinstance(publish_time, datetime):
