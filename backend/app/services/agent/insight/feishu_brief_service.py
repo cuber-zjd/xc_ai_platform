@@ -946,16 +946,6 @@ class InsightFeishuBriefService:
             }
             for item in eligible_materials
         ]
-        # 大素材池仍需保持管理简报密度，目标区间必须单调且不能出现下限高于上限。
-        target_min = min(
-            len(eligible_materials),
-            max(12, min(24, math.ceil(len(eligible_materials) * 0.6))),
-        )
-        target_max = min(
-            len(eligible_materials),
-            30,
-            max(target_min, math.ceil(len(eligible_materials) * 0.75)),
-        )
         prompt = f"""
 你是管理层简报的选材编辑。请从候选正式情报中筛出真正值得写入
 “{company_name}”简报的材料，不负责写报告。
@@ -985,8 +975,9 @@ class InsightFeishuBriefService:
 总分不低于78分标记为 primary，用于七条重点导读候选；68至77分标记为 supporting，
 只作为五类正文的补充证据。低于68分排除。相同事件可保留一条主证据和一条来源独立、
 能补充数字或经营动作的交叉证据，不要把所有补充证据误判为重复。
-本轮有{len(eligible_materials)}条通过硬规则的材料，目标保留{target_min}至{target_max}条；
-优先保证政策、竞对、客户、技术、原料中有真实材料的栏目获得覆盖，不得用弱相关材料凑栏目。
+本轮有{len(eligible_materials)}条通过硬规则的材料，不设入选数量上限或配额：达到68分的全部保留，
+不得为了控制篇幅淘汰有业务价值的材料，也不得为了凑数量降低标准。政策、竞对、客户、技术、原料
+中有真实材料的栏目都应获得覆盖。必须逐条作出决定，selected 与 rejected 合计覆盖全部候选 ID。
 若 primary 不足7条，可从高分 supporting 中补足导读候选，但不得降低68分底线。
 
 只返回 JSON：
