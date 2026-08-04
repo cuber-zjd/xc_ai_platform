@@ -14,6 +14,7 @@ from app.services.agent.insight.feishu_monthly_report_service import (
 )
 from app.services.agent.insight.company_context import insight_company_business_context
 from app.models.agent.insight.feishu_brief import InsightFeishuBriefPlan
+from app.schemas.agent.insight.feishu_brief import InsightFeishuBriefGenerationRules
 from app.services.agent.insight.feishu_brief_service import InsightFeishuBriefService
 
 
@@ -80,11 +81,39 @@ class InsightFeishuBriefScheduleTest(unittest.TestCase):
                     period_start=datetime(2026, 7, 28),
                     period_end=datetime(2026, 8, 3, 23, 59, 59),
                     materials=materials,
+                    generation_rules=InsightFeishuBriefGenerationRules(),
                 )
             )
         self.assertEqual(len(selected), 8)
         self.assertEqual(selected[-1]["brief_role"], "supporting")
         self.assertEqual(audit["selected"][-1]["score"], 72)
+
+    def test_company_default_rules_keep_business_boundaries_distinct(self) -> None:
+        plan = InsightFeishuBriefPlan(plan_uid="rules", plan_name="规则测试")
+        jianyuan = self.service._generation_rules(plan, "山东香驰健源生物科技有限公司")
+        yuxin = self.service._generation_rules(plan, "山东御馨生物科技股份有限公司")
+        self.assertIn("糖浆与功能糖", jianyuan.focus_topics)
+        self.assertNotIn("大豆精深加工", jianyuan.focus_topics)
+        self.assertIn("大豆精深加工", yuxin.focus_topics)
+        self.assertNotIn("糖浆与功能糖", yuxin.focus_topics)
+
+    def test_saved_generation_rules_override_company_defaults(self) -> None:
+        plan = InsightFeishuBriefPlan(
+            plan_uid="custom-rules",
+            plan_name="自定义规则",
+            generation_rules_json={
+                "focus_topics": ["餐饮供应链"],
+                "primary_score": 82,
+                "supporting_score": 65,
+                "minimum_citations": 10,
+                "maximum_citations": 30,
+            },
+        )
+        rules = self.service._generation_rules(plan, "山东香驰健源生物科技有限公司")
+        self.assertEqual(rules.focus_topics, ["餐饮供应链"])
+        self.assertEqual(rules.primary_score, 82)
+        self.assertEqual(rules.supporting_score, 65)
+        self.assertEqual(rules.minimum_citations, 10)
 
     def test_replace_document_preserves_document_and_rewrites_blocks(self) -> None:
         request = AsyncMock(

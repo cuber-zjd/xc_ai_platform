@@ -2329,6 +2329,19 @@ export interface InsightFeishuBriefRecipient {
     name?: string | null;
 }
 
+export interface InsightFeishuBriefGenerationRules {
+    focus_topics: string[];
+    value_departments: string[];
+    excluded_content: string[];
+    primary_score: number;
+    supporting_score: number;
+    section_priorities: Record<"政策" | "竞对" | "客户" | "技术" | "原料", number>;
+    minimum_citations: number;
+    maximum_citations: number;
+    writing_depth: "concise" | "balanced" | "detailed";
+    include_business_insight: boolean;
+}
+
 export interface InsightFeishuBriefOptionsRead {
     enabled: boolean;
     configured: boolean;
@@ -2352,6 +2365,7 @@ export interface InsightFeishuBriefPlanCreate {
     max_materials: number;
     generation_strategy: "auto" | "single_model" | "section_parallel" | "multi_agent_ensemble";
     prompt_override?: string | null;
+    generation_rules: InsightFeishuBriefGenerationRules;
     recipients: InsightFeishuBriefRecipient[];
     afternoon_recipients: InsightFeishuBriefRecipient[];
     afternoon_push_time: string;
@@ -2373,6 +2387,7 @@ export interface InsightFeishuBriefPlanRead {
     max_materials: number;
     generation_strategy: "auto" | "single_model" | "section_parallel" | "multi_agent_ensemble";
     prompt_override?: string | null;
+    generation_rules: InsightFeishuBriefGenerationRules;
     recipients: InsightFeishuBriefRecipient[];
     afternoon_recipients: InsightFeishuBriefRecipient[];
     afternoon_push_time: string;

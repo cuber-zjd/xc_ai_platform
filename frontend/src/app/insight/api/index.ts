@@ -160,6 +160,7 @@ export {
     type InsightFeishuSyncRequest,
     type InsightFeishuSyncResponse,
     type InsightFeishuBriefOptionsRead,
+    type InsightFeishuBriefGenerationRules,
     type InsightFeishuBriefPlanCreate,
     type InsightFeishuBriefPlanRead,
     type InsightFeishuBriefRecipient,

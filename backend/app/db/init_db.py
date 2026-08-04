@@ -465,6 +465,12 @@ async def _ensure_insight_feishu_brief_columns(conn):
     await conn.execute(
         text(
             "ALTER TABLE insight_feishu_brief_plan "
+            "ADD COLUMN IF NOT EXISTS generation_rules_json JSONB DEFAULT '{}'::jsonb NOT NULL"
+        )
+    )
+    await conn.execute(
+        text(
+            "ALTER TABLE insight_feishu_brief_plan "
             "ADD COLUMN IF NOT EXISTS afternoon_recipients_json JSONB DEFAULT '[]'::jsonb NOT NULL"
         )
     )

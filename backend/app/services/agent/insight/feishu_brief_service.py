@@ -23,6 +23,7 @@ from app.models.agent.insight import InsightFeishuBriefPlan, InsightFeishuBriefR
 from app.models.system.sys_company import SysCompany
 from app.schemas.agent.insight.feishu_brief import (
     InsightFeishuBriefDueRunResponse,
+    InsightFeishuBriefGenerationRules,
     InsightFeishuBriefOptionsRead,
     InsightFeishuBriefPlanCreate,
     InsightFeishuBriefPlanRead,
@@ -251,6 +252,7 @@ class InsightFeishuBriefService:
             max_materials=payload.max_materials,
             generation_strategy=payload.generation_strategy,
             prompt_override=payload.prompt_override,
+            generation_rules_json=payload.generation_rules.model_dump(mode="json"),
             recipients_json=[item.model_dump(mode="json") for item in payload.recipients],
             afternoon_recipients_json=[
                 item.model_dump(mode="json") for item in payload.afternoon_recipients
@@ -287,6 +289,8 @@ class InsightFeishuBriefService:
             data["recipients_json"] = data.pop("recipients")
         if "afternoon_recipients" in data:
             data["afternoon_recipients_json"] = data.pop("afternoon_recipients")
+        if "generation_rules" in data:
+            data["generation_rules_json"] = data.pop("generation_rules")
         for key, value in data.items():
             setattr(row, key, value)
         row.next_run_time = self._next_run_time(
@@ -369,6 +373,11 @@ class InsightFeishuBriefService:
         try:
             company = await self._require_company(db, plan.sys_company_id)
             company_name = company.name if company else "香驰控股"
+            generation_rules = self._generation_rules(plan, company_name)
+            effective_prompt_override = self._merge_rule_prompt(
+                plan.prompt_override,
+                generation_rules,
+            )
             final_folder = await self._resolve_document_folder(
                 company_name=company_name,
                 frequency=plan.schedule_frequency,
@@ -408,7 +417,7 @@ class InsightFeishuBriefService:
                     period_start=period_start,
                     period_end=period_end,
                     materials=materials,
-                    prompt_override=plan.prompt_override,
+                    prompt_override=effective_prompt_override,
                     generation_strategy=plan.generation_strategy,
                 )
                 title = monthly_result.title
@@ -462,6 +471,7 @@ class InsightFeishuBriefService:
                     period_start=period_start,
                     period_end=period_end,
                     materials=materials,
+                    generation_rules=generation_rules,
                 )
                 if len(selected_materials) < 7:
                     raise ValueError(
@@ -476,7 +486,8 @@ class InsightFeishuBriefService:
                     generated_at=execution_started_at,
                     materials=selected_materials,
                     original_material_count=len(materials),
-                    prompt_override=plan.prompt_override,
+                    prompt_override=effective_prompt_override,
+                    generation_rules=generation_rules,
                 )
                 pipeline_output = {"material_selection": selection_audit}
                 used_material_count = len(selected_materials)
@@ -624,6 +635,7 @@ class InsightFeishuBriefService:
 
         company = await self._require_company(db, plan.sys_company_id)
         company_name = company.name if company else "香驰控股"
+        generation_rules = self._generation_rules(plan, company_name)
         materials = await self._load_materials(
             db,
             sys_company_id=plan.sys_company_id,
@@ -639,6 +651,7 @@ class InsightFeishuBriefService:
             period_start=run.period_start,
             period_end=run.period_end,
             materials=materials,
+            generation_rules=generation_rules,
         )
         if len(selected_materials) < 7:
             raise ValueError(
@@ -652,7 +665,8 @@ class InsightFeishuBriefService:
             generated_at=datetime.now(),
             materials=selected_materials,
             original_material_count=len(materials),
-            prompt_override=plan.prompt_override,
+            prompt_override=self._merge_rule_prompt(plan.prompt_override, generation_rules),
+            generation_rules=generation_rules,
         )
         await self._replace_document_content(run.document_id, markdown)
 
@@ -909,6 +923,7 @@ class InsightFeishuBriefService:
         period_start: datetime,
         period_end: datetime,
         materials: list[dict[str, Any]],
+        generation_rules: InsightFeishuBriefGenerationRules,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         deterministic_rejected = [
             {"id": item.get("id"), "reason": reason}
@@ -972,13 +987,16 @@ class InsightFeishuBriefService:
 - 既没有具体事实，也无法说明对销售、市场、研发、采购或经营判断有何价值的材料。
 
 按相关性40%、时效性20%、证据具体度20%、来源可信度10%、管理价值10%评分。
-总分不低于78分标记为 primary，用于七条重点导读候选；68至77分标记为 supporting，
-只作为五类正文的补充证据。低于68分排除。相同事件可保留一条主证据和一条来源独立、
+总分不低于{generation_rules.primary_score}分标记为 primary，用于七条重点导读候选；
+{generation_rules.supporting_score}至{generation_rules.primary_score - 1}分标记为 supporting，
+只作为五类正文的补充证据。低于{generation_rules.supporting_score}分排除。相同事件可保留一条主证据和一条来源独立、
 能补充数字或经营动作的交叉证据，不要把所有补充证据误判为重复。
-本轮有{len(eligible_materials)}条通过硬规则的材料，不设入选数量上限或配额：达到68分的全部保留，
+本轮有{len(eligible_materials)}条通过硬规则的材料，不设入选数量上限或配额：达到
+{generation_rules.supporting_score}分的全部保留，
 不得为了控制篇幅淘汰有业务价值的材料，也不得为了凑数量降低标准。政策、竞对、客户、技术、原料
 中有真实材料的栏目都应获得覆盖。必须逐条作出决定，selected 与 rejected 合计覆盖全部候选 ID。
-若 primary 不足7条，可从高分 supporting 中补足导读候选，但不得降低68分底线。
+若 primary 不足7条，可从高分 supporting 中补足导读候选，但不得降低
+{generation_rules.supporting_score}分底线。
 
 只返回 JSON：
 {{
@@ -988,6 +1006,9 @@ class InsightFeishuBriefService:
 
 候选材料：
 {json.dumps(compact_materials, ensure_ascii=False, default=str)}
+
+本计划业务规则：
+{self._rules_prompt(generation_rules)}
 """
         try:
             response = await LLMFactory.safe_invoke(
@@ -1032,8 +1053,16 @@ class InsightFeishuBriefService:
                 if warning in hard_reject_warnings:
                     enforced_rejected.append({"id": item_id, "reason": warning})
                     continue
-                if item_id in material_by_id and score >= 68 and item_id not in selected_ids:
-                    role = "primary" if score >= 78 else "supporting"
+                if (
+                    item_id in material_by_id
+                    and score >= generation_rules.supporting_score
+                    and item_id not in selected_ids
+                ):
+                    role = (
+                        "primary"
+                        if score >= generation_rules.primary_score
+                        else "supporting"
+                    )
                     selected_ids.append(item_id)
                     selected_meta.append(
                         {
@@ -1190,6 +1219,7 @@ class InsightFeishuBriefService:
         materials: list[dict[str, Any]],
         original_material_count: int,
         prompt_override: str | None,
+        generation_rules: InsightFeishuBriefGenerationRules,
     ) -> tuple[str, str]:
         short_name = self._short_company_name(company_name)
         title = (
@@ -1200,7 +1230,13 @@ class InsightFeishuBriefService:
         # 有价值素材全部保留，但固定篇幅的周报不能按素材总量线性堆叠引用。
         minimum_citations = min(
             len(materials),
-            max(7, min(25, math.ceil(len(materials) * 0.35))),
+            max(
+                generation_rules.minimum_citations,
+                min(
+                    generation_rules.maximum_citations,
+                    math.ceil(len(materials) * 0.35),
+                ),
+            ),
         )
         system_prompt = (
             "你是香驰控股管理层情报简报撰写人员。领导已经确定了报告格式，"
@@ -1323,7 +1359,7 @@ class InsightFeishuBriefService:
             )
         )
         markdown = self._normalize_company_scope(markdown, company_name)
-        errors = self._validate_markdown(markdown, materials, company_name=company_name)
+        errors = self._validate_markdown(markdown, materials, company_name=company_name, required_source_count=minimum_citations)
         for format_round in range(2):
             if not errors:
                 break
@@ -1351,7 +1387,7 @@ class InsightFeishuBriefService:
                 )
             )
             markdown = self._normalize_company_scope(markdown, company_name)
-            errors = self._validate_markdown(markdown, materials, company_name=company_name)
+            errors = self._validate_markdown(markdown, materials, company_name=company_name, required_source_count=minimum_citations)
         if errors:
             raise ValueError(f"简报未通过固定格式检查：{'；'.join(errors)}")
         relevance_issues = await self._review_markdown_relevance(
@@ -1389,7 +1425,7 @@ class InsightFeishuBriefService:
                 )
             )
             markdown = self._normalize_company_scope(markdown, company_name)
-            errors = self._validate_markdown(markdown, materials, company_name=company_name)
+            errors = self._validate_markdown(markdown, materials, company_name=company_name, required_source_count=minimum_citations)
             if errors:
                 relevance_issues = errors
                 continue
@@ -1404,7 +1440,7 @@ class InsightFeishuBriefService:
             else:
                 relevance_issues = []
         markdown = self._normalize_company_scope(markdown, company_name)
-        errors = self._validate_markdown(markdown, materials, company_name=company_name)
+        errors = self._validate_markdown(markdown, materials, company_name=company_name, required_source_count=minimum_citations)
         if errors:
             raise ValueError(f"业务审校修订后仍未通过确定性检查：{'；'.join(errors)}")
         return title, markdown
@@ -1981,6 +2017,7 @@ class InsightFeishuBriefService:
         materials: list[dict[str, Any]],
         *,
         company_name: str | None = None,
+        required_source_count: int | None = None,
     ) -> list[str]:
         errors: list[str] = []
         headings = ["# 一、总览", "# 政策", "# 竞对", "# 客户", "# 技术", "# 原料", "# 二、重点情报导读"]
@@ -2069,7 +2106,9 @@ class InsightFeishuBriefService:
             errors.append("包含材料之外的来源链接")
         required_source_count = min(
             len(allowed_urls),
-            max(7, min(25, math.ceil(len(allowed_urls) * 0.35))),
+            required_source_count
+            if required_source_count is not None
+            else max(7, min(25, math.ceil(len(allowed_urls) * 0.35))),
         )
         if len(output_urls & allowed_urls) < required_source_count:
             errors.append(
@@ -2183,6 +2222,61 @@ class InsightFeishuBriefService:
             raise ValueError("飞书简报计划不存在")
         return row
 
+    def _generation_rules(
+        self,
+        plan: InsightFeishuBriefPlan,
+        company_name: str,
+    ) -> InsightFeishuBriefGenerationRules:
+        payload = dict(plan.generation_rules_json or {})
+        if not payload.get("focus_topics"):
+            if "健源" in company_name:
+                payload["focus_topics"] = [
+                    "玉米精深加工", "糖浆与功能糖", "茶饮与饮料客户", "乳品与烘焙客户",
+                    "减糖消费趋势", "食品监管", "原料行情", "竞对与替代配料",
+                ]
+            elif "御馨" in company_name:
+                payload["focus_topics"] = [
+                    "大豆精深加工", "植物蛋白", "食品与饮料客户", "乳品与肉制品客户",
+                    "健康食品趋势", "食品监管", "大豆与豆粕行情", "竞对与替代蛋白",
+                ]
+            else:
+                payload["focus_topics"] = ["客户", "竞对", "政策", "技术", "原料", "消费趋势"]
+        try:
+            return InsightFeishuBriefGenerationRules.model_validate(payload)
+        except Exception:
+            return InsightFeishuBriefGenerationRules(focus_topics=payload.get("focus_topics") or [])
+
+    @staticmethod
+    def _rules_prompt(rules: InsightFeishuBriefGenerationRules) -> str:
+        depth_labels = {"concise": "精简", "balanced": "均衡", "detailed": "深入"}
+        priorities = "、".join(
+            f"{name}{level}/5"
+            for name, level in sorted(
+                rules.section_priorities.items(),
+                key=lambda item: item[1],
+                reverse=True,
+            )
+        )
+        return (
+            f"关注主题：{'、'.join(rules.focus_topics) or '按公司默认业务范围'}\n"
+            f"服务部门：{'、'.join(rules.value_departments)}\n"
+            f"排除内容：{'、'.join(rules.excluded_content)}\n"
+            f"栏目侧重：{priorities}\n"
+            f"写作深度：{depth_labels[rules.writing_depth]}\n"
+            f"业务启示：{'需要说明' if rules.include_business_insight else '只陈述事实，不延伸启示'}\n"
+            f"主线素材阈值：{rules.primary_score}；补充素材阈值：{rules.supporting_score}\n"
+            f"正文来源覆盖：至少{rules.minimum_citations}个、最多按{rules.maximum_citations}个控制"
+        )
+
+    def _merge_rule_prompt(
+        self,
+        prompt_override: str | None,
+        rules: InsightFeishuBriefGenerationRules,
+    ) -> str:
+        custom = (prompt_override or "").strip()
+        rule_text = f"本计划结构化业务规则：\n{self._rules_prompt(rules)}"
+        return f"{rule_text}\n\n本计划补充要求：\n{custom}" if custom else rule_text
+
     async def _require_company(self, db: AsyncSession, company_id: int | None) -> SysCompany | None:
         if company_id is None:
             return None
@@ -2213,6 +2307,7 @@ class InsightFeishuBriefService:
             max_materials=row.max_materials,
             generation_strategy=row.generation_strategy,
             prompt_override=row.prompt_override,
+            generation_rules=self._generation_rules(row, company_name or "香驰控股"),
             recipients=[InsightFeishuBriefRecipient.model_validate(item) for item in row.recipients_json or []],
             afternoon_recipients=[
                 InsightFeishuBriefRecipient.model_validate(item)

@@ -10,6 +10,43 @@ class InsightFeishuBriefRecipient(BaseModel):
     name: str | None = Field(default=None, max_length=100)
 
 
+class InsightFeishuBriefGenerationRules(BaseModel):
+    focus_topics: list[str] = Field(default_factory=list, max_length=30)
+    value_departments: list[str] = Field(
+        default_factory=lambda: ["销售", "市场", "研发", "采购", "供应链", "经营管理"],
+        max_length=10,
+    )
+    excluded_content: list[str] = Field(
+        default_factory=lambda: ["广告软文", "榜单", "招聘", "通用专利", "旧闻", "重复事件"],
+        max_length=20,
+    )
+    primary_score: int = Field(default=78, ge=60, le=100)
+    supporting_score: int = Field(default=68, ge=50, le=99)
+    section_priorities: dict[str, int] = Field(
+        default_factory=lambda: {"政策": 3, "竞对": 3, "客户": 5, "技术": 3, "原料": 4},
+    )
+    minimum_citations: int = Field(default=7, ge=5, le=30)
+    maximum_citations: int = Field(default=25, ge=7, le=40)
+    writing_depth: Literal["concise", "balanced", "detailed"] = "balanced"
+    include_business_insight: bool = True
+
+    @model_validator(mode="after")
+    def validate_rules(self) -> "InsightFeishuBriefGenerationRules":
+        if self.supporting_score >= self.primary_score:
+            raise ValueError("补充素材评分必须低于主线素材评分")
+        if self.minimum_citations > self.maximum_citations:
+            raise ValueError("最少引用数不能高于最多引用数")
+        allowed_sections = {"政策", "竞对", "客户", "技术", "原料"}
+        self.section_priorities = {
+            key: min(max(int(value), 0), 5)
+            for key, value in self.section_priorities.items()
+            if key in allowed_sections
+        }
+        for key in allowed_sections:
+            self.section_priorities.setdefault(key, 3)
+        return self
+
+
 class InsightFeishuBriefPlanCreate(BaseModel):
     plan_name: str = Field(min_length=1, max_length=160)
     sys_company_id: int | None = None
@@ -26,6 +63,9 @@ class InsightFeishuBriefPlanCreate(BaseModel):
         "multi_agent_ensemble",
     ] = "auto"
     prompt_override: str | None = None
+    generation_rules: InsightFeishuBriefGenerationRules = Field(
+        default_factory=InsightFeishuBriefGenerationRules
+    )
     recipients: list[InsightFeishuBriefRecipient] = Field(default_factory=list)
     afternoon_recipients: list[InsightFeishuBriefRecipient] = Field(default_factory=list)
     afternoon_push_time: str = Field(default="15:00", pattern=r"^\d{2}:\d{2}$")
@@ -56,6 +96,7 @@ class InsightFeishuBriefPlanUpdate(BaseModel):
         "multi_agent_ensemble",
     ] | None = None
     prompt_override: str | None = None
+    generation_rules: InsightFeishuBriefGenerationRules | None = None
     recipients: list[InsightFeishuBriefRecipient] | None = None
     afternoon_recipients: list[InsightFeishuBriefRecipient] | None = None
     afternoon_push_time: str | None = Field(default=None, pattern=r"^\d{2}:\d{2}$")
@@ -87,6 +128,7 @@ class InsightFeishuBriefPlanRead(BaseModel):
     max_materials: int
     generation_strategy: str
     prompt_override: str | None
+    generation_rules: InsightFeishuBriefGenerationRules
     recipients: list[InsightFeishuBriefRecipient]
     afternoon_recipients: list[InsightFeishuBriefRecipient]
     afternoon_push_time: str

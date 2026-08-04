@@ -24,6 +24,7 @@ class InsightFeishuBriefPlan(BaseDBModel, table=True):
     max_materials: int = Field(default=200)
     generation_strategy: str = Field(default="auto", index=True, max_length=40)
     prompt_override: str | None = Field(default=None)
+    generation_rules_json: dict[str, Any] = Field(default_factory=dict, sa_type=JSONB)
     # recipients_json 保留为上午审阅组，兼容已有计划数据。
     recipients_json: list[dict[str, Any]] = Field(default_factory=list, sa_type=JSONB)
     afternoon_recipients_json: list[dict[str, Any]] = Field(default_factory=list, sa_type=JSONB)
