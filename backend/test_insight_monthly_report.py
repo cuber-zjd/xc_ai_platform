@@ -101,6 +101,37 @@ class InsightFeishuBriefScheduleTest(unittest.TestCase):
         self.assertEqual(request.await_args_list[1].kwargs["json"], {"start_index": 0, "end_index": 2})
         self.assertIn("/doc-1/blocks/doc-1/children", request.await_args_list[2].args[1])
 
+    def test_weekly_validation_blocks_unsupported_demand_and_advice(self) -> None:
+        materials = [
+            {"id": index, "source_url": f"https://example.com/{index}", "title": f"材料 {index}"}
+            for index in range(1, 8)
+        ]
+        markdown = "\n".join(
+            [
+                "管理层情报简报｜2026年7月28日至8月3日｜生成时间：2026年8月4日",
+                "适用公司：健源｜数据来源：情报管理多维表格·情报表｜原始候选 7 条",
+                "# 一、总览",
+                "# 政策",
+                "该动作意味着未来新增采购需求，值得关注。",
+                "# 竞对",
+                "正文。",
+                "# 客户",
+                "正文。",
+                "# 技术",
+                "正文。",
+                "# 原料",
+                "正文。",
+                "# 二、重点情报导读",
+            ]
+            + [
+                f"## [{index}. 事件 {index}](https://example.com/{index})"
+                for index in range(1, 8)
+            ]
+        )
+        errors = self.service._validate_markdown(markdown, materials)
+        self.assertIn("包含材料未充分支撑的确定性需求、业绩因果或机会判断，需改为客观事实或审慎表述", errors)
+        self.assertIn("正文夹带行动建议，需删除“香驰需、我司应、需关注、需警惕”等建议性表达", errors)
+
 
 class InsightMonthlyReportServiceTest(unittest.TestCase):
     def setUp(self) -> None:
