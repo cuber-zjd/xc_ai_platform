@@ -49,6 +49,10 @@ class InsightFeishuBriefScheduleTest(unittest.TestCase):
         self.assertEqual(start, datetime(2026, 8, 1))
         self.assertEqual(end, datetime(2026, 8, 31, 10, 30))
 
+    def test_week_title_uses_material_end_date_interval(self) -> None:
+        self.assertEqual(self.service._week_of_month(datetime(2026, 8, 3, 23, 59)), 1)
+        self.assertEqual(self.service._week_of_month(datetime(2026, 8, 8)), 2)
+
     def test_weekly_selection_keeps_supporting_evidence(self) -> None:
         materials = [
             {

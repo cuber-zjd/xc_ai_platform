@@ -1971,9 +1971,8 @@ class InsightFeishuBriefService:
 
     @staticmethod
     def _week_of_month(value: datetime) -> int:
-        """按周一至周日计算当月第几周。"""
-        first_day = value.replace(day=1)
-        return (value.day + first_day.weekday() - 1) // 7 + 1
+        """按素材截止日在当月的七天区间计算周次。"""
+        return (value.day - 1) // 7 + 1
 
     @staticmethod
     def _is_guide_tag_line(text: str) -> bool:
