@@ -83,21 +83,30 @@ class WeaverAiReviewSchedulerService:
                     return self._finish_result(result, started_at)
                 candidates = await asyncio.to_thread(self._scan_candidates, configs)
                 result["discovered"] = len(candidates)
+                claimed_candidates: list[tuple[dict[str, Any], int]] = []
+                for candidate in candidates:
+                    task_id = await self._claim(candidate)
+                    if task_id is None:
+                        result["skipped"] += 1
+                        continue
+                    claimed_candidates.append((candidate, task_id))
+                    if len(claimed_candidates) >= self._batch_limit():
+                        break
+                result["claimed"] = len(claimed_candidates)
                 semaphore = asyncio.Semaphore(self._concurrency())
 
-                async def process(candidate: dict[str, Any]) -> dict[str, Any]:
+                async def process(candidate: dict[str, Any], task_id: int) -> dict[str, Any]:
                     async with semaphore:
-                        return await self._process_candidate(candidate)
+                        return await self._process_claimed_candidate(candidate, task_id)
 
                 outcomes = await asyncio.gather(
-                    *(process(candidate) for candidate in candidates[: self._batch_limit()])
+                    *(process(candidate, task_id) for candidate, task_id in claimed_candidates)
                 )
                 for outcome in outcomes:
                     outcome_status = outcome.pop("status")
                     result[outcome_status] += 1
                     if outcome_status == "failed":
                         result["errors"].append(outcome)
-                result["claimed"] = result["completed"] + result["failed"]
                 return self._finish_result(result, started_at)
             except Exception as exc:
                 result["status"] = "failed"
@@ -135,9 +144,6 @@ class WeaverAiReviewSchedulerService:
             with weaver_ai_assistant_service._connect_weaver_mysql(db_config) as conn:
                 with conn.cursor() as cursor:
                     for config in env_configs:
-                        remaining = self._batch_limit() - len(candidates)
-                        if remaining <= 0:
-                            return candidates
                         rows = weaver_ai_assistant_service._fetch_all(
                             cursor,
                             """
@@ -158,10 +164,10 @@ class WeaverAiReviewSchedulerService:
                               AND co.isremark = 0
                               AND co.iscomplete = 0
                               AND co.userid > 0
-                            ORDER BY co.id ASC
+                            ORDER BY co.id DESC
                             LIMIT %s
                             """,
-                            (config.workflow_id, config.node_id, remaining),
+                            (config.workflow_id, config.node_id, self._candidate_scan_limit()),
                         )
                         for row in rows:
                             candidates.append(
@@ -235,10 +241,11 @@ class WeaverAiReviewSchedulerService:
             response = await weaver_ai_review_service.pre_review(db, payload)
             return response.record.id
 
-    async def _process_candidate(self, candidate: dict[str, Any]) -> dict[str, Any]:
-        task_id = await self._claim(candidate)
-        if task_id is None:
-            return {"status": "skipped"}
+    async def _process_claimed_candidate(
+        self,
+        candidate: dict[str, Any],
+        task_id: int,
+    ) -> dict[str, Any]:
         try:
             review_record_id = await self._review_candidate(candidate)
         except Exception as exc:
@@ -291,6 +298,9 @@ class WeaverAiReviewSchedulerService:
 
     def _batch_limit(self) -> int:
         return max(1, min(100, int(settings.WEAVER_AI_REVIEW_SCHEDULER_BATCH_LIMIT)))
+
+    def _candidate_scan_limit(self) -> int:
+        return max(200, min(2000, self._batch_limit() * 50))
 
     def _max_attempts(self) -> int:
         return max(1, min(10, int(settings.WEAVER_AI_REVIEW_SCHEDULER_MAX_ATTEMPTS)))

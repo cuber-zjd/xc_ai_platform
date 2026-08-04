@@ -16,10 +16,10 @@ class WeaverAiReviewSchedulerServiceTest(unittest.IsolatedAsyncioTestCase):
         ]
         service._load_enabled_node_configs = AsyncMock(return_value=[object()])
         service._scan_candidates = unittest.mock.Mock(return_value=candidates)
-        service._process_candidate = AsyncMock(
+        service._claim = AsyncMock(side_effect=[101, None, 103])
+        service._process_claimed_candidate = AsyncMock(
             side_effect=[
                 {"status": "completed"},
-                {"status": "skipped"},
                 {
                     "status": "failed",
                     "requestId": "1003",
@@ -39,6 +39,26 @@ class WeaverAiReviewSchedulerServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["failed"], 1)
         self.assertEqual(result["claimed"], 2)
         self.assertEqual(result["errors"][0]["requestId"], "1003")
+
+    async def test_run_once_skips_reviewed_items_until_new_candidate_is_claimed(self) -> None:
+        service = WeaverAiReviewSchedulerService()
+        candidates = [
+            {"request_id": "old-1", "node_id": "20"},
+            {"request_id": "old-2", "node_id": "20"},
+            {"request_id": "new-1", "node_id": "20"},
+        ]
+        service._load_enabled_node_configs = AsyncMock(return_value=[object()])
+        service._scan_candidates = unittest.mock.Mock(return_value=candidates)
+        service._claim = AsyncMock(side_effect=[None, None, 301])
+        service._process_claimed_candidate = AsyncMock(return_value={"status": "completed"})
+
+        with patch.object(service, "_batch_limit", return_value=1):
+            result = await service.run_once()
+
+        self.assertEqual(result["skipped"], 2)
+        self.assertEqual(result["claimed"], 1)
+        self.assertEqual(result["completed"], 1)
+        service._process_claimed_candidate.assert_awaited_once_with(candidates[2], 301)
 
     async def test_run_once_does_not_scan_when_no_node_is_enabled(self) -> None:
         service = WeaverAiReviewSchedulerService()
