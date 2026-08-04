@@ -336,6 +336,12 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
         self.assertIn("茶饮、饮料、烘焙、乳品", jianyuan)
         self.assertIn("客户及潜在客户", yuxin)
 
+    def test_brief_editor_splits_long_paragraph_by_sentence(self) -> None:
+        paragraph = "。".join(["客户新品与渠道变化带来新的市场观察" * 8 for _ in range(4)]) + "。"
+        normalized = InsightFeishuBriefService._split_long_paragraphs(paragraph)
+        self.assertIn("\n\n", normalized)
+        self.assertEqual(normalized.replace("\n\n", ""), paragraph)
+
     def test_cross_company_material_filter_keeps_business_value_overlap(self) -> None:
         soybean_only = {
             "title": "禹王扩建大豆蛋白产线",

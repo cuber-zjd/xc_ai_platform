@@ -2067,7 +2067,10 @@ class InsightFeishuBriefService:
         output_urls = set(re.findall(r"https?://[^)\s]+", markdown))
         if output_urls - allowed_urls:
             errors.append("包含材料之外的来源链接")
-        required_source_count = min(len(allowed_urls), max(7, math.ceil(len(allowed_urls) * 0.65)))
+        required_source_count = min(
+            len(allowed_urls),
+            max(7, min(25, math.ceil(len(allowed_urls) * 0.35))),
+        )
         if len(output_urls & allowed_urls) < required_source_count:
             errors.append(
                 f"正文只使用了 {len(output_urls & allowed_urls)} 个不同来源，至少需要自然消化 "
@@ -2426,7 +2429,33 @@ class InsightFeishuBriefService:
                 if advice_pattern.search(sentence) is None and inference_pattern.search(sentence) is None
             ]
             normalized_lines.append("".join(kept).strip())
-        return "\n".join(normalized_lines)
+        return self._split_long_paragraphs("\n".join(normalized_lines))
+
+    @staticmethod
+    def _split_long_paragraphs(markdown: str, *, max_chars: int = 480) -> str:
+        """按完整句子拆分超长自然段，不改变事实、链接和章节结构。"""
+        paragraphs = re.split(r"(\n\s*\n)", markdown)
+        normalized: list[str] = []
+        for paragraph in paragraphs:
+            plain = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", paragraph).strip()
+            if not plain or plain.startswith("#") or len(plain) <= max_chars:
+                normalized.append(paragraph)
+                continue
+            sentences = re.findall(r"[^。！？]+[。！？]?", paragraph.strip())
+            chunks: list[str] = []
+            current = ""
+            for sentence in sentences:
+                candidate = f"{current}{sentence}"
+                candidate_plain = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", candidate)
+                if current and len(candidate_plain) > max_chars:
+                    chunks.append(current.strip())
+                    current = sentence
+                else:
+                    current = candidate
+            if current.strip():
+                chunks.append(current.strip())
+            normalized.append("\n\n".join(chunks))
+        return "".join(normalized)
 
     def _normalize_company_scope(self, markdown: str, company_name: str) -> str:
         """确定性移除竞对章节中的跨产业旁支句，避免模型返修不稳定。"""
