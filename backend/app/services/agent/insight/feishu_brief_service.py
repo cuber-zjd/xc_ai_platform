@@ -946,8 +946,16 @@ class InsightFeishuBriefService:
             }
             for item in eligible_materials
         ]
-        target_min = min(len(eligible_materials), max(12, math.ceil(len(eligible_materials) * 0.6)))
-        target_max = min(len(eligible_materials), max(18, math.ceil(len(eligible_materials) * 0.75)), 30)
+        # 大素材池仍需保持管理简报密度，目标区间必须单调且不能出现下限高于上限。
+        target_min = min(
+            len(eligible_materials),
+            max(12, min(24, math.ceil(len(eligible_materials) * 0.6))),
+        )
+        target_max = min(
+            len(eligible_materials),
+            30,
+            max(target_min, math.ceil(len(eligible_materials) * 0.75)),
+        )
         prompt = f"""
 你是管理层简报的选材编辑。请从候选正式情报中筛出真正值得写入
 “{company_name}”简报的材料，不负责写报告。
