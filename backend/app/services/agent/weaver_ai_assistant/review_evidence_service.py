@@ -19,6 +19,18 @@ class WeaverReviewEvidenceService:
 
     TOOL_TYPE = "weaver_reconciliation_invoice_match"
     IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+    UNIT_CONVERSIONS: dict[str, tuple[str, Decimal]] = {
+        "t": ("mass", Decimal("1000")),
+        "kg": ("mass", Decimal("1")),
+        "g": ("mass", Decimal("0.001")),
+        "mg": ("mass", Decimal("0.000001")),
+        "m3": ("volume", Decimal("1000")),
+        "l": ("volume", Decimal("1")),
+        "ml": ("volume", Decimal("0.001")),
+        "m": ("length", Decimal("1")),
+        "cm": ("length", Decimal("0.01")),
+        "mm": ("length", Decimal("0.001")),
+    }
 
     async def collect(
         self,
@@ -712,7 +724,27 @@ class WeaverReviewEvidenceService:
         return re.sub(r"[\s_*/×x-]+", "", self._text(value).lower()).replace("公斤", "kg")
 
     def _normalize_unit(self, value: Any) -> str:
-        aliases = {"只": "个", "件": "个", "pcs": "个", "pc": "个", "千克": "kg", "公斤": "kg"}
+        aliases = {
+            "只": "个",
+            "件": "个",
+            "pcs": "个",
+            "pc": "个",
+            "吨": "t",
+            "ton": "t",
+            "千克": "kg",
+            "公斤": "kg",
+            "kgs": "kg",
+            "克": "g",
+            "毫克": "mg",
+            "升": "l",
+            "liter": "l",
+            "litre": "l",
+            "毫升": "ml",
+            "立方米": "m3",
+            "米": "m",
+            "厘米": "cm",
+            "毫米": "mm",
+        }
         normalized = re.sub(r"\s+", "", self._text(value).lower())
         return aliases.get(normalized, normalized)
 
@@ -742,7 +774,42 @@ class WeaverReviewEvidenceService:
             return right_values <= left_values
         if right_is_candidates and not left_is_candidates:
             return left_values <= right_values
-        return left_values == right_values
+        if left_values == right_values:
+            return True
+        left_conversion = self._unit_conversion(left_values)
+        right_conversion = self._unit_conversion(right_values)
+        return bool(
+            left_conversion
+            and right_conversion
+            and left_conversion[0] == right_conversion[0]
+        )
+
+    def _unit_conversion(self, units: set[str]) -> tuple[str, Decimal] | None:
+        if len(units) != 1:
+            return None
+        return self.UNIT_CONVERSIONS.get(next(iter(units)))
+
+    def _compare_quantities_with_units(
+        self,
+        left: Decimal | None,
+        left_units: set[Any],
+        right: Decimal | None,
+        right_units: set[Any],
+    ) -> bool | None:
+        if left is None or right is None:
+            return None
+
+        left_values = set().union(
+            *(self._normalize_unit_candidates(value) for value in left_units)
+        ) if left_units else set()
+        right_values = set().union(
+            *(self._normalize_unit_candidates(value) for value in right_units)
+        ) if right_units else set()
+        left_conversion = self._unit_conversion(left_values)
+        right_conversion = self._unit_conversion(right_values)
+        if left_conversion and right_conversion and left_conversion[0] == right_conversion[0]:
+            return abs(left * left_conversion[1] - right * right_conversion[1]) <= Decimal("0.0001")
+        return self._compare_optional_decimals(left, right)
 
     def _compare_text_sets(
         self,
@@ -1200,9 +1267,11 @@ class WeaverReviewEvidenceService:
                 invoice["units"],
                 reconciliation["units"],
             ),
-            "quantityMatched": self._compare_optional_decimals(
+            "quantityMatched": self._compare_quantities_with_units(
                 invoice["quantity"] if invoice["hasQuantity"] else None,
+                invoice["units"],
                 reconciliation["quantity"] if reconciliation["hasQuantity"] else None,
+                reconciliation["units"],
             ),
             "amountMatched": (
                 abs(invoice["untaxedAmount"] - reconciliation["untaxedAmount"]) <= amount_tolerance

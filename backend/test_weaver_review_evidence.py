@@ -328,3 +328,32 @@ def test_multiple_actual_units_are_not_treated_as_candidates() -> None:
     service = WeaverReviewEvidenceService()
 
     assert service._compare_unit_sets({"套", "双"}, {"套"}) is False
+
+
+def test_convertible_mass_units_and_quantities_are_equivalent() -> None:
+    service = WeaverReviewEvidenceService()
+
+    assert service._compare_unit_sets({"吨"}, {"千克"}) is True
+    assert (
+        service._compare_quantities_with_units(
+            Decimal("91.12"),
+            {"吨"},
+            Decimal("91120"),
+            {"千克"},
+        )
+        is True
+    )
+
+
+def test_convertible_units_still_fail_when_base_quantities_differ() -> None:
+    service = WeaverReviewEvidenceService()
+
+    assert (
+        service._compare_quantities_with_units(
+            Decimal("91.12"),
+            {"吨"},
+            Decimal("91121"),
+            {"千克"},
+        )
+        is False
+    )
