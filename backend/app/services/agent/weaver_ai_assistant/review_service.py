@@ -419,6 +419,25 @@ class WeaverAiReviewService:
         )
         return [self.to_rule_read(row) for row in (await db.exec(statement)).all()]
 
+    def _resolve_field_display_value(self, field: Any, value: Any) -> Any:
+        """将泛微选择字段的数据库值还原为页面展示文本。"""
+        if value in (None, "") or not getattr(field, "options", None):
+            return value
+
+        option_labels = {
+            self.text(option.value).strip(): self.text(option.label).strip()
+            for option in field.options
+            if self.text(option.value).strip()
+        }
+        raw_value = self.text(value).strip()
+        if raw_value in option_labels:
+            return option_labels[raw_value]
+
+        parts = [item.strip() for item in raw_value.split(",") if item.strip()]
+        if parts and all(item in option_labels for item in parts):
+            return ",".join(option_labels[item] for item in parts)
+        return value
+
     def _load_test_request_context(
         self,
         env: str,
@@ -466,13 +485,15 @@ class WeaverAiReviewService:
                         detail_field_groups.setdefault(field.detail_table, []).append(field)
                         continue
                     value = main_row.get(self.text(field.field_name).lower())
+                    display_value = self._resolve_field_display_value(field, value)
                     field_contexts[field.field_id] = WeaverFieldContext(
                         label=field.label,
                         fieldId=field.field_id,
                         type=field.type,
                         writable=False,
                         value=value,
-                        displayValue=value,
+                        displayValue=display_value,
+                        options=field.options,
                         visible=True,
                         readonlyReason="测试智审从泛微数据库读取",
                     )
