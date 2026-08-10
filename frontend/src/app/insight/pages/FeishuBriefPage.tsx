@@ -30,13 +30,16 @@ const weekdayOptions = [
 ];
 
 const departmentOptions = ["销售", "市场", "研发", "采购", "供应链", "经营管理"];
-const excludedOptions = ["广告软文", "榜单", "招聘", "通用专利", "旧闻", "重复事件"];
+const excludedOptions = [
+    "广告软文", "榜单", "招聘", "通用专利", "旧闻", "重复事件",
+    "植物油动态", "普通大豆行情", "泛食品资讯", "宽泛玉米行情",
+];
 const sectionNames = ["政策", "竞对", "客户", "技术", "原料"] as const;
 
 const defaultGenerationRules: InsightFeishuBriefGenerationRules = {
     focus_topics: ["客户动态", "竞对变化", "政策监管", "技术与产品", "原料行情", "消费趋势"],
     value_departments: [...departmentOptions],
-    excluded_content: [...excludedOptions],
+    excluded_content: excludedOptions.slice(0, 6),
     primary_score: 78,
     supporting_score: 68,
     section_priorities: { 政策: 3, 竞对: 3, 客户: 5, 技术: 3, 原料: 4 },
