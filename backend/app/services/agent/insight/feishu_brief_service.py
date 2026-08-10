@@ -2585,16 +2585,22 @@ class InsightFeishuBriefService:
         return "".join(normalized)
 
     def _normalize_company_scope(self, markdown: str, company_name: str) -> str:
-        """确定性移除竞对章节中的跨产业旁支句，避免模型返修不稳定。"""
+        """确定性移除跨产业旁支句，避免模型返修不稳定。"""
         blocked_pattern: re.Pattern[str] | None = None
         if "御馨" in company_name:
-            blocked_pattern = re.compile(r"(?:长安花|西王|菜籽油|玉米油)")
+            blocked_pattern = re.compile(
+                r"(?:长安花|西王|植物油|豆油|大豆油|食用油|油脂|菜籽油|玉米油)"
+            )
         elif "健源" in company_name:
             blocked_pattern = re.compile(r"(?:大豆蛋白|豆粕|豆油|植物蛋白)")
         if blocked_pattern is None:
             return markdown
 
-        section_pattern = re.compile(r"(^# 竞对\s*$)([\s\S]*?)(?=^# )", flags=re.MULTILINE)
+        section_names = "政策|竞对|客户|技术|原料" if "御馨" in company_name else "竞对"
+        section_pattern = re.compile(
+            rf"(^# (?:{section_names})\s*$)([\s\S]*?)(?=^# )",
+            flags=re.MULTILINE,
+        )
 
         def clean_section(match: re.Match[str]) -> str:
             sentences = re.findall(r"[^。！？\n]+[。！？]?|\n+", match.group(2))
@@ -2604,7 +2610,7 @@ class InsightFeishuBriefService:
                 content = "本期暂无值得重点关注的新增动态"
             return f"{match.group(1)}\n\n{content}\n\n"
 
-        return section_pattern.sub(clean_section, markdown, count=1)
+        return section_pattern.sub(clean_section, markdown)
 
     def _has_conflicting_url_year(self, source_url: str, publish_time: Any) -> bool:
         if not source_url or not isinstance(publish_time, datetime):

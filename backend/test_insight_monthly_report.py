@@ -198,6 +198,7 @@ class InsightFeishuBriefScheduleTest(unittest.TestCase):
 
     def test_company_scope_normalizer_removes_only_cross_business_sentences(self) -> None:
         markdown = (
+            "# 政策\n\n食用油新规进入征求意见阶段。蛋白新规正式发布。\n\n"
             "# 竞对\n\n"
             "[ADM扩建大豆压榨产能](https://example.com/adm)，新增约70万吨年产能。"
             "[西王专精玉米油](https://example.com/xw)，采用六重保鲜工艺。"
@@ -211,6 +212,8 @@ class InsightFeishuBriefScheduleTest(unittest.TestCase):
         self.assertIn("ADM扩建大豆压榨产能", normalized)
         self.assertNotIn("西王专精玉米油", normalized)
         self.assertNotIn("长安花布局菜籽油", normalized)
+        self.assertNotIn("食用油新规", normalized)
+        self.assertIn("蛋白新规正式发布", normalized)
         self.assertIn("# 客户", normalized)
 
 
