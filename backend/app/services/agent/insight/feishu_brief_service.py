@@ -970,7 +970,7 @@ class InsightFeishuBriefService:
 
 素材周期：{self._period_text(period_start, period_end)}
 
-入选必须至少满足以下一项业务价值关系，不要求文章直接出现目标公司的核心产品名称：
+入选必须满足当前公司的核心业务边界，并至少具备以下一项业务价值关系：
 1. 目标客户或竞对发生采购、配方、新品、销量、产能、门店、融资、供应链或经营风险变化；
 2. 大豆、玉米及其加工产品，植物蛋白、蛋白粉、豆粕、淀粉糖、果葡糖浆、麦芽糖、
    功能糖或相关食品配料的供需、价格、技术和应用变化；
@@ -979,6 +979,11 @@ class InsightFeishuBriefService:
 5. 下游茶饮、饮料、乳品、烘焙、肉制品及食品加工客户的新品、扩店、销量、渠道、经营和
    消费趋势变化，即使未直接提及上游配料，也能形成客户需求、应用方向或市场机会判断。
 6. 泛食品行业资讯中，能够形成明确销售线索、研发方向、采购判断、竞争观察或风险预警的事实。
+
+公司硬边界优先于上述通用价值：
+- 御馨只保留蛋白类竞对、下游蛋白应用新布局和非转基因大豆原料信息；植物油相关动态全部排除。
+- 健源材料必须涉及果糖、淀粉糖、麦芽糖、葡萄糖、功能糖、糖醇或其他玉米加工糖类产品及其应用；
+  泛食品、泛客户和宽泛玉米行情若未落到实际产品，不得采用。
 
 必须排除：
 - 只有行业背景、没有具体主体、动作、数据或业务启示，需要三层以上推测才能联系到公司的新闻；
@@ -1250,8 +1255,9 @@ class InsightFeishuBriefService:
             "材料未明确披露采购量、采购计划、销量结果或经营影响时，只能客观描述客户动作及潜在关联，"
             "不得把推测写成确定需求，不得擅自建立竞争行为与另一家公司经营结果之间的因果关系。"
             "全文不得夹带面向香驰或我司的行动建议；只呈现事实、变化和材料明确支持的影响。"
-            "宽口径文章被选中时，只提取与当前公司核心业务直接相关的事实，不得顺带展开同一来源中"
-            "其他油种、其他产业公司产品或泛食品品牌的旁支内容。"
+            "宽口径文章被选中时，只提取与当前公司核心业务直接相关的事实。御馨不得写植物油、"
+            "豆油、食用油或普通大豆行情，原料只写非转基因大豆；健源不得写未落到果糖及玉米加工"
+            "糖类实际产品的泛食品、泛客户或宽泛玉米行情。"
         )
         format_prompt = f"""
 输出 Markdown。文档标题由系统单独创建，正文不要再次输出标题。必须逐字遵循以下版式骨架：
@@ -1315,8 +1321,9 @@ class InsightFeishuBriefService:
     7 条重点导读通常只能覆盖 7 个主线来源，因此政策、竞对、客户、技术、原料五类正文必须继续消化
     supporting 补充素材，并至少新增 {max(minimum_citations - 7, 0)} 个未在重点导读中使用的不同来源。
     不得只在五类正文重复引用七条导读来源，也不得用一串并列链接代替对事实的自然归纳。
-14. 宽口径政策、行情或综述材料只采用与当前公司业务边界直接相关的子事实。御馨不得因同一篇植物油
-    文章顺带写玉米油、菜籽油品牌；健源不得因同一篇食品文章顺带写大豆蛋白或豆粕业务。
+14. 宽口径政策、行情或综述材料只采用与当前公司业务边界直接相关的子事实。御馨完全排除植物油、
+    豆油、食用油动态，原料只采用非转基因大豆；健源只采用能落到果糖、淀粉糖、麦芽糖、葡萄糖、
+    功能糖、糖醇或其他玉米加工糖类产品及应用的事实。
 
 # 二、重点情报导读
 
@@ -2053,10 +2060,28 @@ class InsightFeishuBriefService:
         body = markdown.split("# 二、重点情报导读", 1)[0]
         competitor_match = re.search(r"^# 竞对\s*$([\s\S]*?)(?=^# )", body, flags=re.MULTILINE)
         competitor_body = competitor_match.group(1) if competitor_match else ""
+        raw_material_match = re.search(r"^# 原料\s*$([\s\S]*?)(?=^# )", body, flags=re.MULTILINE)
+        raw_material_body = raw_material_match.group(1) if raw_material_match else ""
         if company_name and "御馨" in company_name and re.search(
-            r"(?:长安花|西王|菜籽油|玉米油)", competitor_body
+            r"(?:植物油|豆油|大豆油|食用油|油脂|玉米油|菜籽油)", body
         ):
-            errors.append("御馨竞对章节混入菜籽油或玉米油旁支品牌，必须删除并只保留大豆及植物蛋白主线")
+            errors.append("御馨简报混入植物油或食用油动态，必须全部删除")
+        if (
+            company_name
+            and "御馨" in company_name
+            and "大豆" in raw_material_body
+            and "非转基因" not in raw_material_body
+        ):
+            errors.append("御馨原料章节的大豆信息未明确限定为非转基因大豆")
+        if company_name and "健源" in company_name and not re.search(
+            r"(?:果葡糖浆|麦芽糖|淀粉糖|葡萄糖|功能糖|糖醇|赤藓糖醇|玉米糖|玉米深加工)",
+            body,
+        ):
+            errors.append("健源简报未落到果糖或玉米加工糖类实际产品")
+        if company_name and "御馨" in company_name and re.search(
+            r"(?:长安花|西王|植物油|豆油|大豆油|食用油|油脂|菜籽油|玉米油)", competitor_body
+        ):
+            errors.append("御馨竞对章节混入植物油业务，必须删除并只保留蛋白主线")
         if company_name and "健源" in company_name and re.search(
             r"(?:大豆蛋白|豆粕|豆油|植物蛋白)", competitor_body
         ):
@@ -2230,13 +2255,21 @@ class InsightFeishuBriefService:
         if not payload.get("focus_topics"):
             if "健源" in company_name:
                 payload["focus_topics"] = [
-                    "玉米精深加工", "糖浆与功能糖", "茶饮与饮料客户", "乳品与烘焙客户",
-                    "减糖消费趋势", "食品监管", "原料行情", "竞对与替代配料",
+                    "果葡糖浆", "麦芽糖浆", "淀粉糖", "葡萄糖", "功能糖与糖醇",
+                    "玉米加工糖类应用", "糖类竞对", "糖类下游客户",
+                ]
+                payload["excluded_content"] = [
+                    "广告软文", "榜单", "招聘", "通用专利", "旧闻", "重复事件",
+                    "泛食品资讯", "宽泛玉米行情",
                 ]
             elif "御馨" in company_name:
                 payload["focus_topics"] = [
-                    "大豆精深加工", "植物蛋白", "食品与饮料客户", "乳品与肉制品客户",
-                    "健康食品趋势", "食品监管", "大豆与豆粕行情", "竞对与替代蛋白",
+                    "大豆蛋白", "植物蛋白", "蛋白类竞对", "下游蛋白应用",
+                    "蛋白新品与技术", "非转基因大豆", "替代蛋白",
+                ]
+                payload["excluded_content"] = [
+                    "广告软文", "榜单", "招聘", "通用专利", "旧闻", "重复事件",
+                    "植物油动态", "普通大豆行情",
                 ]
             else:
                 payload["focus_topics"] = ["客户", "竞对", "政策", "技术", "原料", "消费趋势"]

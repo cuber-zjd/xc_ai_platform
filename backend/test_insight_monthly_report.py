@@ -96,9 +96,9 @@ class InsightFeishuBriefScheduleTest(unittest.TestCase):
         plan = InsightFeishuBriefPlan(plan_uid="rules", plan_name="规则测试")
         jianyuan = self.service._generation_rules(plan, "山东香驰健源生物科技有限公司")
         yuxin = self.service._generation_rules(plan, "山东御馨生物科技股份有限公司")
-        self.assertIn("糖浆与功能糖", jianyuan.focus_topics)
+        self.assertIn("果葡糖浆", jianyuan.focus_topics)
         self.assertNotIn("大豆精深加工", jianyuan.focus_topics)
-        self.assertIn("大豆精深加工", yuxin.focus_topics)
+        self.assertIn("大豆蛋白", yuxin.focus_topics)
         self.assertNotIn("糖浆与功能糖", yuxin.focus_topics)
 
     def test_saved_generation_rules_override_company_defaults(self) -> None:
@@ -194,7 +194,7 @@ class InsightFeishuBriefScheduleTest(unittest.TestCase):
             materials,
             company_name="山东御馨生物科技股份有限公司",
         )
-        self.assertIn("御馨竞对章节混入菜籽油或玉米油旁支品牌，必须删除并只保留大豆及植物蛋白主线", errors)
+        self.assertIn("御馨竞对章节混入植物油业务，必须删除并只保留蛋白主线", errors)
 
     def test_company_scope_normalizer_removes_only_cross_business_sentences(self) -> None:
         markdown = (
@@ -365,9 +365,10 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
         jianyuan = insight_company_business_context("山东香驰健源生物科技有限公司")
         yuxin = insight_company_business_context("山东御馨生物科技股份有限公司")
         self.assertIn("果葡糖浆、麦芽糖浆", jianyuan)
-        self.assertIn("大豆精深加工和植物蛋白", yuxin)
-        self.assertIn("茶饮、饮料、烘焙、乳品", jianyuan)
-        self.assertIn("客户及潜在客户", yuxin)
+        self.assertIn("未涉及健源实际产品及其应用的，不予采用", jianyuan)
+        self.assertIn("只聚焦蛋白板块", yuxin)
+        self.assertIn("植物油", yuxin)
+        self.assertIn("非转基因大豆", yuxin)
 
     def test_brief_editor_splits_long_paragraph_by_sentence(self) -> None:
         paragraph = "。".join(["客户新品与渠道变化带来新的市场观察" * 8 for _ in range(4)]) + "。"
@@ -406,12 +407,32 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
                 syrup_only,
             )
         )
+        generic_corn_market = {
+            "title": "国内玉米价格小幅波动",
+            "summary": "产区玉米到货量发生变化。",
+        }
+        self.assertIsNotNone(
+            self.service._cross_company_material_reason(
+                "山东香驰健源生物科技有限公司",
+                generic_corn_market,
+            )
+        )
+        generic_tea_customer = {
+            "title": "茶饮品牌新增一百家门店",
+            "summary": "门店扩张但未披露糖类产品、配方或采购变化。",
+        }
+        self.assertIsNotNone(
+            self.service._cross_company_material_reason(
+                "山东香驰健源生物科技有限公司",
+                generic_tea_customer,
+            )
+        )
         generic_patent = {
             "title": "食品企业取得新型杀菌装置专利",
             "summary": "该设备用于提升生产线清洗效率。",
             "tags": "技术 专利",
         }
-        self.assertIsNone(
+        self.assertIsNotNone(
             self.service._cross_company_material_reason(
                 "山东香驰健源生物科技有限公司",
                 generic_patent,
@@ -422,7 +443,7 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
             "summary": "新规调整食品添加剂申报与标签管理要求。",
             "tags": "食品监管",
         }
-        self.assertIsNone(
+        self.assertIsNotNone(
             self.service._cross_company_material_reason(
                 "山东香驰健源生物科技有限公司",
                 yuxin_policy,
@@ -433,7 +454,7 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
             "summary": "新品覆盖果茶和咖啡场景。",
             "business_insight": "可能带动香驰大豆蛋白需求",
         }
-        self.assertIsNone(
+        self.assertIsNotNone(
             self.service._cross_company_material_reason(
                 "山东御馨生物科技股份有限公司",
                 generic_customer,
@@ -444,7 +465,7 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
             "summary": "项目核心为玉米深加工，正文附带提及集团其他大豆业务。",
             "content": "集团同时经营大豆加工业务。",
         }
-        self.assertIsNone(
+        self.assertIsNotNone(
             self.service._cross_company_material_reason(
                 "山东御馨生物科技股份有限公司",
                 incidental_soybean,
@@ -465,10 +486,31 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
             "summary": "政策涉及糖醇和甜味剂产品的标识要求。",
             "tags": "食品监管",
         }
-        self.assertIsNone(
+        self.assertIsNotNone(
             self.service._cross_company_material_reason(
                 "山东御馨生物科技股份有限公司",
                 sugar_policy,
+            )
+        )
+        soybean_oil = {
+            "title": "大豆油企业扩建植物油灌装线",
+            "summary": "项目新增食用油产能。",
+        }
+        self.assertIn(
+            "植物油",
+            self.service._cross_company_material_reason(
+                "山东御馨生物科技股份有限公司",
+                soybean_oil,
+            ) or "",
+        )
+        non_gmo_soybean = {
+            "title": "非转基因大豆进口价格调整",
+            "summary": "非转基因大豆供应收紧，采购成本发生变化。",
+        }
+        self.assertIsNone(
+            self.service._cross_company_material_reason(
+                "山东御馨生物科技股份有限公司",
+                non_gmo_soybean,
             )
         )
 

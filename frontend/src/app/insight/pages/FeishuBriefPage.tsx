@@ -48,15 +48,19 @@ const defaultGenerationRules: InsightFeishuBriefGenerationRules = {
 
 function generationRulesForCompany(companyName?: string | null): InsightFeishuBriefGenerationRules {
     const focus_topics = companyName?.includes("健源")
-        ? ["玉米精深加工", "糖浆与功能糖", "茶饮与饮料客户", "乳品与烘焙客户", "减糖消费趋势", "食品监管", "原料行情", "竞对与替代配料"]
+        ? ["果葡糖浆", "麦芽糖浆", "淀粉糖", "葡萄糖", "功能糖与糖醇", "玉米加工糖类应用", "糖类竞对", "糖类下游客户"]
         : companyName?.includes("御馨")
-            ? ["大豆精深加工", "植物蛋白", "食品与饮料客户", "乳品与肉制品客户", "健康食品趋势", "食品监管", "大豆与豆粕行情", "竞对与替代蛋白"]
+            ? ["大豆蛋白", "植物蛋白", "蛋白类竞对", "下游蛋白应用", "蛋白新品与技术", "非转基因大豆", "替代蛋白"]
             : [...defaultGenerationRules.focus_topics];
     return {
         ...defaultGenerationRules,
         focus_topics,
         value_departments: [...defaultGenerationRules.value_departments],
-        excluded_content: [...defaultGenerationRules.excluded_content],
+        excluded_content: companyName?.includes("御馨")
+            ? [...defaultGenerationRules.excluded_content, "植物油动态", "普通大豆行情"]
+            : companyName?.includes("健源")
+                ? [...defaultGenerationRules.excluded_content, "泛食品资讯", "宽泛玉米行情"]
+                : [...defaultGenerationRules.excluded_content],
         section_priorities: { ...defaultGenerationRules.section_priorities },
     };
 }
