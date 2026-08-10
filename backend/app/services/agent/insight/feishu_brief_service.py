@@ -1225,6 +1225,7 @@ class InsightFeishuBriefService:
         original_material_count: int,
         prompt_override: str | None,
         generation_rules: InsightFeishuBriefGenerationRules,
+        use_all_materials: bool = False,
     ) -> tuple[str, str]:
         short_name = self._short_company_name(company_name)
         title = (
@@ -1243,6 +1244,36 @@ class InsightFeishuBriefService:
                 ),
             ),
         )
+        scope_instruction = (
+            "本次采用全量素材成稿，不按公司业务关键词、相关性评分或素材强弱预先删除材料。"
+            "应尽可能归并并消化全部材料，在有限篇幅内优先保留事实、数字、主体动作和重要变化；"
+            "审阅组将自行删除不需要的内容。"
+            if use_all_materials
+            else (
+                "宽口径文章被选中时，只提取与当前公司核心业务直接相关的事实。御馨不得写植物油、"
+                "豆油、食用油或普通大豆行情，原料只写非转基因大豆；健源不得写未落到果糖及玉米加工"
+                "糖类实际产品的泛食品、泛客户或宽泛玉米行情。"
+            )
+        )
+        material_usage_instruction = (
+            "不得以弱相关、跨业务或信息重要性不足为由删除材料；相近材料应合并为趋势或交叉证据，"
+            "避免逐条罗列。某类材料较多时可增加自然段，但仍须保持固定栏目。"
+            if use_all_materials
+            else (
+                "不得为了填满五个分类而使用弱相关材料。某类没有足够的高相关事实时，只写一句"
+                "“本期暂无值得重点关注的新增动态”，不得用包装专利、通用设备专利、排行榜、加盟软文"
+                "或地方性弱关联新闻凑数。"
+            )
+        )
+        scope_rule_instruction = (
+            "本次不执行公司业务关键词过滤；所有输入材料均可用于事实归纳、趋势说明和交叉印证。"
+            if use_all_materials
+            else (
+                "宽口径政策、行情或综述材料只采用与当前公司业务边界直接相关的子事实。御馨完全排除植物油、"
+                "豆油、食用油动态，原料只采用非转基因大豆；健源只采用能落到果糖、淀粉糖、麦芽糖、葡萄糖、"
+                "功能糖、糖醇或其他玉米加工糖类产品及应用的事实。"
+            )
+        )
         system_prompt = (
             "你是香驰控股管理层情报简报撰写人员。领导已经确定了报告格式，"
             "你的职责是严格套用，不得重新设计报告。只使用所给正式情报，不得虚构数字、"
@@ -1255,9 +1286,7 @@ class InsightFeishuBriefService:
             "材料未明确披露采购量、采购计划、销量结果或经营影响时，只能客观描述客户动作及潜在关联，"
             "不得把推测写成确定需求，不得擅自建立竞争行为与另一家公司经营结果之间的因果关系。"
             "全文不得夹带面向香驰或我司的行动建议；只呈现事实、变化和材料明确支持的影响。"
-            "宽口径文章被选中时，只提取与当前公司核心业务直接相关的事实。御馨不得写植物油、"
-            "豆油、食用油或普通大豆行情，原料只写非转基因大豆；健源不得写未落到果糖及玉米加工"
-            "糖类实际产品的泛食品、泛客户或宽泛玉米行情。"
+            f"{scope_instruction}"
         )
         format_prompt = f"""
 输出 Markdown。文档标题由系统单独创建，正文不要再次输出标题。必须逐字遵循以下版式骨架：
@@ -1306,8 +1335,7 @@ class InsightFeishuBriefService:
 6. 每条事实必须能回答“发生了什么、涉及谁、有什么数字或具体动作、与本分类有什么关系”中的至少三项。
 7. 对明显发生在本报告周期以前、且本周期没有新动作或新数据的历史旧闻，即使材料时间被误标为本周期，
    也必须舍弃，不能作为现状写入。
-8. 不得为了填满五个分类而使用弱相关材料。某类没有足够的高相关事实时，只写一句“本期暂无值得重点关注
-   的新增动态”，不得用包装专利、通用设备专利、排行榜、加盟软文或地方性弱关联新闻凑数。
+8. {material_usage_instruction}
 9. 只有材料明确出现配方、采购、产能、销量、门店扩张、客户经营、竞对行动、监管准入、原料供需或
    核心产品应用时，才能推导对公司的影响；不得把“可能相关”写成“直接拉动需求”。
 10. 原文没有明确披露采购计划或采购量时，不得写“将显著增加采购需求”“直接指向新增采购”等确定性
@@ -1321,9 +1349,7 @@ class InsightFeishuBriefService:
     7 条重点导读通常只能覆盖 7 个主线来源，因此政策、竞对、客户、技术、原料五类正文必须继续消化
     supporting 补充素材，并至少新增 {max(minimum_citations - 7, 0)} 个未在重点导读中使用的不同来源。
     不得只在五类正文重复引用七条导读来源，也不得用一串并列链接代替对事实的自然归纳。
-14. 宽口径政策、行情或综述材料只采用与当前公司业务边界直接相关的子事实。御馨完全排除植物油、
-    豆油、食用油动态，原料只采用非转基因大豆；健源只采用能落到果糖、淀粉糖、麦芽糖、葡萄糖、
-    功能糖、糖醇或其他玉米加工糖类产品及应用的事实。
+14. {scope_rule_instruction}
 
 # 二、重点情报导读
 
@@ -1365,8 +1391,15 @@ class InsightFeishuBriefService:
                 materials,
             )
         )
-        markdown = self._normalize_company_scope(markdown, company_name)
-        errors = self._validate_markdown(markdown, materials, company_name=company_name, required_source_count=minimum_citations)
+        if not use_all_materials:
+            markdown = self._normalize_company_scope(markdown, company_name)
+        validation_company_name = None if use_all_materials else company_name
+        errors = self._validate_markdown(
+            markdown,
+            materials,
+            company_name=validation_company_name,
+            required_source_count=minimum_citations,
+        )
         for format_round in range(2):
             if not errors:
                 break
@@ -1393,17 +1426,25 @@ class InsightFeishuBriefService:
                     materials,
                 )
             )
-            markdown = self._normalize_company_scope(markdown, company_name)
-            errors = self._validate_markdown(markdown, materials, company_name=company_name, required_source_count=minimum_citations)
+            if not use_all_materials:
+                markdown = self._normalize_company_scope(markdown, company_name)
+            errors = self._validate_markdown(
+                markdown,
+                materials,
+                company_name=validation_company_name,
+                required_source_count=minimum_citations,
+            )
         if errors:
             raise ValueError(f"简报未通过固定格式检查：{'；'.join(errors)}")
-        relevance_issues = await self._review_markdown_relevance(
-            company_name=company_name,
-            period_start=period_start,
-            period_end=period_end,
-            markdown=markdown,
-            materials=materials,
-        )
+        relevance_issues = []
+        if not use_all_materials:
+            relevance_issues = await self._review_markdown_relevance(
+                company_name=company_name,
+                period_start=period_start,
+                period_end=period_end,
+                markdown=markdown,
+                materials=materials,
+            )
         for editorial_round in range(2):
             if not relevance_issues:
                 break
@@ -1431,8 +1472,14 @@ class InsightFeishuBriefService:
                     materials,
                 )
             )
-            markdown = self._normalize_company_scope(markdown, company_name)
-            errors = self._validate_markdown(markdown, materials, company_name=company_name, required_source_count=minimum_citations)
+            if not use_all_materials:
+                markdown = self._normalize_company_scope(markdown, company_name)
+            errors = self._validate_markdown(
+                markdown,
+                materials,
+                company_name=validation_company_name,
+                required_source_count=minimum_citations,
+            )
             if errors:
                 relevance_issues = errors
                 continue
@@ -1446,8 +1493,14 @@ class InsightFeishuBriefService:
                 )
             else:
                 relevance_issues = []
-        markdown = self._normalize_company_scope(markdown, company_name)
-        errors = self._validate_markdown(markdown, materials, company_name=company_name, required_source_count=minimum_citations)
+        if not use_all_materials:
+            markdown = self._normalize_company_scope(markdown, company_name)
+        errors = self._validate_markdown(
+            markdown,
+            materials,
+            company_name=validation_company_name,
+            required_source_count=minimum_citations,
+        )
         if errors:
             raise ValueError(f"业务审校修订后仍未通过确定性检查：{'；'.join(errors)}")
         return title, markdown
