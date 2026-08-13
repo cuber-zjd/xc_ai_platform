@@ -253,7 +253,11 @@ class WeaverAiReviewService:
 
         tool_evidence = await weaver_review_evidence_service.collect(payload, rules)
         result = await self.invoke_review_model(payload, rules, tool_evidence)
-        result = self.merge_tool_evidence(result, tool_evidence)
+        result = self.merge_tool_evidence(
+            result,
+            tool_evidence,
+            strict_scope=not any(rule.general_check_enabled for rule in rules),
+        )
         form_snapshot = self.to_json_compatible(payload.model_dump(by_alias=True))
         if tool_evidence:
             form_snapshot["reviewEvidence"] = self.to_json_compatible(tool_evidence)
@@ -318,7 +322,11 @@ class WeaverAiReviewService:
         rules = await self.load_all_enabled_rules_for_test(db, env, workflow_id)
         tool_evidence = await weaver_review_evidence_service.collect(review_request, rules)
         result = await self.invoke_review_model(review_request, rules, tool_evidence)
-        result = self.merge_tool_evidence(result, tool_evidence)
+        result = self.merge_tool_evidence(
+            result,
+            tool_evidence,
+            strict_scope=not any(rule.general_check_enabled for rule in rules),
+        )
         form_snapshot = self.to_json_compatible(review_request.model_dump(by_alias=True))
         if tool_evidence:
             form_snapshot["reviewEvidence"] = self.to_json_compatible(tool_evidence)
@@ -657,6 +665,7 @@ class WeaverAiReviewService:
                     "reviewScope.generalCheckEnabled 决定检查边界。为 false 时，只能检查 reviewRules 明确要求的事项和 toolEvidence，"
                     "不得检查或评论规则未要求的其他字段、空值、材料、合同、科目、利润中心、固定资产或通用合规风险。"
                     "为 true 时，才可以在规则检查之外，根据当前表单字段补充通用合规检查。"
+                    "面向审批人输出，不得出现 generalCheckEnabled、reviewScope、toolEvidence 等内部字段名、布尔值或实现机制。"
                     "你不能声称已经审批、提交、退回或通过流程，也不能输出 JavaScript。"
                     "如果没有配置智审规则且通用检查关闭，只能说明当前没有可执行的智审规则，不能自行扩展检查范围。"
                     "toolEvidence 是平台只读工具取得的确定性业务证据，必须优先采用；不得把工具明确判定的不一致改写为通过。"
@@ -723,6 +732,8 @@ class WeaverAiReviewService:
         self,
         result: WeaverReviewResult,
         evidence: list[dict[str, Any]],
+        *,
+        strict_scope: bool = False,
     ) -> WeaverReviewResult:
         if not evidence:
             return result
@@ -785,19 +796,52 @@ class WeaverAiReviewService:
                 decision = "manual_review"
             can_auto_approve = False
 
-        concerns = list(dict.fromkeys(evidence_concerns + result.concerns))[:20]
+        concerns = list(dict.fromkeys(evidence_concerns + ([] if strict_scope else result.concerns)))[:20]
+        summary = result.summary
+        suggested_opinion = result.suggested_opinion
+        missing_materials = result.missing_materials
+        if strict_scope:
+            summary, suggested_opinion = self._build_evidence_narrative(
+                deduplicated_checks,
+                risk_level,
+            )
+            missing_materials = []
         return WeaverReviewResult(
-            summary=result.summary,
+            summary=summary,
             riskLevel=risk_level,
             decisionSuggestion=decision,
-            suggestedOpinion=result.suggested_opinion,
+            suggestedOpinion=suggested_opinion,
             checks=deduplicated_checks[:20],
-            missingMaterials=result.missing_materials,
+            missingMaterials=missing_materials,
             concerns=concerns,
             comparisonTables=comparison_tables,
             confidence=result.confidence,
             canAutoApprove=can_auto_approve,
         )
+
+    def _build_evidence_narrative(
+        self,
+        checks: list[dict[str, str]],
+        risk_level: str,
+    ) -> tuple[str, str]:
+        problems = [check for check in checks if check.get("status") in {"fail", "warning", "unknown"}]
+        if problems:
+            details = "；".join(
+                f"{self.text(check.get('name'))}：{self.text(check.get('detail'))}"
+                for check in problems[:4]
+            )
+            summary = f"已按当前配置规则完成预审。{details}"
+            opinion = (
+                "当前核验存在异常，建议核实明细差异后再处理。"
+                if risk_level in {"high", "blocked"}
+                else "当前存在待核对事项，建议人工确认后再处理。"
+            )
+            return summary, opinion
+
+        passed_names = [self.text(check.get("name")) for check in checks if check.get("status") == "pass"]
+        scope = "、".join(name for name in passed_names[:4] if name)
+        summary = f"已按当前配置规则完成预审，{scope or '已配置检查项'}未发现异常。"
+        return summary, "当前配置的核验项目未发现异常，建议审批人确认后处理。"
 
     def normalize_review_result(self, value: dict[str, Any], rules: list[WeaverReviewRuleRead]) -> WeaverReviewResult:
         auto_allowed = any(rule.auto_review_mode == "auto" for rule in rules)
