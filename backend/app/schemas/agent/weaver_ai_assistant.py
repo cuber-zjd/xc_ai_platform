@@ -132,6 +132,7 @@ class WeaverReviewRuleBase(BaseModel):
     rule_title: str = Field(alias="ruleTitle")
     rule_content: str = Field(alias="ruleContent")
     tool_config: dict[str, Any] | None = Field(default=None, alias="toolConfig")
+    general_check_enabled: bool = Field(default=False, alias="generalCheckEnabled")
     auto_review_mode: Literal["suggestion", "assist", "auto"] = Field(default="suggestion", alias="autoReviewMode")
     enabled: bool = True
     priority: int = 100
@@ -150,6 +151,7 @@ class WeaverReviewRuleUpdate(BaseModel):
     rule_title: str | None = Field(default=None, alias="ruleTitle")
     rule_content: str | None = Field(default=None, alias="ruleContent")
     tool_config: dict[str, Any] | None = Field(default=None, alias="toolConfig")
+    general_check_enabled: bool | None = Field(default=None, alias="generalCheckEnabled")
     auto_review_mode: Literal["suggestion", "assist", "auto"] | None = Field(default=None, alias="autoReviewMode")
     enabled: bool | None = None
     priority: int | None = None

@@ -33,6 +33,7 @@ async def init_db():
         await _ensure_insight_feishu_brief_columns(conn)
         await _ensure_insight_crawler_channel_values(conn)
         await _ensure_weaver_ai_workflow_rule_indexes(conn)
+        await _ensure_weaver_ai_review_rule_columns(conn)
         await _ensure_weaver_ai_review_node_config_indexes(conn)
     
     # 初始化种子数据
@@ -59,6 +60,16 @@ async def _ensure_weaver_ai_workflow_rule_indexes(conn):
         text(
             "CREATE INDEX IF NOT EXISTS ix_weaver_ai_workflow_rule_lookup "
             "ON weaver_ai_workflow_rule (env, workflow_id, enabled, is_deleted, priority)"
+        )
+    )
+
+
+async def _ensure_weaver_ai_review_rule_columns(conn):
+    """补齐泛微流程 AI 智审规则范围控制字段。"""
+    await conn.execute(
+        text(
+            "ALTER TABLE weaver_ai_review_rule "
+            "ADD COLUMN IF NOT EXISTS general_check_enabled BOOLEAN DEFAULT FALSE NOT NULL"
         )
     )
 

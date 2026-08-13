@@ -53,6 +53,7 @@
 - FineReport 报表文件用户可见范围使用 `fr_report_visibility_preference` 保存当前用户选择显示的文件夹或报表路径列表；空列表表示显示全部，不保存全量报表清单。
 - 当前项目启动时会通过 `SQLModel.metadata.create_all` 创建表。
 - 泛微流程 AI 智审使用 `weaver_ai_review_rule` 保存规则，使用 `weaver_ai_review_record` 保存每次正式预审的表单快照、规则快照和模型结论；配置页发起的测试审批单独写入 `weaver_ai_review_test_record`，不得混入正式最近记录和正式审计统计；当前随 `SQLModel.metadata.create_all` 创建。
+- `weaver_ai_review_rule.general_check_enabled` 控制模型是否可以超出当前规则执行通用检查，默认关闭；旧库由 `init_db.py` 幂等补列。
 - Insight 定时报告计划使用 `insight_report_subscription`，保存报告模板、素材范围、周期、下次执行时间、上次生成报告、上次企业微信通知和接收人 JSON；该表已通过模型包入口注册，随 `SQLModel.metadata.create_all` 创建。
 - Insight 独立飞书简报计划使用 `insight_feishu_brief_plan`，日报、周报和月报共用该表；月报新增 `day_of_month` 和 `generation_strategy`，老库通过 `init_db.py` 的 `ADD COLUMN IF NOT EXISTS` 幂等补列。候选方案、审校记录、模型、评分、阶段耗时和云文档地址写入 `insight_feishu_brief_run.output_payload`。
 - Insight 底层配置以 `insight_monitor_config` 为调度主表，渠道库使用 `insight_channel` 表；旧 `insight_data_source` 不再作为用户配置或调度主概念，仅为历史任务、抓取结果和正式情报外键兼容保留，启动迁移会把旧执行源状态汇总回监测配置并软删除旧执行源。

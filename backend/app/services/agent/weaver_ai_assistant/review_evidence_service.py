@@ -27,6 +27,7 @@ class WeaverReviewEvidenceService:
         "m3": ("volume", Decimal("1000")),
         "l": ("volume", Decimal("1")),
         "ml": ("volume", Decimal("0.001")),
+        "km": ("length", Decimal("1000")),
         "m": ("length", Decimal("1")),
         "cm": ("length", Decimal("0.01")),
         "mm": ("length", Decimal("0.001")),
@@ -438,6 +439,7 @@ class WeaverReviewEvidenceService:
             amount_tolerance,
             semantic_confidence_threshold,
         )
+        await self._review_ambiguous_units(matches)
 
         invoice_total = sum((self._decimal(item.get("taxincludedprice")) for item in invoices), Decimal("0"))
         expected_total = self._first_decimal(
@@ -660,7 +662,11 @@ class WeaverReviewEvidenceService:
             return f"{name_detail}；" + "、".join(problems)
         if pending:
             return f"{name_detail}；" + "；".join(pending) + "，需人工核对"
-        return f"{name_detail}；单位、数量、未税金额和税率一致"
+        unit_detail = ""
+        if item.get("unitMatchMethod") == "ai_semantic":
+            reason = self._text(item.get("unitMatchReason"))
+            unit_detail = f"；单位经 AI 复核确认可换算{f'（{reason}）' if reason else ''}"
+        return f"{name_detail}{unit_detail}；单位、数量、未税金额和税率一致"
 
     def _name_needs_review(self, item: dict[str, Any]) -> bool:
         try:
@@ -734,6 +740,8 @@ class WeaverReviewEvidenceService:
             "千克": "kg",
             "公斤": "kg",
             "kgs": "kg",
+            "kilogram": "kg",
+            "kilograms": "kg",
             "克": "g",
             "毫克": "mg",
             "升": "l",
@@ -741,6 +749,12 @@ class WeaverReviewEvidenceService:
             "litre": "l",
             "毫升": "ml",
             "立方米": "m3",
+            "千米": "km",
+            "公里": "km",
+            "kilometer": "km",
+            "kilometers": "km",
+            "kilometre": "km",
+            "kilometres": "km",
             "米": "m",
             "厘米": "cm",
             "毫米": "mm",
@@ -749,9 +763,10 @@ class WeaverReviewEvidenceService:
         return aliases.get(normalized, normalized)
 
     def _normalize_unit_candidates(self, value: Any) -> set[str]:
+        expanded = re.sub(r"[()（）\[\]【】]", "、", self._text(value))
         return {
             normalized
-            for item in re.split(r"[、,，/;；|]+", self._text(value))
+            for item in re.split(r"[、,，/;；|]+", expanded)
             if (normalized := self._normalize_unit(item))
         }
 
@@ -788,6 +803,117 @@ class WeaverReviewEvidenceService:
         if len(units) != 1:
             return None
         return self.UNIT_CONVERSIONS.get(next(iter(units)))
+
+    async def _review_ambiguous_units(self, matches: list[dict[str, Any]]) -> None:
+        candidates = [
+            (index, item)
+            for index, item in enumerate(matches)
+            if item.get("unitMatched") is False
+            and item.get("invoiceUnit")
+            and item.get("reconciliationUnit")
+        ]
+        if not candidates:
+            return
+
+        request_payload = {
+            "items": [
+                {
+                    "id": f"U{index}",
+                    "invoiceProduct": item.get("invoiceName"),
+                    "reconciliationProduct": item.get("reconciliationName"),
+                    "invoiceUnit": item.get("invoiceUnit"),
+                    "reconciliationUnit": item.get("reconciliationUnit"),
+                    "invoiceQuantity": item.get("invoiceQuantity"),
+                    "reconciliationQuantity": item.get("reconciliationQuantity"),
+                }
+                for index, item in candidates
+            ]
+        }
+        try:
+            response = await self._invoke_unit_equivalence_model(request_payload)
+        except Exception as exc:
+            logger.warning(
+                "泛微智审单位语义复核失败，保留原单位判定: "
+                f"{LLMFactory.describe_invocation_error(exc)}"
+            )
+            return
+
+        candidate_indexes = {index for index, _ in candidates}
+        for raw in response.get("results") or []:
+            if not isinstance(raw, dict):
+                continue
+            index = self._semantic_id(raw.get("id"), "U")
+            confidence = self._bounded_float(raw.get("confidence"), 0)
+            if index not in candidate_indexes:
+                continue
+            verdict = self._text(raw.get("verdict")).lower()
+            if not verdict:
+                verdict = "equivalent" if raw.get("equivalent") is True else "uncertain"
+            item = matches[index]
+            item["unitReviewMethod"] = "ai_semantic"
+            item["unitReviewReason"] = self._text(raw.get("reason"))[:200]
+            if verdict == "uncertain" or confidence < 0.9:
+                item["unitMatched"] = None
+                item["quantityMatched"] = None
+                continue
+            if verdict == "not_equivalent":
+                item["unitMatched"] = False
+                continue
+            if verdict != "equivalent":
+                item["unitMatched"] = None
+                item["quantityMatched"] = None
+                continue
+            factor = self._optional_decimal(raw.get("invoiceToReconciliationFactor"))
+            if factor is None or factor <= 0:
+                item["unitMatched"] = None
+                item["quantityMatched"] = None
+                continue
+            invoice_quantity = self._optional_decimal(item.get("invoiceQuantity"))
+            reconciliation_quantity = self._optional_decimal(item.get("reconciliationQuantity"))
+            if invoice_quantity is None or reconciliation_quantity is None:
+                item["unitMatched"] = None
+                item["quantityMatched"] = None
+                continue
+            if abs(invoice_quantity * factor - reconciliation_quantity) > Decimal("0.0001"):
+                item["unitMatched"] = False
+                item["quantityMatched"] = False
+                continue
+            item["quantityMatched"] = True
+            item["unitMatched"] = True
+            item["unitMatchMethod"] = "ai_semantic"
+            item["unitMatchReason"] = item["unitReviewReason"]
+
+    async def _invoke_unit_equivalence_model(self, request_payload: dict[str, Any]) -> dict[str, Any]:
+        messages = [
+            SystemMessage(
+                content=(
+                    "你是采购对账单位复核器，只判断发票单位与对账单位在当前商品语境下是否为同一计量单位或可精确换算。"
+                    "要识别中文、英文、缩写、括号别名和行业常用写法，例如千克、公斤、kg、千克(公斤)。"
+                    "不得把套、箱、件、桶等无法确定包装换算关系的单位擅自视为等价。"
+                    "必须结合商品、规格、双方单位和双方数量判断，返回 verdict：equivalent、not_equivalent 或 uncertain。"
+                    "equivalent 时必须给出 invoiceToReconciliationFactor，满足发票数量乘该系数等于对账数量；"
+                    "确认不能换算才返回 not_equivalent，缺少依据或数量无法验证时返回 uncertain。只返回 JSON："
+                    "{\"results\":[{\"id\":\"U0\",\"verdict\":\"equivalent\",\"invoiceToReconciliationFactor\":1,"
+                    "\"confidence\":0.98,\"reason\":\"千克(公斤)是千克的别名\"}]}。"
+                )
+            ),
+            HumanMessage(content=json.dumps(request_payload, ensure_ascii=False, separators=(",", ":"))),
+        ]
+        model_name = (settings.WEAVER_AI_MODEL_NAME or "").strip()
+        response = await LLMFactory.safe_invoke(
+            messages,
+            capability=settings.WEAVER_AI_MODEL_CAPABILITY or "complex-reasoning",
+            preferred_model_names=[model_name] if model_name else None,
+            json_mode=True,
+            temperature=0,
+            enable_reasoning=settings.WEAVER_AI_ENABLE_REASONING,
+            max_retries=3,
+            invocation_timeout_seconds=30,
+            langfuse_run_name="weaver_invoice_unit_equivalence",
+            langfuse_metadata={"domain": "weaver_ai_review"},
+            langfuse_tags=["weaver", "invoice", "unit-equivalence"],
+        )
+        return self._parse_json_object(getattr(response, "content", response))
 
     def _compare_quantities_with_units(
         self,

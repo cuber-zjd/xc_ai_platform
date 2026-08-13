@@ -324,6 +324,94 @@ def test_invoice_unit_matches_reconciliation_candidate_units() -> None:
     assert service._compare_unit_sets({"箱"}, {"套、双、副"}) is False
 
 
+def test_parenthesized_unit_aliases_are_equivalent() -> None:
+    service = WeaverReviewEvidenceService()
+
+    assert service._compare_unit_sets({"千克"}, {"千克(公斤)"}) is True
+    assert service._compare_unit_sets({"kg"}, {"千克（公斤）"}) is True
+
+
+def test_kilometers_and_meters_are_converted_with_quantities() -> None:
+    service = WeaverReviewEvidenceService()
+
+    assert service._compare_unit_sets({"KM"}, {"米"}) is True
+    assert service._compare_quantities_with_units(
+        Decimal("0.123"),
+        {"KM"},
+        Decimal("123"),
+        {"米"},
+    ) is True
+
+
+def test_ai_unit_review_marks_uncertain_result_as_pending() -> None:
+    service = WeaverReviewEvidenceService()
+    matches = [
+        {
+            "invoiceName": "测试商品",
+            "reconciliationName": "测试商品",
+            "invoiceUnit": "包",
+            "reconciliationUnit": "箱",
+            "invoiceQuantity": "10",
+            "reconciliationQuantity": "1",
+            "unitMatched": False,
+            "quantityMatched": False,
+        }
+    ]
+
+    async def fake_review(_: dict[str, object]) -> dict[str, object]:
+        return {
+            "results": [
+                {
+                    "id": "U0",
+                    "verdict": "uncertain",
+                    "confidence": 0.85,
+                    "reason": "未提供每箱包含多少包",
+                }
+            ]
+        }
+
+    service._invoke_unit_equivalence_model = fake_review  # type: ignore[method-assign]
+    asyncio.run(service._review_ambiguous_units(matches))
+
+    assert matches[0]["unitMatched"] is None
+    assert matches[0]["quantityMatched"] is None
+
+
+def test_ai_unit_review_accepts_only_verified_quantity_conversion() -> None:
+    service = WeaverReviewEvidenceService()
+    matches = [
+        {
+            "invoiceName": "电缆",
+            "reconciliationName": "电缆",
+            "invoiceUnit": "卷",
+            "reconciliationUnit": "米",
+            "invoiceQuantity": "2",
+            "reconciliationQuantity": "200",
+            "unitMatched": False,
+            "quantityMatched": False,
+        }
+    ]
+
+    async def fake_review(_: dict[str, object]) -> dict[str, object]:
+        return {
+            "results": [
+                {
+                    "id": "U0",
+                    "verdict": "equivalent",
+                    "invoiceToReconciliationFactor": 100,
+                    "confidence": 0.97,
+                    "reason": "规格表明每卷100米",
+                }
+            ]
+        }
+
+    service._invoke_unit_equivalence_model = fake_review  # type: ignore[method-assign]
+    asyncio.run(service._review_ambiguous_units(matches))
+
+    assert matches[0]["unitMatched"] is True
+    assert matches[0]["quantityMatched"] is True
+
+
 def test_multiple_actual_units_are_not_treated_as_candidates() -> None:
     service = WeaverReviewEvidenceService()
 

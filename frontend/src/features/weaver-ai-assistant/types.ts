@@ -118,6 +118,7 @@ export interface WeaverReviewRule {
   ruleTitle: string;
   ruleContent: string;
   toolConfig?: Record<string, unknown> | null;
+  generalCheckEnabled: boolean;
   autoReviewMode: "suggestion" | "assist" | "auto";
   enabled: boolean;
   priority: number;
@@ -135,6 +136,7 @@ export interface WeaverReviewRulePayload {
   ruleTitle: string;
   ruleContent: string;
   toolConfig?: Record<string, unknown> | null;
+  generalCheckEnabled: boolean;
   autoReviewMode: "suggestion" | "assist" | "auto";
   enabled: boolean;
   priority: number;

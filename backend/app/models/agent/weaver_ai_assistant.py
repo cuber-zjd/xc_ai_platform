@@ -38,6 +38,7 @@ class WeaverAiReviewRule(BaseDBModel, table=True):
     rule_title: str = Field(max_length=200, description="智审规则标题")
     rule_content: str = Field(description="智审规则、审批口径或风险检查要求")
     tool_config: dict[str, Any] | None = Field(default=None, sa_type=JSONB, description="工具/知识库/外部查询说明")
+    general_check_enabled: bool = Field(default=False, description="是否允许超出已配置规则执行通用检查")
     auto_review_mode: str = Field(default="suggestion", index=True, max_length=30, description="suggestion/assist/auto")
     enabled: bool = Field(default=True, index=True, description="是否启用")
     priority: int = Field(default=100, index=True, description="优先级，数字越小越靠前")

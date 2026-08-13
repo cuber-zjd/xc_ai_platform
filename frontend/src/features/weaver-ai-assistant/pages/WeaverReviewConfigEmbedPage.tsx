@@ -25,6 +25,7 @@ interface ReviewRuleForm {
   toolInstructions: string;
   enableReconciliationInvoiceCheck: boolean;
   reconciliationCustomId: string;
+  generalCheckEnabled: boolean;
   nodeId: string;
   nodeName: string;
   reviewerUserId: string;
@@ -40,6 +41,7 @@ const emptyForm: ReviewRuleForm = {
   toolInstructions: "",
   enableReconciliationInvoiceCheck: false,
   reconciliationCustomId: "186",
+  generalCheckEnabled: false,
   nodeId: "",
   nodeName: "",
   reviewerUserId: "",
@@ -496,6 +498,23 @@ export default function WeaverReviewConfigEmbedPage() {
               ) : null}
             </div>
 
+            <div className="rounded-md border border-slate-200 bg-white p-4">
+              <label className="flex items-start gap-3">
+                <input
+                  type="checkbox"
+                  checked={form.generalCheckEnabled}
+                  onChange={(event) => setForm((current) => ({ ...current, generalCheckEnabled: event.target.checked }))}
+                  className="mt-0.5 h-4 w-4 accent-teal-700"
+                />
+                <span>
+                  <span className="block text-sm font-semibold text-slate-800">通用检查</span>
+                  <span className="mt-1 block text-xs leading-5 text-slate-500">
+                    开启后，AI 可在本规则之外补充字段完整性、材料和通用合规风险；关闭时只执行已配置的智审要求和工具核验。
+                  </span>
+                </span>
+              </label>
+            </div>
+
             <label className="block">
               <span className="text-xs font-medium text-slate-600">工具 / 资料说明</span>
               <textarea
@@ -689,6 +708,7 @@ function buildPayload(
         : [],
     },
     autoReviewMode: form.autoReviewMode,
+    generalCheckEnabled: form.generalCheckEnabled,
     enabled: form.enabled,
     priority: form.priority,
   };
@@ -712,6 +732,7 @@ function ruleToForm(rule: WeaverReviewRule): ReviewRuleForm {
     reviewerUserId: rule.reviewerUserId || "",
     reviewerName: rule.reviewerName || "",
     autoReviewMode: rule.autoReviewMode,
+    generalCheckEnabled: rule.generalCheckEnabled ?? false,
     enabled: rule.enabled,
     priority: rule.priority,
   };

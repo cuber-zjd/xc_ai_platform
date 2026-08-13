@@ -85,6 +85,7 @@ class WeaverAiReviewService:
             rule_title=payload.rule_title.strip(),
             rule_content=payload.rule_content.strip(),
             tool_config=self.clean_json(payload.tool_config),
+            general_check_enabled=payload.general_check_enabled,
             auto_review_mode=payload.auto_review_mode,
             enabled=payload.enabled,
             priority=payload.priority,
@@ -121,6 +122,8 @@ class WeaverAiReviewService:
             row.rule_content = payload.rule_content.strip()
         if "tool_config" in update_data:
             row.tool_config = self.clean_json(payload.tool_config)
+        if payload.general_check_enabled is not None:
+            row.general_check_enabled = payload.general_check_enabled
         if payload.auto_review_mode is not None:
             row.auto_review_mode = payload.auto_review_mode
         if payload.enabled is not None:
@@ -618,6 +621,21 @@ class WeaverAiReviewService:
         rules: list[WeaverReviewRuleRead],
         tool_evidence: list[dict[str, Any]],
     ) -> WeaverReviewResult:
+        general_check_enabled = any(rule.general_check_enabled for rule in rules)
+        context_payload = payload.context.model_dump(by_alias=True)
+        extra_payload = payload.extra
+        if not general_check_enabled and tool_evidence:
+            context_payload = {
+                "env": context_payload.get("env"),
+                "baseInfo": context_payload.get("baseInfo") or {},
+                "url": context_payload.get("url") or "",
+                "fields": {},
+            }
+            extra_payload = {
+                key: value
+                for key, value in payload.extra.items()
+                if key in {"testMode", "requestId", "workflowId", "workflowName"}
+            }
         prompt_payload = {
             "triggerType": payload.trigger_type,
             "operation": payload.operation,
@@ -626,18 +644,21 @@ class WeaverAiReviewService:
             "submitter": payload.submitter.model_dump(by_alias=True) if payload.submitter else None,
             "reviewer": payload.reviewer.model_dump(by_alias=True) if payload.reviewer else None,
             "comment": payload.comment,
-            "extra": payload.extra,
-            "context": payload.context.model_dump(by_alias=True),
+            "extra": extra_payload,
+            "context": context_payload,
             "reviewRules": [rule.model_dump(by_alias=True) for rule in rules],
             "toolEvidence": tool_evidence,
+            "reviewScope": {"generalCheckEnabled": general_check_enabled},
         }
         messages = [
             SystemMessage(
                 content=(
                     "你是泛微 E-cology 流程 AI 智审助手，只做预审建议和风险识别。"
-                    "你必须根据当前表单字段、审批节点、审批人规则和历史上下文判断是否存在缺失材料、逻辑矛盾、金额/日期/权限/附件风险。"
+                    "reviewScope.generalCheckEnabled 决定检查边界。为 false 时，只能检查 reviewRules 明确要求的事项和 toolEvidence，"
+                    "不得检查或评论规则未要求的其他字段、空值、材料、合同、科目、利润中心、固定资产或通用合规风险。"
+                    "为 true 时，才可以在规则检查之外，根据当前表单字段补充通用合规检查。"
                     "你不能声称已经审批、提交、退回或通过流程，也不能输出 JavaScript。"
-                    "如果没有配置智审规则，也要基于表单内容做通用合规检查，但必须说明依据有限。"
+                    "如果没有配置智审规则且通用检查关闭，只能说明当前没有可执行的智审规则，不能自行扩展检查范围。"
                     "toolEvidence 是平台只读工具取得的确定性业务证据，必须优先采用；不得把工具明确判定的不一致改写为通过。"
                     "context.fields 为空或缺少字段只表示 ecode 未采集到页面组件，不能据此断言业务字段为空、材料缺失或数据不一致；"
                     "若 toolEvidence 已从泛微流程数据库取得关联数据，应以该证据为准。不得编造工具证据和当前上下文中都不存在的合同、供应商、金额或字段缺失问题。"
@@ -652,7 +673,12 @@ class WeaverAiReviewService:
         try:
             response = await self.invoke_model(messages)
             payload_json = self.parse_json_content(self.text(getattr(response, "content", response)))
-            return self.normalize_review_result(payload_json, rules)
+            result = self.normalize_review_result(payload_json, rules)
+            if not general_check_enabled and tool_evidence:
+                result.checks = []
+                result.missing_materials = []
+                result.concerns = []
+            return result
         except Exception as exc:
             logger.warning(f"泛微流程 AI 智审模型调用失败，使用保守结果: {LLMFactory.describe_invocation_error(exc)}")
             return WeaverReviewResult(
@@ -845,6 +871,7 @@ class WeaverAiReviewService:
             ruleTitle=row.rule_title,
             ruleContent=row.rule_content,
             toolConfig=row.tool_config or {},
+            generalCheckEnabled=row.general_check_enabled,
             autoReviewMode=row.auto_review_mode,
             enabled=row.enabled,
             priority=row.priority,

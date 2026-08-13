@@ -182,6 +182,7 @@ pnpm dev
 - 泛微流程规则配置嵌入页入口为 `/weaver/assistant/workflow-config`，同样位于 `frontend/src/features/weaver-ai-assistant/`，用于在泛微流程路径设置页维护当前流程的特殊填报要求、提示词和工具/技能说明。
 - 泛微流程 AI 智审嵌入页入口为 `/weaver/assistant/review`，规则配置入口为 `/weaver/assistant/review-config`，用于在审批页展示 AI 预审建议、在流程设置页维护节点/审批人智审口径。
 - 智审配置页提供“测试审批”：管理员输入当前流程的 `requestId` 后，以 `test_mode=1` 在弹窗中复用 `/weaver/assistant/review` 的完整结果视图；测试状态必须明确标识，关闭弹窗只接受同源消息，不得加载或覆盖最近一次正式智审结果。
+- 每条智审规则提供“通用检查”开关，默认关闭；关闭时仅展示规则明确要求和确定性工具产生的检查结果，开启后才允许模型补充规则范围外的通用合规风险。
 - 该页面用于 iframe 嵌入泛微流程页，不经过 `ProtectedRoute`，通过 URL 中的 `ai_sign` 调用后端外部接口。
 - 页面与 ecode 父页面通过 `postMessage` 通讯：接收 `WEAVER_AI_CONTEXT`，发送 `WEAVER_AI_APPLY_ACTIONS` 和 `WEAVER_AI_CLOSE`。
 - 发送聊天前应通过 `WEAVER_AI_REQUEST_CONTEXT` 请求 ecode 回传最新表单状态；聊天回答使用 `/ai-api/v1/weaver/ai-assistant/chat/stream` SSE 流式展示，动作到达后才启用“写入表单”确认。
