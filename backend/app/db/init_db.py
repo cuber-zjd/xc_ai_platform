@@ -590,10 +590,16 @@ async def _ensure_insight_feishu_brief_columns(conn):
         text(
             "UPDATE insight_feishu_brief_plan SET "
             "review_weekday = weekday, release_weekday = weekday, review_time = time_of_day, "
-            "workflow_config_json = '{\"max_revision_rounds\":2,\"research_sections\":[\"政策\",\"竞对\",\"客户\",\"技术\",\"原料\"]}'::jsonb, "
+            "workflow_config_json = CAST(:workflow_config_json AS jsonb), "
             "material_scope_json = jsonb_build_object('mode','rolling_days','rolling_days',material_days,'start_weekday',0,'end_weekday',6,'filters','{}'::jsonb) "
             "WHERE workflow_config_json = '{}'::jsonb"
-        )
+        ),
+        {
+            "workflow_config_json": (
+                '{"max_revision_rounds":2,'
+                '"research_sections":["政策","竞对","客户","技术","原料"]}'
+            )
+        },
     )
     await conn.execute(
         text(
@@ -603,10 +609,11 @@ async def _ensure_insight_feishu_brief_columns(conn):
             "jsonb_build_object('migrated', true, 'generation_strategy', p.generation_strategy, "
             "'generation_rules', p.generation_rules_json, 'prompt_override', p.prompt_override, "
             "'template_markdown', p.template_markdown, 'workflow_config', p.workflow_config_json, "
-            "'material_scope', p.material_scope_json), '{\"legacy_migrated\":true}'::jsonb, "
+            "'material_scope', p.material_scope_json), CAST(:diff_json AS jsonb), "
             "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0 FROM insight_feishu_brief_plan p "
             "WHERE NOT EXISTS (SELECT 1 FROM insight_feishu_brief_plan_version v WHERE v.plan_id = p.id)"
-        )
+        ),
+        {"diff_json": '{"legacy_migrated":true}'},
     )
 
 
