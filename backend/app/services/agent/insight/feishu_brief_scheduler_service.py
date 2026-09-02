@@ -7,7 +7,11 @@ from sqlmodel import func, select
 from app.core.config import settings
 from app.core.logger import logger
 from app.db.session import async_session
-from app.models.agent.insight import InsightFeishuBriefPlan, InsightFeishuBriefRun
+from app.models.agent.insight import (
+    InsightFeishuBriefOccurrence,
+    InsightFeishuBriefPlan,
+    InsightFeishuBriefRun,
+)
 from app.services.agent.insight.feishu_brief_service import insight_feishu_brief_service
 
 
@@ -81,7 +85,25 @@ class InsightFeishuBriefSchedulerService:
                     )
                 )
             ).one()
-        values = [item for item in (next_plan, next_delivery) if item is not None]
+            next_review = (
+                await db.exec(
+                    select(func.min(InsightFeishuBriefRun.review_push_scheduled_at)).where(
+                        InsightFeishuBriefRun.is_deleted == 0,
+                        InsightFeishuBriefRun.review_push_status == "pending",
+                    )
+                )
+            ).one()
+            next_occurrence = (
+                await db.exec(
+                    select(func.min(InsightFeishuBriefOccurrence.generation_scheduled_at)).where(
+                        InsightFeishuBriefOccurrence.is_deleted == 0,
+                        InsightFeishuBriefOccurrence.status == "pending",
+                    )
+                )
+            ).one()
+        values = [
+            item for item in (next_plan, next_occurrence, next_review, next_delivery) if item is not None
+        ]
         return min(values) if values else None
 
     async def _run_due(self) -> None:
@@ -103,14 +125,19 @@ class InsightFeishuBriefSchedulerService:
                     limit=20,
                     trigger_type="brief_scheduler",
                 )
+                review_result = await insight_feishu_brief_service.run_due_review_pushes(
+                    db,
+                    limit=50,
+                )
                 delivery_result = await insight_feishu_brief_service.run_due_afternoon_pushes(
                     db,
                     limit=50,
                 )
-                if plan_result.due_count or delivery_result["due_count"]:
+                if plan_result.due_count or review_result["due_count"] or delivery_result["due_count"]:
                     logger.info(
-                        "飞书简报定时执行完成：生成 {} 个，下午推送 {} 个",
+                        "飞书简报定时执行完成：生成 {} 个，审阅推送 {} 个，正式推送 {} 个",
                         plan_result.due_count,
+                        review_result["due_count"],
                         delivery_result["due_count"],
                     )
             finally:

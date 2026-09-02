@@ -14,7 +14,11 @@ from app.services.agent.insight.feishu_monthly_report_service import (
 )
 from app.services.agent.insight.company_context import insight_company_business_context
 from app.models.agent.insight.feishu_brief import InsightFeishuBriefPlan
-from app.schemas.agent.insight.feishu_brief import InsightFeishuBriefGenerationRules
+from app.schemas.agent.insight.feishu_brief import (
+    InsightFeishuBriefGenerationRules,
+    InsightFeishuBriefMaterialScope,
+    InsightFeishuBriefPlanCreate,
+)
 from app.services.agent.insight.feishu_brief_service import InsightFeishuBriefService
 
 
@@ -52,6 +56,66 @@ class InsightFeishuBriefScheduleTest(unittest.TestCase):
     def test_week_title_uses_material_end_date_interval(self) -> None:
         self.assertEqual(self.service._week_of_month(datetime(2026, 8, 3, 23, 59)), 1)
         self.assertEqual(self.service._week_of_month(datetime(2026, 8, 8)), 2)
+
+    def test_weekly_generation_review_and_release_are_independent(self) -> None:
+        plan = InsightFeishuBriefPlan(
+            plan_uid="weekly-independent-times",
+            plan_name="独立时间周报",
+            schedule_frequency="weekly",
+            weekday=0,
+            time_of_day="09:00",
+            review_weekday=0,
+            review_time="10:30",
+            release_weekday=1,
+            release_time="15:00",
+        )
+        review_at, release_at = self.service._delivery_schedule(
+            plan, generated_at=datetime(2026, 9, 7, 9, 20)
+        )
+        self.assertEqual(review_at, datetime(2026, 9, 7, 10, 30))
+        self.assertEqual(release_at, datetime(2026, 9, 8, 15, 0))
+
+    def test_material_scope_rolling_days_replaces_legacy_week_boundary(self) -> None:
+        plan = InsightFeishuBriefPlan(
+            plan_uid="weekly-rolling",
+            plan_name="滚动素材周报",
+            schedule_frequency="weekly",
+            material_scope_json=InsightFeishuBriefMaterialScope(
+                mode="rolling_days", rolling_days=3
+            ).model_dump(mode="json"),
+        )
+        start, end = self.service._period_bounds(
+            plan,
+            now=datetime(2026, 9, 7, 9, 0),
+            trigger_type="brief_scheduler",
+            requested_start=None,
+        )
+        self.assertEqual(start, datetime(2026, 9, 4, 9, 0))
+        self.assertEqual(end, datetime(2026, 9, 7, 9, 0))
+
+    def test_debug_draft_does_not_keep_any_recipients(self) -> None:
+        persisted = InsightFeishuBriefPlan(
+            id=9,
+            plan_uid="weekly-debug",
+            plan_name="周报",
+            recipients_json=[{"receive_id_type": "user_id", "receive_id": "1001"}],
+            afternoon_recipients_json=[{"receive_id_type": "user_id", "receive_id": "1002"}],
+        )
+        draft = self.service._draft_plan(
+            persisted,
+            InsightFeishuBriefPlanCreate(plan_name="未保存策略调试"),
+        )
+        self.assertEqual(draft.id, 9)
+        self.assertEqual(draft.recipients_json, [])
+        self.assertEqual(draft.afternoon_recipients_json, [])
+
+    def test_transfer_debug_document_owner_uses_employee_id(self) -> None:
+        request = AsyncMock(return_value={})
+        with patch.object(self.service, "_request", request):
+            asyncio.run(self.service._transfer_document_owner("doc-1", "104484"))
+        self.assertEqual(request.await_args.args[0], "POST")
+        self.assertEqual(request.await_args.kwargs["json"], {"member_type": "userid", "member_id": "104484"})
+        self.assertFalse(request.await_args.kwargs["params"]["remove_old_owner"])
 
     def test_weekly_selection_keeps_supporting_evidence(self) -> None:
         materials = [

@@ -8,6 +8,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from difflib import SequenceMatcher
+from time import perf_counter
 from typing import Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -19,19 +20,35 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.config import settings
 from app.core.llm_factory import LLMFactory
-from app.models.agent.insight import InsightFeishuBriefPlan, InsightFeishuBriefRun, InsightIntelligence
+from app.models.agent.insight import (
+    InsightFeishuBriefAgentStage,
+    InsightFeishuBriefOccurrence,
+    InsightFeishuBriefPlan,
+    InsightFeishuBriefPlanVersion,
+    InsightFeishuBriefRun,
+    InsightIntelligence,
+)
 from app.models.system.sys_company import SysCompany
+from app.models.system.sys_user import SysUser
 from app.schemas.agent.insight.feishu_brief import (
     InsightFeishuBriefDueRunResponse,
+    InsightFeishuBriefDebugRequest,
+    InsightFeishuBriefAgentStageRead,
     InsightFeishuBriefGenerationRules,
+    InsightFeishuBriefMaterialScope,
+    InsightFeishuBriefOccurrenceOverride,
+    InsightFeishuBriefOccurrenceRead,
     InsightFeishuBriefOptionsRead,
     InsightFeishuBriefPlanCreate,
     InsightFeishuBriefPlanRead,
     InsightFeishuBriefPlanUpdate,
+    InsightFeishuBriefPlanVersionRead,
+    InsightFeishuBriefPromptConfig,
     InsightFeishuBriefRecipient,
     InsightFeishuBriefRunRead,
     InsightFeishuBriefRunRequest,
     InsightFeishuBriefRunResponse,
+    InsightFeishuBriefWorkflowConfig,
 )
 from app.schemas.page import Page
 from app.services.agent.insight.feishu_bitable_service import insight_feishu_bitable_service
@@ -129,6 +146,42 @@ PROMPT_TEMPLATE_DISPLAY = f"""你是香驰控股管理层情报简报撰写人�
 
 {APPROVED_STYLE_EXAMPLES.strip()}"""
 
+DEFAULT_WEEKLY_TEMPLATE = """管理层情报简报｜{{素材周期}}｜生成时间：{{生成日期}}
+
+适用公司：{{所属公司}}｜数据来源：情报管理多维表格·情报表｜原始候选 {{素材数量}} 条
+
+---
+
+# 一、总览
+
+# 政策
+
+# 竞对
+
+# 客户
+
+# 技术
+
+# 原料
+
+# 二、重点情报导读
+
+必须正好输出 7 条，格式为：
+## [1. 情报标题](原文链接)
+
+一级分类　事件标签
+
+一段完整事实描述。
+"""
+
+DEFAULT_WEEKLY_PROMPTS = {
+    "planning": "制定本期研究问题、证据分布、栏目结构、研究任务和信息缺口，不撰写正文。",
+    "research": "围绕指定栏目归并事件、核对主体动作与数字，列出可引用证据和不确定点，不补充材料外事实。",
+    "writing": PROMPT_TEMPLATE_DISPLAY,
+    "reviewing": "独立检查事实与来源、公司相关性、重复事件、推断性表达、固定结构、七条导读和语言质量。",
+    "revision": "仅依据审阅问题和给定材料修订，不新增材料外事实，不改变固定版式。",
+}
+
 
 @dataclass(frozen=True)
 class BriefFolderResolution:
@@ -179,6 +232,8 @@ class InsightFeishuBriefService:
         page: int,
         size: int,
         status: str | None = None,
+        current_user_id: int | None = None,
+        is_admin: bool = False,
     ) -> Page[InsightFeishuBriefPlanRead]:
         page = max(page, 1)
         size = min(max(size, 1), 100)
@@ -199,7 +254,14 @@ class InsightFeishuBriefService:
         )
         companies = await self._company_names(db, [row.sys_company_id for row in rows if row.sys_company_id])
         return Page.create(
-            items=[self._plan_read(row, companies.get(row.sys_company_id)) for row in rows],
+            items=[
+                self._plan_read(
+                    row,
+                    companies.get(row.sys_company_id),
+                    can_edit=is_admin or row.owner_user_id == current_user_id,
+                )
+                for row in rows
+            ],
             total=total,
             page=page,
             size=size,
@@ -232,6 +294,198 @@ class InsightFeishuBriefService:
         )
         return Page.create(items=[self._run_read(row) for row in rows], total=total, page=page, size=size)
 
+    async def list_agent_stages(
+        self,
+        db: AsyncSession,
+        run_id: int,
+    ) -> list[InsightFeishuBriefAgentStageRead]:
+        rows = list(
+            (
+                await db.exec(
+                    select(InsightFeishuBriefAgentStage)
+                    .where(
+                        InsightFeishuBriefAgentStage.run_id == run_id,
+                        InsightFeishuBriefAgentStage.is_deleted == 0,
+                    )
+                    .order_by(
+                        InsightFeishuBriefAgentStage.sequence_no.asc(),
+                        InsightFeishuBriefAgentStage.id.asc(),
+                    )
+                )
+            ).all()
+        )
+        return [
+            InsightFeishuBriefAgentStageRead(
+                id=row.id or 0,
+                run_id=row.run_id,
+                stage_code=row.stage_code,
+                stage_name=row.stage_name,
+                sequence_no=row.sequence_no,
+                status=row.status,
+                output_content=row.output_content,
+                output_json=row.output_json or {},
+                model_name=row.model_name,
+                token_usage_json=row.token_usage_json or {},
+                duration_ms=row.duration_ms,
+                error_message=row.error_message,
+                started_at=row.started_at,
+                finished_at=row.finished_at,
+            )
+            for row in rows
+        ]
+
+    async def list_plan_versions(
+        self,
+        db: AsyncSession,
+        plan_id: int,
+    ) -> list[InsightFeishuBriefPlanVersionRead]:
+        rows = list(
+            (
+                await db.exec(
+                    select(InsightFeishuBriefPlanVersion)
+                    .where(
+                        InsightFeishuBriefPlanVersion.plan_id == plan_id,
+                        InsightFeishuBriefPlanVersion.is_deleted == 0,
+                    )
+                    .order_by(InsightFeishuBriefPlanVersion.version_no.desc())
+                )
+            ).all()
+        )
+        return [
+            InsightFeishuBriefPlanVersionRead(
+                id=row.id or 0,
+                plan_id=row.plan_id,
+                version_no=row.version_no,
+                config_json=row.config_json or {},
+                diff_json=row.diff_json or {},
+                changed_by_user_id=row.changed_by_user_id,
+                create_time=row.create_time,
+            )
+            for row in rows
+        ]
+
+    async def upsert_occurrence(
+        self,
+        db: AsyncSession,
+        plan_id: int,
+        payload: InsightFeishuBriefOccurrenceOverride,
+        *,
+        user_id: int,
+    ) -> InsightFeishuBriefOccurrenceRead:
+        plan = await self._require_plan(db, plan_id)
+        existing = (
+            await db.exec(
+                select(InsightFeishuBriefOccurrence).where(
+                    InsightFeishuBriefOccurrence.plan_id == plan_id,
+                    InsightFeishuBriefOccurrence.period_key == payload.period_key,
+                    InsightFeishuBriefOccurrence.is_deleted == 0,
+                )
+            )
+        ).first()
+        row = existing or InsightFeishuBriefOccurrence(
+            occurrence_uid=f"feishu_brief_occurrence_{uuid4().hex}",
+            plan_id=plan_id,
+            period_key=payload.period_key,
+            generation_scheduled_at=payload.generation_scheduled_at,
+            review_scheduled_at=payload.review_scheduled_at,
+            release_scheduled_at=payload.release_scheduled_at,
+            create_by=str(user_id),
+        )
+        if row.run_id:
+            raise ValueError("该周期已经生成，不能再修改单期调度")
+        row.generation_scheduled_at = payload.generation_scheduled_at
+        row.review_scheduled_at = payload.review_scheduled_at
+        row.release_scheduled_at = payload.release_scheduled_at
+        row.material_scope_json = (
+            payload.material_scope.model_dump(mode="json")
+            if payload.material_scope
+            else self._material_scope(plan).model_dump(mode="json")
+        )
+        row.recipients_json = [
+            item.model_dump(mode="json")
+            for item in (payload.recipients if payload.recipients is not None else self._recipients(plan))
+        ]
+        row.release_recipients_json = [
+            item.model_dump(mode="json")
+            for item in (
+                payload.release_recipients
+                if payload.release_recipients is not None
+                else self._afternoon_recipients(plan)
+            )
+        ]
+        row.config_snapshot_json = self._plan_config_snapshot(plan)
+        row.status = "pending"
+        row.update_by = str(user_id)
+        row.update_time = datetime.now()
+        db.add(row)
+        plan.next_run_time = self._next_run_time(
+            plan.schedule_frequency,
+            plan.time_of_day,
+            plan.weekday,
+            plan.day_of_month,
+            base=payload.generation_scheduled_at,
+        )
+        plan.update_by = str(user_id)
+        db.add(plan)
+        await db.commit()
+        await db.refresh(row)
+        return self._occurrence_read(row)
+
+    async def cancel_occurrence(
+        self,
+        db: AsyncSession,
+        plan_id: int,
+        period_key: str,
+        *,
+        user_id: int,
+    ) -> None:
+        row = (
+            await db.exec(
+                select(InsightFeishuBriefOccurrence).where(
+                    InsightFeishuBriefOccurrence.plan_id == plan_id,
+                    InsightFeishuBriefOccurrence.period_key == period_key,
+                    InsightFeishuBriefOccurrence.is_deleted == 0,
+                )
+            )
+        ).first()
+        if not row:
+            return
+        if row.run_id:
+            raise ValueError("该周期已经生成，不能取消")
+        row.is_deleted = 1
+        row.status = "cancelled"
+        row.update_by = str(user_id)
+        db.add(row)
+        await db.commit()
+
+    async def debug_plan(
+        self,
+        db: AsyncSession,
+        plan_id: int,
+        payload: InsightFeishuBriefDebugRequest,
+        *,
+        current_user: SysUser,
+    ) -> InsightFeishuBriefRunResponse:
+        persisted = await self._require_plan(db, plan_id)
+        if not current_user.employee_id:
+            raise ValueError("当前登录用户没有有效工号，无法创建个人调试文档")
+        draft = self._draft_plan(persisted, payload.draft_config)
+        request = InsightFeishuBriefRunRequest(
+            period_start=payload.period_start,
+            period_end=payload.period_end,
+            publish_candidate_documents=False,
+            push_final=False,
+        )
+        return await self.run_plan(
+            db,
+            plan_id,
+            trigger_type=f"debug:user:{current_user.id}",
+            run_request=request,
+            plan_override=draft,
+            run_mode="debug",
+            debug_owner_employee_id=current_user.employee_id,
+        )
+
     async def create_plan(
         self,
         db: AsyncSession,
@@ -243,21 +497,35 @@ class InsightFeishuBriefService:
         row = InsightFeishuBriefPlan(
             plan_uid=f"feishu_brief_{uuid4().hex}",
             plan_name=payload.plan_name.strip(),
+            owner_user_id=user_id,
             sys_company_id=payload.sys_company_id,
             schedule_frequency=payload.schedule_frequency,
             weekday=payload.weekday,
             day_of_month=payload.day_of_month,
             time_of_day=payload.time_of_day,
-            material_days=payload.material_days,
+            review_weekday=payload.review_weekday,
+            review_time=payload.review_time,
+            release_weekday=payload.release_weekday,
+            release_time=payload.release_time,
+            material_days=(
+                payload.material_scope.rolling_days
+                if payload.material_scope.mode == "rolling_days"
+                else payload.material_days
+            ),
             max_materials=payload.max_materials,
             generation_strategy=payload.generation_strategy,
             prompt_override=payload.prompt_override,
             generation_rules_json=payload.generation_rules.model_dump(mode="json"),
+            workflow_config_json=payload.workflow_config.model_dump(mode="json"),
+            prompt_config_json=self._effective_prompt_config(payload.prompt_config).model_dump(mode="json"),
+            material_scope_json=payload.material_scope.model_dump(mode="json"),
+            template_markdown=(payload.template_markdown or DEFAULT_WEEKLY_TEMPLATE).strip(),
+            config_version=1,
             recipients_json=[item.model_dump(mode="json") for item in payload.recipients],
             afternoon_recipients_json=[
                 item.model_dump(mode="json") for item in payload.afternoon_recipients
             ],
-            afternoon_push_time=payload.afternoon_push_time,
+            afternoon_push_time=payload.release_time,
             next_run_time=self._next_run_time(
                 payload.schedule_frequency,
                 payload.time_of_day,
@@ -269,9 +537,21 @@ class InsightFeishuBriefService:
             update_by=str(user_id),
         )
         db.add(row)
+        await db.flush()
+        db.add(
+            InsightFeishuBriefPlanVersion(
+                plan_id=row.id or 0,
+                version_no=1,
+                config_json=self._plan_config_snapshot(row),
+                diff_json={"created": True},
+                changed_by_user_id=user_id,
+                create_by=str(user_id),
+                update_by=str(user_id),
+            )
+        )
         await db.commit()
         await db.refresh(row)
-        return self._plan_read(row, company.name if company else None)
+        return self._plan_read(row, company.name if company else None, can_edit=True)
 
     async def update_plan(
         self,
@@ -282,7 +562,9 @@ class InsightFeishuBriefService:
         user_id: int,
     ) -> InsightFeishuBriefPlanRead:
         row = await self._require_plan(db, plan_id)
+        before = self._plan_config_snapshot(row)
         data = payload.model_dump(exclude_unset=True, mode="json")
+        changed_fields = set(data)
         if "sys_company_id" in data:
             await self._require_company(db, data["sys_company_id"])
         if "recipients" in data:
@@ -291,6 +573,19 @@ class InsightFeishuBriefService:
             data["afternoon_recipients_json"] = data.pop("afternoon_recipients")
         if "generation_rules" in data:
             data["generation_rules_json"] = data.pop("generation_rules")
+        if "workflow_config" in data:
+            data["workflow_config_json"] = data.pop("workflow_config")
+        if "prompt_config" in data:
+            data["prompt_config_json"] = self._effective_prompt_config(
+                InsightFeishuBriefPromptConfig.model_validate(data.pop("prompt_config"))
+            ).model_dump(mode="json")
+        if "material_scope" in data:
+            material_scope = InsightFeishuBriefMaterialScope.model_validate(data.pop("material_scope"))
+            data["material_scope_json"] = material_scope.model_dump(mode="json")
+            if material_scope.mode == "rolling_days":
+                data["material_days"] = material_scope.rolling_days
+        if "release_time" in data:
+            data["afternoon_push_time"] = data["release_time"]
         for key, value in data.items():
             setattr(row, key, value)
         row.next_run_time = self._next_run_time(
@@ -301,11 +596,41 @@ class InsightFeishuBriefService:
         )
         row.update_by = str(user_id)
         row.update_time = datetime.now()
+        row.config_version = max(row.config_version or 1, 1) + 1
         db.add(row)
+        await self._apply_pending_plan_changes(
+            db,
+            row,
+            content_changed=bool(
+                changed_fields
+                & {
+                    "generation_strategy",
+                    "prompt_override",
+                    "generation_rules",
+                    "workflow_config",
+                    "prompt_config",
+                    "material_scope",
+                    "template_markdown",
+                }
+            ),
+        )
+        await db.flush()
+        after = self._plan_config_snapshot(row)
+        db.add(
+            InsightFeishuBriefPlanVersion(
+                plan_id=row.id or 0,
+                version_no=row.config_version,
+                config_json=after,
+                diff_json=self._config_diff(before, after),
+                changed_by_user_id=user_id,
+                create_by=str(user_id),
+                update_by=str(user_id),
+            )
+        )
         await db.commit()
         await db.refresh(row)
         company = await db.get(SysCompany, row.sys_company_id) if row.sys_company_id else None
-        return self._plan_read(row, company.name if company else None)
+        return self._plan_read(row, company.name if company else None, can_edit=True)
 
     async def delete_plan(self, db: AsyncSession, plan_id: int, *, user_id: int) -> None:
         row = await self._require_plan(db, plan_id)
@@ -316,6 +641,86 @@ class InsightFeishuBriefService:
         db.add(row)
         await db.commit()
 
+    async def ensure_can_edit_plan(
+        self,
+        db: AsyncSession,
+        plan_id: int,
+        *,
+        user_id: int,
+        is_admin: bool,
+    ) -> InsightFeishuBriefPlan:
+        row = await self._require_plan(db, plan_id)
+        if not is_admin and row.owner_user_id != user_id:
+            raise ValueError("只有管理员或计划所有者可以修改、调试或执行该计划")
+        return row
+
+    async def ensure_can_edit_run(
+        self,
+        db: AsyncSession,
+        run_id: int,
+        *,
+        user_id: int,
+        is_admin: bool,
+    ) -> InsightFeishuBriefRun:
+        run = await db.get(InsightFeishuBriefRun, run_id)
+        if not run or run.is_deleted:
+            raise ValueError("飞书简报执行记录不存在")
+        await self.ensure_can_edit_plan(
+            db, run.plan_id, user_id=user_id, is_admin=is_admin
+        )
+        return run
+
+    async def _apply_pending_plan_changes(
+        self,
+        db: AsyncSession,
+        plan: InsightFeishuBriefPlan,
+        *,
+        content_changed: bool,
+    ) -> None:
+        """时间和接收人立即作用于未推送阶段；内容变化只标记待重生成。"""
+        rows = list(
+            (
+                await db.exec(
+                    select(InsightFeishuBriefRun).where(
+                        InsightFeishuBriefRun.plan_id == (plan.id or 0),
+                        InsightFeishuBriefRun.run_mode == "formal",
+                        InsightFeishuBriefRun.is_deleted == 0,
+                        (
+                            (InsightFeishuBriefRun.review_push_status == "pending")
+                            | (InsightFeishuBriefRun.afternoon_push_status == "pending")
+                        ),
+                    )
+                )
+            ).all()
+        )
+        for run in rows:
+            review_at, release_at = self._delivery_schedule(
+                plan, generated_at=run.started_at or datetime.now()
+            )
+            payload = dict(run.output_payload or {})
+            if run.review_push_status == "pending":
+                run.review_push_scheduled_at = review_at
+                morning = dict(payload.get("morning_delivery") or {})
+                morning["recipients"] = [item.model_dump(mode="json") for item in self._recipients(plan)]
+                morning["scheduled_at"] = review_at.isoformat()
+                payload["morning_delivery"] = morning
+            if run.afternoon_push_status == "pending":
+                run.afternoon_push_scheduled_at = release_at
+                release = dict(payload.get("afternoon_delivery") or {})
+                release["recipients"] = [
+                    item.model_dump(mode="json") for item in self._afternoon_recipients(plan)
+                ]
+                release["scheduled_at"] = release_at.isoformat()
+                payload["afternoon_delivery"] = release
+            if content_changed:
+                payload["content_config_changed"] = {
+                    "dirty": True,
+                    "config_version": plan.config_version,
+                    "message": "生成策略、提示词、模板或素材配置已变化，请显式重新生成原文档",
+                }
+            run.output_payload = payload
+            db.add(run)
+
     async def run_plan(
         self,
         db: AsyncSession,
@@ -323,8 +728,13 @@ class InsightFeishuBriefService:
         *,
         trigger_type: str = "manual",
         run_request: InsightFeishuBriefRunRequest | None = None,
+        plan_override: InsightFeishuBriefPlan | None = None,
+        run_mode: str = "formal",
+        debug_owner_employee_id: str | None = None,
+        occurrence: InsightFeishuBriefOccurrence | None = None,
     ) -> InsightFeishuBriefRunResponse:
-        plan = await self._require_plan(db, plan_id)
+        persisted_plan = await self._require_plan(db, plan_id)
+        plan = plan_override or persisted_plan
         options = self.get_options()
         if not options.configured:
             raise ValueError("独立飞书简报机器人尚未配置完整")
@@ -344,28 +754,31 @@ class InsightFeishuBriefService:
             run_uid=f"feishu_brief_run_{uuid4().hex}",
             plan_id=plan.id or 0,
             trigger_type=trigger_type,
+            run_mode=run_mode,
             status="running",
             period_start=period_start,
             period_end=period_end,
             started_at=execution_started_at,
+            occurrence_id=occurrence.id if occurrence else None,
+            config_snapshot_json=self._plan_config_snapshot(plan),
         )
         db.add(run)
         await db.flush()
-        if self._is_scheduled_trigger(trigger_type):
+        if run_mode == "formal" and self._is_scheduled_trigger(trigger_type):
             # 先持久化本周期占用，再执行建文档和消息发送。外部发送成功后即使数据库连接
             # 短暂中断，也不会因计划仍处于到期状态而自动重复发送。
-            plan.last_run_time = execution_started_at
-            plan.last_run_id = run.id
-            plan.last_status = "running"
-            plan.last_error = None
-            plan.next_run_time = self._next_run_time(
-                plan.schedule_frequency,
-                plan.time_of_day,
-                plan.weekday,
-                plan.day_of_month,
+            persisted_plan.last_run_time = execution_started_at
+            persisted_plan.last_run_id = run.id
+            persisted_plan.last_status = "running"
+            persisted_plan.last_error = None
+            persisted_plan.next_run_time = self._next_run_time(
+                persisted_plan.schedule_frequency,
+                persisted_plan.time_of_day,
+                persisted_plan.weekday,
+                persisted_plan.day_of_month,
                 base=execution_started_at,
             )
-            db.add(plan)
+            db.add(persisted_plan)
         await db.commit()
         await db.refresh(run)
         run_id = run.id or 0
@@ -478,9 +891,11 @@ class InsightFeishuBriefService:
                         f"当前周期有 {len(materials)} 条正式情报，但仅 {len(selected_materials)} 条"
                         "通过简报相关性审校，不足以生成固定 7 条导读"
                     )
-                title, markdown = await self._generate_markdown(
+                title, markdown, agent_pipeline = await self._generate_weekly_multi_agent(
+                    db,
+                    run=run,
+                    plan=plan,
                     company_name=company_name,
-                    frequency=plan.schedule_frequency,
                     period_start=period_start,
                     period_end=period_end,
                     generated_at=execution_started_at,
@@ -489,7 +904,10 @@ class InsightFeishuBriefService:
                     prompt_override=effective_prompt_override,
                     generation_rules=generation_rules,
                 )
-                pipeline_output = {"material_selection": selection_audit}
+                pipeline_output = {
+                    "material_selection": selection_audit,
+                    "multi_agent": agent_pipeline,
+                }
                 used_material_count = len(selected_materials)
             pipeline_output["document_folder"] = {
                 "token": final_folder.token,
@@ -505,13 +923,28 @@ class InsightFeishuBriefService:
                     "warning": process_folder.warning,
                 }
             document_id, document_url = await self._create_document(
-                title,
+                f"[调试] {title}" if run_mode == "debug" else title,
                 markdown,
                 folder_token=final_folder.token,
             )
-            recipients = self._recipients(plan)
-            afternoon_recipients = self._afternoon_recipients(plan)
-            should_push = not run_request or run_request.push_final
+            if run_mode == "debug":
+                if not debug_owner_employee_id:
+                    raise ValueError("当前登录用户没有有效工号，无法转移调试文档所有权")
+                try:
+                    await self._transfer_document_owner(document_id, debug_owner_employee_id)
+                    run.owner_transfer_status = "success"
+                except Exception as exc:
+                    run.owner_transfer_status = "failed"
+                    run.document_id = document_id
+                    run.document_url = document_url
+                    run.report_title = f"[调试] {title}"
+                    run.content_markdown = markdown
+                    db.add(run)
+                    await db.commit()
+                    raise ValueError(f"调试文档已生成，但转移所有权失败：{exc}") from exc
+            recipients = [] if run_mode == "debug" else self._recipients(plan)
+            afternoon_recipients = [] if run_mode == "debug" else self._afternoon_recipients(plan)
+            should_push = run_mode == "formal" and (not run_request or run_request.push_final)
             morning_permission_result = (
                 await self._grant_document_permission(document_id, recipients, permission="edit")
                 if should_push and recipients
@@ -527,34 +960,45 @@ class InsightFeishuBriefService:
                 else {"success_count": 0, "failed_count": 0, "results": []}
             )
             security_label_name = await self._document_security_label(document_id)
+            finished = datetime.now()
+            review_scheduled_at, afternoon_scheduled_at = self._delivery_schedule(
+                plan,
+                generated_at=execution_started_at,
+                occurrence=occurrence,
+            )
+            review_due_now = bool(should_push and recipients and review_scheduled_at <= finished)
             push_result = (
-                await self._push_document(
-                    title,
-                    document_url,
-                    recipients,
-                    stage="morning_review",
-                )
-                if should_push
+                await self._push_document(title, document_url, recipients, stage="morning_review")
+                if review_due_now
                 else {"success_count": 0, "failed_count": 0, "results": []}
             )
-            finished = datetime.now()
             afternoon_scheduled_at = (
-                self._same_day_time(finished, plan.afternoon_push_time)
+                afternoon_scheduled_at
                 if should_push and afternoon_recipients
                 else None
             )
             run.status = "success" if push_result["failed_count"] == 0 else "partial"
             run.material_count = used_material_count
-            run.report_title = title
+            run.report_title = f"[调试] {title}" if run_mode == "debug" else title
             run.document_id = document_id
             run.document_url = document_url
             run.pushed_count = push_result["success_count"]
             run.failed_push_count = push_result["failed_count"]
             run.afternoon_push_scheduled_at = afternoon_scheduled_at
             run.afternoon_push_status = "pending" if afternoon_scheduled_at else None
+            run.review_push_scheduled_at = review_scheduled_at if should_push and recipients else None
+            run.review_push_status = (
+                ("success" if push_result["failed_count"] == 0 else "partial")
+                if review_due_now
+                else ("pending" if should_push and recipients else None)
+            )
+            run.review_pushed_count = push_result["success_count"]
+            run.review_failed_push_count = push_result["failed_count"]
             run.content_markdown = markdown
             run.output_payload = {
                 "morning_delivery": {
+                    "scheduled_at": review_scheduled_at.isoformat() if should_push and recipients else None,
+                    "status": run.review_push_status or "disabled",
                     "recipients": [item.model_dump(mode="json") for item in recipients],
                     "permission_results": morning_permission_result,
                     "push_results": push_result,
@@ -573,26 +1017,33 @@ class InsightFeishuBriefService:
                 **pipeline_output,
             }
             run.finished_at = finished
-            plan.last_run_time = finished
-            plan.last_run_id = run.id
-            plan.last_status = run.status
-            plan.last_error = None
-            plan.next_run_time = self._next_run_time(
-                plan.schedule_frequency,
-                plan.time_of_day,
-                plan.weekday,
-                plan.day_of_month,
-                base=finished,
-            )
             db.add(run)
-            db.add(plan)
+            if occurrence:
+                occurrence.status = "generated"
+                occurrence.run_id = run.id
+                db.add(occurrence)
+            if run_mode == "formal":
+                persisted_plan.last_run_time = finished
+                persisted_plan.last_run_id = run.id
+                persisted_plan.last_status = run.status
+                persisted_plan.last_error = None
+                persisted_plan.next_run_time = self._next_run_time(
+                    persisted_plan.schedule_frequency,
+                    persisted_plan.time_of_day,
+                    persisted_plan.weekday,
+                    persisted_plan.day_of_month,
+                    base=finished,
+                )
+                db.add(persisted_plan)
             await db.commit()
             await db.refresh(run)
             message = "飞书简报已生成"
-            if should_push and recipients:
-                message = "飞书简报已生成并发送给上午审阅组"
+            if review_due_now:
+                message = "飞书简报已生成并发送给审阅组"
+            elif should_push and recipients:
+                message = f"飞书简报已生成，将于 {review_scheduled_at:%m-%d %H:%M} 发送审阅组"
             if afternoon_scheduled_at:
-                message += f"，下午 {plan.afternoon_push_time} 将发送同一云文档"
+                message += f"，{afternoon_scheduled_at:%m-%d %H:%M} 将发送同一云文档"
             return InsightFeishuBriefRunResponse(run=self._run_read(run), message=message)
         except Exception as exc:
             await db.rollback()
@@ -603,7 +1054,21 @@ class InsightFeishuBriefService:
                 failed_run.error_message = str(exc)[:2000]
                 failed_run.finished_at = datetime.now()
                 db.add(failed_run)
-            if failed_plan:
+                if plan.schedule_frequency == "weekly":
+                    db.add(
+                        InsightFeishuBriefAgentStage(
+                            run_id=run_id,
+                            stage_code="pipeline_failure",
+                            stage_name="多智能体流程失败",
+                            sequence_no=999,
+                            status="failed",
+                            output_content=None,
+                            error_message=str(exc)[:2000],
+                            started_at=datetime.now(),
+                            finished_at=datetime.now(),
+                        )
+                    )
+            if failed_plan and run_mode == "formal":
                 failed_plan.last_run_time = datetime.now()
                 failed_plan.last_run_id = run_id
                 failed_plan.last_status = "failed"
@@ -657,9 +1122,11 @@ class InsightFeishuBriefService:
             raise ValueError(
                 f"当前周期有 {len(materials)} 条正式情报，但仅 {len(selected_materials)} 条通过相关性审校"
             )
-        title, markdown = await self._generate_markdown(
+        title, markdown, agent_pipeline = await self._generate_weekly_multi_agent(
+            db,
+            run=run,
+            plan=plan,
             company_name=company_name,
-            frequency=plan.schedule_frequency,
             period_start=run.period_start,
             period_end=run.period_end,
             generated_at=datetime.now(),
@@ -672,6 +1139,7 @@ class InsightFeishuBriefService:
 
         output_payload = dict(run.output_payload or {})
         output_payload["material_selection"] = selection_audit
+        output_payload["multi_agent"] = agent_pipeline
         output_payload["regeneration"] = {
             "regenerated_at": datetime.now().isoformat(),
             "original_document_preserved": True,
@@ -702,6 +1170,20 @@ class InsightFeishuBriefService:
         if not self.get_options().configured:
             return InsightFeishuBriefDueRunResponse(checked_count=0, due_count=0, success_count=0, failed_count=0)
         now = datetime.now()
+        occurrence_rows = list(
+            (
+                await db.exec(
+                    select(InsightFeishuBriefOccurrence)
+                    .where(
+                        InsightFeishuBriefOccurrence.is_deleted == 0,
+                        InsightFeishuBriefOccurrence.status == "pending",
+                        InsightFeishuBriefOccurrence.generation_scheduled_at <= now,
+                    )
+                    .order_by(InsightFeishuBriefOccurrence.generation_scheduled_at.asc())
+                    .limit(min(max(limit, 1), 50))
+                )
+            ).all()
+        )
         rows = list(
             (
                 await db.exec(
@@ -719,6 +1201,43 @@ class InsightFeishuBriefService:
         results: list[dict[str, Any]] = []
         success_count = 0
         failed_count = 0
+        for occurrence in occurrence_rows:
+            try:
+                plan = await self._require_plan(db, occurrence.plan_id)
+                effective = plan.model_copy(deep=True)
+                effective.material_scope_json = occurrence.material_scope_json or plan.material_scope_json
+                effective.recipients_json = occurrence.recipients_json
+                effective.afternoon_recipients_json = occurrence.release_recipients_json
+                result = await self.run_plan(
+                    db,
+                    plan.id or 0,
+                    trigger_type="scheduler:occurrence",
+                    plan_override=effective,
+                    occurrence=occurrence,
+                )
+                success_count += 1
+                results.append(
+                    {
+                        "plan_id": plan.id,
+                        "occurrence_id": occurrence.id,
+                        "status": result.run.status,
+                        "document_url": result.run.document_url,
+                    }
+                )
+            except Exception as exc:
+                occurrence.status = "failed"
+                occurrence.error_message = str(exc)[:2000]
+                db.add(occurrence)
+                await db.commit()
+                failed_count += 1
+                results.append(
+                    {
+                        "plan_id": occurrence.plan_id,
+                        "occurrence_id": occurrence.id,
+                        "status": "failed",
+                        "error": str(exc)[:500],
+                    }
+                )
         for row in rows:
             try:
                 result = await self.run_plan(db, row.id or 0, trigger_type=trigger_type)
@@ -728,8 +1247,8 @@ class InsightFeishuBriefService:
                 failed_count += 1
                 results.append({"plan_id": row.id, "status": "failed", "error": str(exc)[:500]})
         return InsightFeishuBriefDueRunResponse(
-            checked_count=len(rows),
-            due_count=len(rows),
+            checked_count=len(rows) + len(occurrence_rows),
+            due_count=len(rows) + len(occurrence_rows),
             success_count=success_count,
             failed_count=failed_count,
             results=results,
@@ -838,6 +1357,91 @@ class InsightFeishuBriefService:
                 results.append({"run_id": row.id, "status": "failed", "error": str(exc)[:500]})
             payload["afternoon_delivery"] = delivery
             row.output_payload = payload
+            db.add(row)
+            await db.commit()
+        return {
+            "due_count": len(rows),
+            "success_count": success_count,
+            "failed_count": failed_count,
+            "results": results,
+        }
+
+    async def run_due_review_pushes(
+        self,
+        db: AsyncSession,
+        *,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """发送到期审阅稿；先置为 sending，避免并发扫描重复发送。"""
+        now = datetime.now()
+        rows = list(
+            (
+                await db.exec(
+                    select(InsightFeishuBriefRun)
+                    .where(
+                        InsightFeishuBriefRun.is_deleted == 0,
+                        InsightFeishuBriefRun.run_mode == "formal",
+                        InsightFeishuBriefRun.review_push_status == "pending",
+                        InsightFeishuBriefRun.review_push_scheduled_at <= now,
+                    )
+                    .order_by(InsightFeishuBriefRun.review_push_scheduled_at.asc())
+                    .limit(min(max(limit, 1), 50))
+                )
+            ).all()
+        )
+        results: list[dict[str, Any]] = []
+        success_count = 0
+        failed_count = 0
+        for row in rows:
+            payload = dict(row.output_payload or {})
+            delivery = dict(payload.get("morning_delivery") or {})
+            recipients = [
+                InsightFeishuBriefRecipient.model_validate(item)
+                for item in delivery.get("recipients") or []
+            ]
+            row.review_push_status = "sending"
+            db.add(row)
+            await db.commit()
+            try:
+                permission_result = await self._grant_document_permission(
+                    row.document_id or "", recipients, permission="edit"
+                )
+                failed_permission_ids = {
+                    str(item.get("receive_id") or "")
+                    for item in permission_result["results"]
+                    if item.get("status") == "failed"
+                }
+                permitted = [item for item in recipients if item.receive_id not in failed_permission_ids]
+                push_result = await self._push_document(
+                    row.report_title or "市场信息简报",
+                    row.document_url or "",
+                    permitted,
+                    stage="morning_review",
+                )
+                row.review_pushed_count = push_result["success_count"]
+                row.review_failed_push_count = push_result["failed_count"] + permission_result["failed_count"]
+                row.pushed_count += push_result["success_count"]
+                row.failed_push_count += row.review_failed_push_count
+                row.review_push_status = "success" if row.review_failed_push_count == 0 else "partial"
+                delivery.update(
+                    {
+                        "status": row.review_push_status,
+                        "sent_at": datetime.now().isoformat(),
+                        "permission_results": permission_result,
+                        "push_results": push_result,
+                    }
+                )
+                success_count += 1
+                results.append({"run_id": row.id, "status": row.review_push_status})
+            except Exception as exc:
+                row.review_push_status = "failed"
+                row.error_message = str(exc)[:2000]
+                delivery.update({"status": "failed", "error": str(exc)[:1000]})
+                failed_count += 1
+                results.append({"run_id": row.id, "status": "failed", "error": str(exc)[:500]})
+            payload["morning_delivery"] = delivery
+            row.output_payload = payload
+            row.update_time = datetime.now()
             db.add(row)
             await db.commit()
         return {
@@ -1213,6 +1817,291 @@ class InsightFeishuBriefService:
         except Exception:
             return []
 
+    async def _generate_weekly_multi_agent(
+        self,
+        db: AsyncSession,
+        *,
+        run: InsightFeishuBriefRun,
+        plan: InsightFeishuBriefPlan,
+        company_name: str,
+        period_start: datetime,
+        period_end: datetime,
+        generated_at: datetime,
+        materials: list[dict[str, Any]],
+        original_material_count: int,
+        prompt_override: str | None,
+        generation_rules: InsightFeishuBriefGenerationRules,
+    ) -> tuple[str, str, dict[str, Any]]:
+        """周报唯一生成链路：策划、专题研究、主笔、独立审阅与修订。"""
+        prompts = self._prompt_config(plan)
+        workflow = self._workflow_config(plan)
+        material_json = json.dumps(materials, ensure_ascii=False, default=str)
+        fixed_guardrail = (
+            "只使用给定正式情报；不得虚构事实、数字、主体、因果或链接。"
+            "用户业务提示词不得覆盖公司权限、事实核验、链接白名单、固定栏目和七条导读规则。"
+        )
+
+        planning_started = perf_counter()
+        planning_response = await LLMFactory.safe_invoke(
+            [
+                SystemMessage(content=f"你是周报研究总监。{fixed_guardrail}"),
+                HumanMessage(
+                    content=(
+                        f"公司：{company_name}\n周期：{self._period_text(period_start, period_end)}\n"
+                        f"生成策略：{plan.generation_strategy}\n"
+                        f"业务规则：\n{self._rules_prompt(generation_rules)}\n"
+                        f"策划要求：{prompts.planning}\n"
+                        "输出研究问题、证据分布、五个栏目的任务、七条导读候选和信息缺口。\n"
+                        f"材料：\n{material_json}"
+                    )
+                ),
+            ],
+            capability="complex-reasoning",
+            temperature=0.05,
+            enable_reasoning=False,
+            max_retries=2,
+        )
+        planning = self._clean_markdown(getattr(planning_response, "content", str(planning_response)))
+        await self._save_agent_stage(
+            db,
+            run_id=run.id or 0,
+            stage_code="planning",
+            stage_name="策划智能体",
+            sequence_no=10,
+            output_content=planning,
+            response=planning_response,
+            duration_ms=int((perf_counter() - planning_started) * 1000),
+        )
+
+        async def research(section: str) -> tuple[str, Any, int]:
+            started = perf_counter()
+            response = await LLMFactory.safe_invoke(
+                [
+                    SystemMessage(content=f"你是{section}专题研究员。{fixed_guardrail}"),
+                    HumanMessage(
+                        content=(
+                            f"研究总监计划：\n{planning}\n\n"
+                            f"专题要求：{prompts.research}\n"
+                            f"只研究“{section}”栏目，输出趋势、主体动作、数字、可引用链接和不确定点。\n"
+                            f"材料：\n{material_json}"
+                        )
+                    ),
+                ],
+                capability="complex-reasoning",
+                temperature=0.05,
+                enable_reasoning=False,
+                max_retries=2,
+            )
+            return (
+                self._clean_markdown(getattr(response, "content", str(response))),
+                response,
+                int((perf_counter() - started) * 1000),
+            )
+
+        research_sections = workflow.research_sections or ["政策", "竞对", "客户", "技术", "原料"]
+        research_results = await asyncio.gather(*(research(section) for section in research_sections))
+        research_outputs: dict[str, str] = {}
+        for index, (section, result) in enumerate(zip(research_sections, research_results, strict=True), 1):
+            content, response, duration_ms = result
+            research_outputs[section] = content
+            await self._save_agent_stage(
+                db,
+                run_id=run.id or 0,
+                stage_code=f"research_{section}",
+                stage_name=f"{section}专题研究智能体",
+                sequence_no=20 + index,
+                output_content=content,
+                response=response,
+                duration_ms=duration_ms,
+            )
+
+        template = (plan.template_markdown or DEFAULT_WEEKLY_TEMPLATE).strip()
+        writing_context = (
+            f"\n\n研究总监计划：\n{planning}\n\n专题研究结果：\n"
+            + json.dumps(research_outputs, ensure_ascii=False)
+            + f"\n\n本计划 Markdown 模板：\n{template}\n"
+            + f"\n\n主笔补充要求：\n{prompts.writing}\n"
+            + (f"\n\n计划补充要求：\n{prompt_override}" if prompt_override else "")
+        )
+        writing_started = perf_counter()
+        title, markdown = await self._generate_markdown(
+            company_name=company_name,
+            frequency=plan.schedule_frequency,
+            period_start=period_start,
+            period_end=period_end,
+            generated_at=generated_at,
+            materials=materials,
+            original_material_count=original_material_count,
+            prompt_override=writing_context,
+            generation_rules=generation_rules,
+        )
+        await self._save_agent_stage(
+            db,
+            run_id=run.id or 0,
+            stage_code="writing",
+            stage_name="主笔智能体",
+            sequence_no=40,
+            output_content=markdown,
+            duration_ms=int((perf_counter() - writing_started) * 1000),
+        )
+
+        review_history: list[dict[str, Any]] = []
+        minimum_citations = min(
+            len(materials),
+            max(
+                generation_rules.minimum_citations,
+                min(generation_rules.maximum_citations, math.ceil(len(materials) * 0.35)),
+            ),
+        )
+        for review_round in range(workflow.max_revision_rounds + 1):
+            review_started = perf_counter()
+            review_response = await LLMFactory.safe_invoke(
+                [
+                    SystemMessage(content=f"你是独立周报审阅智能体。{fixed_guardrail}"),
+                    HumanMessage(
+                        content=(
+                            f"审阅要求：{prompts.reviewing}\n"
+                            "只返回 JSON：{\"passed\":true,\"score\":90,\"blocking_issues\":[],\"suggestions\":[]}。"
+                            "只有事实、相关性、重复、推断、固定结构、七条导读、链接或明显语言问题才能列为 blocking。\n"
+                            f"公司：{company_name}\n稿件：\n{markdown}\n材料：\n{material_json}"
+                        )
+                    ),
+                ],
+                capability="complex-reasoning",
+                temperature=0,
+                enable_reasoning=False,
+                max_retries=2,
+            )
+            review_payload = self._parse_json_object(
+                getattr(review_response, "content", str(review_response))
+            )
+            blocking_issues = [
+                str(item)[:500]
+                for item in review_payload.get("blocking_issues") or []
+                if str(item).strip()
+            ]
+            deterministic_errors = self._validate_markdown(
+                markdown,
+                materials,
+                company_name=company_name,
+                required_source_count=minimum_citations,
+            )
+            all_issues = list(dict.fromkeys([*blocking_issues, *deterministic_errors]))
+            passed = bool(review_payload.get("passed")) and not all_issues
+            review_payload["passed"] = passed
+            review_payload["blocking_issues"] = all_issues
+            review_history.append(review_payload)
+            await self._save_agent_stage(
+                db,
+                run_id=run.id or 0,
+                stage_code=f"review_{review_round + 1}",
+                stage_name="独立审阅智能体",
+                sequence_no=50 + review_round * 2,
+                output_content=json.dumps(review_payload, ensure_ascii=False),
+                output_json=review_payload,
+                response=review_response,
+                duration_ms=int((perf_counter() - review_started) * 1000),
+            )
+            if passed:
+                break
+            if review_round >= workflow.max_revision_rounds:
+                raise ValueError(f"周报经独立审阅和修订后仍未通过：{'；'.join(all_issues[:8])}")
+            revision_started = perf_counter()
+            revision_response = await LLMFactory.safe_invoke(
+                [
+                    SystemMessage(content=f"你是周报终稿修订智能体。{fixed_guardrail}"),
+                    HumanMessage(
+                        content=(
+                            f"修订要求：{prompts.revision}\n必须逐项修正：{'；'.join(all_issues)}\n"
+                            f"固定模板：\n{template}\n原稿：\n{markdown}\n材料：\n{material_json}\n"
+                            "只返回完整 Markdown 正文。"
+                        )
+                    ),
+                ],
+                capability="complex-reasoning",
+                temperature=0.03,
+                enable_reasoning=False,
+                max_retries=2,
+            )
+            markdown = self._normalize_company_scope(
+                self._normalize_editorial_tone(
+                    self._sanitize_markdown_link_labels(
+                        self._clean_markdown(getattr(revision_response, "content", str(revision_response))),
+                        materials,
+                    )
+                ),
+                company_name,
+            )
+            await self._save_agent_stage(
+                db,
+                run_id=run.id or 0,
+                stage_code=f"revision_{review_round + 1}",
+                stage_name="主笔修订智能体",
+                sequence_no=51 + review_round * 2,
+                output_content=markdown,
+                response=revision_response,
+                duration_ms=int((perf_counter() - revision_started) * 1000),
+            )
+
+        final_errors = self._validate_markdown(
+            markdown,
+            materials,
+            company_name=company_name,
+            required_source_count=minimum_citations,
+        )
+        await self._save_agent_stage(
+            db,
+            run_id=run.id or 0,
+            stage_code="deterministic_validation",
+            stage_name="确定性校验",
+            sequence_no=90,
+            output_content="通过" if not final_errors else "；".join(final_errors),
+            output_json={"passed": not final_errors, "errors": final_errors},
+            duration_ms=0,
+            status="success" if not final_errors else "failed",
+        )
+        if final_errors:
+            raise ValueError(f"周报未通过最终确定性校验：{'；'.join(final_errors)}")
+        return title, markdown, {
+            "workflow": "planning_research_writing_review_revision",
+            "research_sections": research_sections,
+            "review_history": review_history,
+            "config_version": plan.config_version or 1,
+        }
+
+    async def _save_agent_stage(
+        self,
+        db: AsyncSession,
+        *,
+        run_id: int,
+        stage_code: str,
+        stage_name: str,
+        sequence_no: int,
+        output_content: str | None,
+        duration_ms: int,
+        output_json: dict[str, Any] | None = None,
+        response: Any | None = None,
+        status: str = "success",
+    ) -> None:
+        response_metadata = getattr(response, "response_metadata", {}) or {}
+        usage_metadata = getattr(response, "usage_metadata", {}) or {}
+        row = InsightFeishuBriefAgentStage(
+            run_id=run_id,
+            stage_code=stage_code,
+            stage_name=stage_name,
+            sequence_no=sequence_no,
+            status=status,
+            output_content=output_content,
+            output_json=output_json or {},
+            model_name=str(response_metadata.get("model_name") or response_metadata.get("model") or "") or None,
+            token_usage_json=dict(usage_metadata) if isinstance(usage_metadata, dict) else {},
+            duration_ms=duration_ms,
+            started_at=datetime.now() - timedelta(milliseconds=max(duration_ms, 0)),
+            finished_at=datetime.now(),
+        )
+        db.add(row)
+        await db.commit()
+
     async def _generate_markdown(
         self,
         *,
@@ -1533,6 +2422,21 @@ class InsightFeishuBriefService:
                 json={"children": blocks[index : index + 40], "index": index},
             )
         return document_id, f"https://feishu.cn/docx/{document_id}"
+
+    async def _transfer_document_owner(self, document_id: str, employee_id: str) -> None:
+        """机器人完成写入后，将调试文档所有权转给当前平台用户工号。"""
+        await self._request(
+            "POST",
+            f"/open-apis/drive/v1/permissions/{document_id}/members/transfer_owner",
+            params={
+                "type": "docx",
+                "need_notification": False,
+                "remove_old_owner": False,
+                "old_owner_perm": "full_access",
+                "stay_put": True,
+            },
+            json={"member_type": "userid", "member_id": employee_id},
+        )
 
     async def _replace_document_content(self, document_id: str, markdown: str) -> None:
         """清空根节点下的旧内容并写入新内容，保留文档链接和既有权限。"""
@@ -2212,6 +3116,36 @@ class InsightFeishuBriefService:
         candidate = source.replace(hour=hour, minute=minute, second=0, microsecond=0)
         return max(candidate, source)
 
+    def _delivery_schedule(
+        self,
+        plan: InsightFeishuBriefPlan,
+        *,
+        generated_at: datetime,
+        occurrence: InsightFeishuBriefOccurrence | None = None,
+    ) -> tuple[datetime, datetime]:
+        if occurrence:
+            return occurrence.review_scheduled_at, occurrence.release_scheduled_at
+
+        def at_time(source: datetime, value: str) -> datetime:
+            hour, minute = [int(item) for item in value.split(":", 1)]
+            return source.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+        if plan.schedule_frequency != "weekly":
+            return (
+                at_time(generated_at, plan.review_time or plan.time_of_day),
+                at_time(generated_at, plan.release_time or plan.afternoon_push_time),
+            )
+        week_start = generated_at.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(
+            days=generated_at.weekday()
+        )
+        review_day = plan.review_weekday if plan.review_weekday is not None else (plan.weekday or 0)
+        release_day = plan.release_weekday if plan.release_weekday is not None else review_day
+        review_at = at_time(week_start + timedelta(days=review_day), plan.review_time)
+        release_at = at_time(week_start + timedelta(days=release_day), plan.release_time)
+        if release_at <= generated_at:
+            release_at += timedelta(days=7)
+        return review_at, release_at
+
     def _default_recipients(self) -> list[dict[str, Any]]:
         try:
             value = json.loads(settings.INSIGHT_FEISHU_BRIEF_DEFAULT_RECIPIENTS_JSON or "[]")
@@ -2267,18 +3201,27 @@ class InsightFeishuBriefService:
     ) -> tuple[datetime, datetime]:
         if requested_start:
             return requested_start, now
-        if plan.schedule_frequency == "weekly" and self._is_scheduled_trigger(trigger_type):
-            target_weekday = plan.weekday if plan.weekday is not None else 0
-            days_since_schedule = (now.weekday() - target_weekday) % 7
-            current_schedule_start = (now - timedelta(days=days_since_schedule)).replace(
-                hour=0,
-                minute=0,
-                second=0,
-                microsecond=0,
+        scope = self._material_scope(plan)
+        if scope.mode == "custom_range" and scope.custom_start and scope.custom_end:
+            return scope.custom_start, scope.custom_end
+        if scope.mode == "fixed_weekdays":
+            week_start = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(
+                days=now.weekday()
             )
-            return current_schedule_start - timedelta(days=7), current_schedule_start - timedelta(microseconds=1)
+            period_end = (week_start + timedelta(days=scope.end_weekday + 1)) - timedelta(
+                microseconds=1
+            )
+            if period_end >= now:
+                period_end -= timedelta(days=7)
+            end_week_start = period_end.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(
+                days=period_end.weekday()
+            )
+            period_start = end_week_start + timedelta(days=scope.start_weekday)
+            if period_start > period_end:
+                period_start -= timedelta(days=7)
+            return period_start, period_end
         if plan.schedule_frequency != "monthly":
-            return now - timedelta(days=plan.material_days), now
+            return now - timedelta(days=scope.rolling_days), now
         if self._is_scheduled_trigger(trigger_type):
             if plan.day_of_month == 31:
                 return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0), now
@@ -2376,23 +3319,152 @@ class InsightFeishuBriefService:
         rows = list((await db.exec(select(SysCompany).where(SysCompany.id.in_(ids), SysCompany.is_deleted == 0))).all())
         return {row.id: row.name for row in rows if row.id}
 
-    def _plan_read(self, row: InsightFeishuBriefPlan, company_name: str | None) -> InsightFeishuBriefPlanRead:
+    def _effective_prompt_config(
+        self,
+        config: InsightFeishuBriefPromptConfig | None = None,
+    ) -> InsightFeishuBriefPromptConfig:
+        values = config.model_dump() if config else {}
+        return InsightFeishuBriefPromptConfig(
+            **{
+                key: (str(values.get(key) or "").strip() or default)
+                for key, default in DEFAULT_WEEKLY_PROMPTS.items()
+            }
+        )
+
+    def _plan_config_snapshot(self, row: InsightFeishuBriefPlan) -> dict[str, Any]:
+        return {
+            "plan_name": row.plan_name,
+            "sys_company_id": row.sys_company_id,
+            "schedule_frequency": row.schedule_frequency,
+            "weekday": row.weekday,
+            "time_of_day": row.time_of_day,
+            "review_weekday": row.review_weekday,
+            "review_time": row.review_time,
+            "release_weekday": row.release_weekday,
+            "release_time": row.release_time,
+            "max_materials": row.max_materials,
+            "generation_strategy": row.generation_strategy,
+            "generation_rules": row.generation_rules_json or {},
+            "workflow_config": row.workflow_config_json or {},
+            "prompt_config": row.prompt_config_json or {},
+            "material_scope": row.material_scope_json or {},
+            "template_markdown": row.template_markdown or DEFAULT_WEEKLY_TEMPLATE,
+            "recipients": row.recipients_json or [],
+            "release_recipients": row.afternoon_recipients_json or [],
+            "config_version": row.config_version or 1,
+        }
+
+    def _draft_plan(
+        self,
+        persisted: InsightFeishuBriefPlan,
+        payload: InsightFeishuBriefPlanCreate,
+    ) -> InsightFeishuBriefPlan:
+        draft = persisted.model_copy(deep=True)
+        draft.plan_name = payload.plan_name.strip()
+        draft.sys_company_id = payload.sys_company_id
+        draft.schedule_frequency = payload.schedule_frequency
+        draft.weekday = payload.weekday
+        draft.day_of_month = payload.day_of_month
+        draft.time_of_day = payload.time_of_day
+        draft.review_weekday = payload.review_weekday
+        draft.review_time = payload.review_time
+        draft.release_weekday = payload.release_weekday
+        draft.release_time = payload.release_time
+        draft.material_days = payload.material_scope.rolling_days
+        draft.max_materials = payload.max_materials
+        draft.generation_strategy = payload.generation_strategy
+        draft.prompt_override = payload.prompt_override
+        draft.generation_rules_json = payload.generation_rules.model_dump(mode="json")
+        draft.workflow_config_json = payload.workflow_config.model_dump(mode="json")
+        draft.prompt_config_json = self._effective_prompt_config(payload.prompt_config).model_dump(mode="json")
+        draft.material_scope_json = payload.material_scope.model_dump(mode="json")
+        draft.template_markdown = payload.template_markdown or DEFAULT_WEEKLY_TEMPLATE
+        draft.recipients_json = []
+        draft.afternoon_recipients_json = []
+        return draft
+
+    def _occurrence_read(self, row: InsightFeishuBriefOccurrence) -> InsightFeishuBriefOccurrenceRead:
+        try:
+            material_scope = InsightFeishuBriefMaterialScope.model_validate(row.material_scope_json or {})
+        except Exception:
+            material_scope = InsightFeishuBriefMaterialScope()
+        return InsightFeishuBriefOccurrenceRead(
+            id=row.id or 0,
+            plan_id=row.plan_id,
+            period_key=row.period_key,
+            generation_scheduled_at=row.generation_scheduled_at,
+            review_scheduled_at=row.review_scheduled_at,
+            release_scheduled_at=row.release_scheduled_at,
+            material_scope=material_scope,
+            status=row.status,
+            run_id=row.run_id,
+            error_message=row.error_message,
+        )
+
+    @staticmethod
+    def _config_diff(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: {"before": before.get(key), "after": after.get(key)}
+            for key in sorted(set(before) | set(after))
+            if before.get(key) != after.get(key)
+        }
+
+    def _material_scope(self, row: InsightFeishuBriefPlan) -> InsightFeishuBriefMaterialScope:
+        payload = dict(row.material_scope_json or {})
+        if not payload:
+            payload = {"mode": "rolling_days", "rolling_days": row.material_days}
+        try:
+            return InsightFeishuBriefMaterialScope.model_validate(payload)
+        except Exception:
+            return InsightFeishuBriefMaterialScope(rolling_days=row.material_days)
+
+    def _workflow_config(self, row: InsightFeishuBriefPlan) -> InsightFeishuBriefWorkflowConfig:
+        try:
+            return InsightFeishuBriefWorkflowConfig.model_validate(row.workflow_config_json or {})
+        except Exception:
+            return InsightFeishuBriefWorkflowConfig()
+
+    def _prompt_config(self, row: InsightFeishuBriefPlan) -> InsightFeishuBriefPromptConfig:
+        try:
+            configured = InsightFeishuBriefPromptConfig.model_validate(row.prompt_config_json or {})
+        except Exception:
+            configured = InsightFeishuBriefPromptConfig()
+        return self._effective_prompt_config(configured)
+
+    def _plan_read(
+        self,
+        row: InsightFeishuBriefPlan,
+        company_name: str | None,
+        *,
+        can_edit: bool = False,
+    ) -> InsightFeishuBriefPlanRead:
         return InsightFeishuBriefPlanRead(
             id=row.id or 0,
             plan_uid=row.plan_uid,
             plan_name=row.plan_name,
+            owner_user_id=row.owner_user_id,
+            can_edit=can_edit,
             sys_company_id=row.sys_company_id,
             sys_company_name=company_name,
             schedule_frequency=row.schedule_frequency,
             weekday=row.weekday,
             day_of_month=row.day_of_month,
             time_of_day=row.time_of_day,
+            review_weekday=row.review_weekday,
+            review_time=row.review_time,
+            release_weekday=row.release_weekday,
+            release_time=row.release_time,
             timezone=row.timezone,
             material_days=row.material_days,
             max_materials=row.max_materials,
             generation_strategy=row.generation_strategy,
             prompt_override=row.prompt_override,
             generation_rules=self._generation_rules(row, company_name or "香驰控股"),
+            workflow_config=self._workflow_config(row),
+            prompt_config=self._prompt_config(row),
+            material_scope=self._material_scope(row),
+            template_markdown=row.template_markdown or DEFAULT_WEEKLY_TEMPLATE,
+            config_version=row.config_version or 1,
             recipients=[InsightFeishuBriefRecipient.model_validate(item) for item in row.recipients_json or []],
             afternoon_recipients=[
                 InsightFeishuBriefRecipient.model_validate(item)
@@ -2414,6 +3486,7 @@ class InsightFeishuBriefService:
             id=row.id or 0,
             plan_id=row.plan_id,
             trigger_type=row.trigger_type,
+            run_mode=row.run_mode,
             status=row.status,
             period_start=row.period_start,
             period_end=row.period_end,
@@ -2427,6 +3500,12 @@ class InsightFeishuBriefService:
             afternoon_push_status=row.afternoon_push_status,
             afternoon_pushed_count=row.afternoon_pushed_count,
             afternoon_failed_push_count=row.afternoon_failed_push_count,
+            review_push_scheduled_at=row.review_push_scheduled_at,
+            review_push_status=row.review_push_status,
+            review_pushed_count=row.review_pushed_count,
+            review_failed_push_count=row.review_failed_push_count,
+            occurrence_id=row.occurrence_id,
+            owner_transfer_status=row.owner_transfer_status,
             error_message=row.error_message,
             output_payload=row.output_payload or {},
             started_at=row.started_at,

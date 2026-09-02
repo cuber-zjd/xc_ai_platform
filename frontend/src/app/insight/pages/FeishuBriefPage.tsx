@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bot, ChevronDown, Clock3, ExternalLink, FileText, Loader2, Pencil, Play, Plus, RefreshCw, Send, Trash2, UserRound, X } from "lucide-react";
+import { Bot, Bug, CalendarClock, ChevronDown, Clock3, ExternalLink, FileText, Loader2, Pencil, Play, Plus, RefreshCw, Send, Trash2, UserRound, X } from "lucide-react";
+import ReactMarkdown from "react-markdown";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -13,7 +14,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 
-import { insightApi, type InsightFeishuBriefGenerationRules, type InsightFeishuBriefPlanCreate, type InsightFeishuBriefPlanRead, type InsightFeishuBriefRecipient } from "../api";
+import { insightApi, type InsightFeishuBriefGenerationRules, type InsightFeishuBriefOccurrenceOverride, type InsightFeishuBriefPlanCreate, type InsightFeishuBriefPlanRead, type InsightFeishuBriefRecipient } from "../api";
 import { DemoCard } from "../components/DemoPrimitives";
 import { FeishuRecipientPickerDialog } from "../components/FeishuRecipientPickerDialog";
 import { InsightSelect } from "../components/InsightSelect";
@@ -75,11 +76,31 @@ const emptyForm: InsightFeishuBriefPlanCreate = {
     weekday: 0,
     day_of_month: 1,
     time_of_day: "09:00",
+    review_weekday: 0,
+    review_time: "10:30",
+    release_weekday: 1,
+    release_time: "15:00",
     material_days: 7,
     max_materials: 200,
     generation_strategy: "auto",
     prompt_override: "",
     generation_rules: generationRulesForCompany(),
+    workflow_config: { max_revision_rounds: 2, research_sections: [...sectionNames] },
+    prompt_config: { planning: "", research: "", writing: "", reviewing: "", revision: "" },
+    material_scope: { mode: "rolling_days", rolling_days: 7, start_weekday: 0, end_weekday: 6, filters: {} },
+    template_markdown: `管理层情报简报｜{{素材周期}}｜生成时间：{{生成日期}}
+
+适用公司：{{所属公司}}｜数据来源：情报管理多维表格·情报表｜原始候选 {{素材数量}} 条
+
+---
+
+# 一、总览
+# 政策
+# 竞对
+# 客户
+# 技术
+# 原料
+# 二、重点情报导读`,
     recipients: [],
     afternoon_recipients: [],
     afternoon_push_time: "15:00",
@@ -94,6 +115,9 @@ export function FeishuBriefPage() {
     const [form, setForm] = useState<InsightFeishuBriefPlanCreate>(emptyForm);
     const [promptExpanded, setPromptExpanded] = useState(false);
     const [recipientPickerStage, setRecipientPickerStage] = useState<"morning" | "afternoon" | null>(null);
+    const [selectedRunId, setSelectedRunId] = useState<number | null>(null);
+    const [occurrencePlan, setOccurrencePlan] = useState<InsightFeishuBriefPlanRead | null>(null);
+    const [occurrenceForm, setOccurrenceForm] = useState<InsightFeishuBriefOccurrenceOverride>(() => defaultOccurrenceForm());
     const optionsQuery = useQuery({ queryKey: ["insight-feishu-brief-options"], queryFn: insightApi.getFeishuBriefOptions });
     const plansQuery = useQuery({
         queryKey: ["insight-feishu-brief-plans", page],
@@ -102,6 +126,11 @@ export function FeishuBriefPage() {
     const runsQuery = useQuery({
         queryKey: ["insight-feishu-brief-runs"],
         queryFn: () => insightApi.listFeishuBriefRuns({ page: 1, size: 20 }),
+    });
+    const stagesQuery = useQuery({
+        queryKey: ["insight-feishu-brief-stages", selectedRunId],
+        queryFn: () => insightApi.listFeishuBriefAgentStages(selectedRunId as number),
+        enabled: selectedRunId !== null,
     });
     const companiesQuery = useQuery({ queryKey: ["system-companies"], queryFn: insightApi.listSystemCompanies });
     const options = optionsQuery.data;
@@ -120,6 +149,12 @@ export function FeishuBriefPage() {
         void queryClient.invalidateQueries({ queryKey: ["insight-feishu-brief-plans"] });
         void queryClient.invalidateQueries({ queryKey: ["insight-feishu-brief-runs"] });
     };
+    const resetPlanEditor = () => {
+        setEditing(null);
+        setForm({ ...emptyForm, generation_rules: generationRulesForCompany() });
+        setPromptExpanded(false);
+        setRecipientPickerStage(null);
+    };
     const saveMutation = useMutation({
         mutationFn: () => editing
             ? insightApi.updateFeishuBriefPlan(editing.id, form)
@@ -127,6 +162,7 @@ export function FeishuBriefPage() {
         onSuccess: () => {
             toast.success(editing ? "简报计划已更新" : "简报计划已创建");
             setDialogOpen(false);
+            resetPlanEditor();
             refresh();
         },
         onError: () => toast.error("保存失败，请检查填写内容"),
@@ -147,15 +183,39 @@ export function FeishuBriefPage() {
         },
         onError: () => toast.error("删除失败"),
     });
-
-    useEffect(() => {
-        if (!dialogOpen) {
-            setEditing(null);
-            setForm({ ...emptyForm, generation_rules: generationRulesForCompany() });
-            setPromptExpanded(false);
-            setRecipientPickerStage(null);
-        }
-    }, [dialogOpen]);
+    const debugMutation = useMutation({
+        mutationFn: () => {
+            if (!editing) throw new Error("请先保存计划后再生成调试稿");
+            return insightApi.debugFeishuBriefPlan(editing.id, form);
+        },
+        onSuccess: (result) => {
+            toast.success("调试稿已生成，未向任何接收人推送");
+            refresh();
+            if (result.run.document_url) window.open(result.run.document_url, "_blank", "noopener,noreferrer");
+        },
+        onError: () => toast.error("调试稿生成失败，请查看执行记录"),
+    });
+    const regenerateMutation = useMutation({
+        mutationFn: (runId: number) => insightApi.regenerateFeishuBriefRun(runId),
+        onSuccess: (result) => {
+            toast.success(result.message);
+            refresh();
+        },
+        onError: () => toast.error("原文档重新生成失败"),
+    });
+    const occurrenceMutation = useMutation({
+        mutationFn: () => {
+            if (!occurrencePlan) throw new Error("未选择计划");
+            const periodKey = occurrenceForm.generation_scheduled_at.slice(0, 10);
+            return insightApi.upsertFeishuBriefOccurrence(occurrencePlan.id, periodKey, { ...occurrenceForm, period_key: periodKey });
+        },
+        onSuccess: () => {
+            toast.success("本期临时时间和素材范围已保存，下期自动恢复常规计划");
+            setOccurrencePlan(null);
+            refresh();
+        },
+        onError: () => toast.error("本期临时调整保存失败"),
+    });
 
     const openEdit = (item: InsightFeishuBriefPlanRead) => {
         setEditing(item);
@@ -166,11 +226,19 @@ export function FeishuBriefPage() {
             weekday: item.weekday,
             day_of_month: item.day_of_month,
             time_of_day: item.time_of_day,
+            review_weekday: item.review_weekday,
+            review_time: item.review_time,
+            release_weekday: item.release_weekday,
+            release_time: item.release_time,
             material_days: item.material_days,
             max_materials: item.max_materials,
             generation_strategy: item.generation_strategy,
             prompt_override: item.prompt_override,
             generation_rules: item.generation_rules,
+            workflow_config: item.workflow_config,
+            prompt_config: item.prompt_config,
+            material_scope: item.material_scope,
+            template_markdown: item.template_markdown,
             recipients: item.recipients,
             afternoon_recipients: item.afternoon_recipients,
             afternoon_push_time: item.afternoon_push_time,
@@ -203,7 +271,7 @@ export function FeishuBriefPage() {
                         <Button variant="outline" size="icon" className="size-9 rounded-lg" onClick={refresh} title="刷新">
                             <RefreshCw className="size-4" />
                         </Button>
-                        <Button className="h-9 rounded-lg bg-blue-600 hover:bg-blue-700" onClick={() => setDialogOpen(true)}>
+                        <Button className="h-9 rounded-lg bg-blue-600 hover:bg-blue-700" onClick={() => { resetPlanEditor(); setDialogOpen(true); }}>
                             <Plus className="size-4" />
                             新建计划
                         </Button>
@@ -254,11 +322,12 @@ export function FeishuBriefPage() {
                                         </TableCell>
                                         <TableCell>
                                             <div className="flex justify-end gap-1">
-                                                <Button variant="ghost" size="icon" className="size-8" title="立即生成" disabled={!options?.configured || runMutation.isPending} onClick={() => runMutation.mutate(item.id)}>
+                                                <Button variant="ghost" size="icon" className="size-8" title="立即正式生成" disabled={!item.can_edit || !options?.configured || runMutation.isPending} onClick={() => runMutation.mutate(item.id)}>
                                                     {runMutation.isPending && runMutation.variables === item.id ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
                                                 </Button>
-                                                <Button variant="ghost" size="icon" className="size-8" title="编辑" onClick={() => openEdit(item)}><Pencil className="size-4" /></Button>
-                                                <Button variant="ghost" size="icon" className="size-8 text-rose-600" title="删除" onClick={() => deleteMutation.mutate(item.id)}><Trash2 className="size-4" /></Button>
+                                                <Button variant="ghost" size="icon" className="size-8" title="本期临时调整" disabled={!item.can_edit || item.schedule_frequency !== "weekly"} onClick={() => { setOccurrencePlan(item); setOccurrenceForm(defaultOccurrenceForm(item)); }}><CalendarClock className="size-4" /></Button>
+                                                <Button variant="ghost" size="icon" className="size-8" title={item.can_edit ? "编辑" : "只读查看"} onClick={() => openEdit(item)}><Pencil className="size-4" /></Button>
+                                                <Button variant="ghost" size="icon" className="size-8 text-rose-600" title="删除" disabled={!item.can_edit} onClick={() => deleteMutation.mutate(item.id)}><Trash2 className="size-4" /></Button>
                                             </div>
                                         </TableCell>
                                     </TableRow>
@@ -303,9 +372,27 @@ export function FeishuBriefPage() {
                                         </div>
                                         {item.error_message ? <div className="mt-2 text-xs font-semibold text-rose-600">{item.error_message}</div> : null}
                                         {item.document_url ? (
-                                            <a className="mt-2 inline-flex items-center gap-1 text-xs font-bold text-blue-600 hover:underline" href={item.document_url} target="_blank" rel="noreferrer">
-                                                打开云文档 <ExternalLink className="size-3" />
-                                            </a>
+                                            <div className="mt-2 flex flex-wrap items-center gap-2">
+                                                <a className="inline-flex items-center gap-1 text-xs font-bold text-blue-600 hover:underline" href={item.document_url} target="_blank" rel="noreferrer">
+                                                    打开云文档 <ExternalLink className="size-3" />
+                                                </a>
+                                                <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => setSelectedRunId((value) => value === item.id ? null : item.id)}>查看智能体过程</Button>
+                                                {item.run_mode === "formal" && item.output_payload.multi_agent ? (
+                                                    <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" disabled={regenerateMutation.isPending} onClick={() => regenerateMutation.mutate(item.id)}>原文档重新生成</Button>
+                                                ) : null}
+                                                {item.run_mode === "debug" ? <Badge variant="outline" className="border-violet-200 bg-violet-50 text-violet-700">调试·未推送</Badge> : null}
+                                            </div>
+                                        ) : null}
+                                        {selectedRunId === item.id ? (
+                                            <div className="mt-3 space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-2">
+                                                {stagesQuery.isLoading ? <div className="p-2 text-xs text-slate-500">正在加载执行过程…</div> : null}
+                                                {(stagesQuery.data ?? []).map((stage) => (
+                                                    <details key={stage.id} className="rounded-md border border-slate-200 bg-white px-3 py-2">
+                                                        <summary className="cursor-pointer text-xs font-bold text-slate-800">{stage.stage_name} · {(stage.duration_ms / 1000).toFixed(1)} 秒 · {statusLabel(stage.status)}</summary>
+                                                        <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap text-[11px] leading-5 text-slate-600">{stage.output_content || stage.error_message || "无输出"}</pre>
+                                                    </details>
+                                                ))}
+                                            </div>
                                         ) : null}
                                         {(item.output_payload.artifacts?.length ?? 0) > 0 ? (
                                             <div className="mt-3 grid gap-2 sm:grid-cols-2">
@@ -339,7 +426,7 @@ export function FeishuBriefPage() {
                 </div>
             </div>
 
-            <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+            <Dialog open={dialogOpen} onOpenChange={(open) => { setDialogOpen(open); if (!open) resetPlanEditor(); }}>
                 <DialogContent className="flex max-h-[min(900px,calc(100vh-32px))] !w-[min(1040px,calc(100vw-32px))] !max-w-[1040px] flex-col gap-0 overflow-hidden p-0 sm:!max-w-[1040px]">
                     <DialogHeader className="shrink-0 border-b border-slate-100 px-6 py-5">
                         <DialogTitle>{editing ? "编辑飞书简报计划" : "新建飞书简报计划"}</DialogTitle>
@@ -362,6 +449,7 @@ export function FeishuBriefPage() {
                                         ...old,
                                         schedule_frequency: value as "daily" | "weekly" | "monthly",
                                         material_days: value === "daily" ? 1 : value === "weekly" ? 7 : 31,
+                                        material_scope: { ...old.material_scope, rolling_days: value === "daily" ? 1 : value === "weekly" ? 7 : 31 },
                                     }))}
                                 />
                                 {form.schedule_frequency === "weekly" ? (
@@ -378,12 +466,36 @@ export function FeishuBriefPage() {
                                     />
                                 ) : <div />}
                                 <div className="space-y-2">
-                                    <Label>执行时间</Label>
+                                    <Label>生成时间</Label>
                                     <Input type="time" value={form.time_of_day} onChange={(event) => setForm((old) => ({ ...old, time_of_day: event.target.value }))} />
                                 </div>
+                                {form.schedule_frequency === "weekly" ? (
+                                    <>
+                                        <InsightSelect label="审阅组推送日" value={String(form.review_weekday ?? 0)} options={weekdayOptions} onChange={(value) => setForm((old) => ({ ...old, review_weekday: Number(value) }))} />
+                                        <div className="space-y-2">
+                                            <Label>审阅组推送时间</Label>
+                                            <Input type="time" value={form.review_time} onChange={(event) => setForm((old) => ({ ...old, review_time: event.target.value }))} />
+                                        </div>
+                                        <InsightSelect label="正式组推送日" value={String(form.release_weekday ?? 1)} options={weekdayOptions} onChange={(value) => setForm((old) => ({ ...old, release_weekday: Number(value) }))} />
+                                        <div className="space-y-2">
+                                            <Label>正式组推送时间</Label>
+                                            <Input type="time" value={form.release_time} onChange={(event) => setForm((old) => ({ ...old, release_time: event.target.value, afternoon_push_time: event.target.value }))} />
+                                        </div>
+                                    </>
+                                ) : null}
+                                <InsightSelect
+                                    label="素材范围模式"
+                                    value={form.material_scope.mode}
+                                    options={[
+                                        { value: "rolling_days", label: "向前滚动天数" },
+                                        { value: "fixed_weekdays", label: "固定星期区间" },
+                                        { value: "custom_range", label: "指定日期区间" },
+                                    ]}
+                                    onChange={(value) => setForm((old) => ({ ...old, material_scope: { ...old.material_scope, mode: value as InsightFeishuBriefPlanCreate["material_scope"]["mode"] } }))}
+                                />
                                 <InsightSelect
                                     label="素材周期"
-                                    value={String(form.material_days)}
+                                    value={String(form.material_scope.rolling_days)}
                                     options={[
                                         { value: "1", label: "近 1 天" },
                                         { value: "3", label: "近 3 天" },
@@ -392,34 +504,83 @@ export function FeishuBriefPage() {
                                         { value: "30", label: "近 30 天" },
                                         { value: "31", label: "近 31 天" },
                                     ]}
-                                    onChange={(value) => setForm((old) => ({ ...old, material_days: Number(value) }))}
+                                    onChange={(value) => setForm((old) => ({ ...old, material_days: Number(value), material_scope: { ...old.material_scope, rolling_days: Number(value) } }))}
                                 />
+                                {form.material_scope.mode === "fixed_weekdays" ? (
+                                    <>
+                                        <InsightSelect label="素材开始星期" value={String(form.material_scope.start_weekday)} options={weekdayOptions} onChange={(value) => setForm((old) => ({ ...old, material_scope: { ...old.material_scope, start_weekday: Number(value) } }))} />
+                                        <InsightSelect label="素材结束星期" value={String(form.material_scope.end_weekday)} options={weekdayOptions} onChange={(value) => setForm((old) => ({ ...old, material_scope: { ...old.material_scope, end_weekday: Number(value) } }))} />
+                                    </>
+                                ) : null}
+                                {form.material_scope.mode === "custom_range" ? (
+                                    <>
+                                        <div className="space-y-2"><Label>素材开始时间</Label><Input type="datetime-local" value={form.material_scope.custom_start?.slice(0, 16) || ""} onChange={(event) => setForm((old) => ({ ...old, material_scope: { ...old.material_scope, custom_start: event.target.value || null } }))} /></div>
+                                        <div className="space-y-2"><Label>素材结束时间</Label><Input type="datetime-local" value={form.material_scope.custom_end?.slice(0, 16) || ""} onChange={(event) => setForm((old) => ({ ...old, material_scope: { ...old.material_scope, custom_end: event.target.value || null } }))} /></div>
+                                    </>
+                                ) : null}
                                 <div className="space-y-2">
                                     <Label>单次读取上限</Label>
                                     <Input type="number" min={20} max={500} value={form.max_materials} onChange={(event) => setForm((old) => ({ ...old, max_materials: Number(event.target.value) }))} />
                                     <div className="text-xs leading-5 text-slate-500">只控制单次扫描性能，不限制符合规则的素材入选数量。</div>
                                 </div>
                                 <InsightSelect label="状态" value={form.status} options={[{ value: "active", label: "启用" }, { value: "paused", label: "暂停" }]} onChange={(value) => setForm((old) => ({ ...old, status: value as "active" | "paused" }))} />
-                                {form.schedule_frequency === "monthly" ? (
+                                {form.schedule_frequency !== "daily" ? (
                                     <div className="md:col-span-2">
                                         <InsightSelect
-                                            label="月报生成策略"
+                                            label={form.schedule_frequency === "weekly" ? "周报生成策略" : "月报生成策略"}
                                             value={form.generation_strategy}
                                             options={[
                                                 { value: "auto", label: "多策略择优（推荐）" },
                                                 { value: "single_model", label: "单模型整篇生成" },
                                                 { value: "section_parallel", label: "分章节并行生成" },
-                                                { value: "multi_agent_ensemble", label: "多智能体协作生成" },
+                                                { value: "multi_agent_ensemble", label: "策划＋研究＋主笔＋审阅多智能体" },
                                             ]}
                                             onChange={(value) => setForm((old) => ({ ...old, generation_strategy: value as InsightFeishuBriefPlanCreate["generation_strategy"] }))}
                                         />
                                         <div className="mt-2 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-800">
-                                            多策略择优会同时保留单模型稿、分章节稿和多智能体稿，由事实、相关度、管理表达三个审校角色评分，再合成最终版本。
+                                            周报固定使用策划、五专题研究、主笔、独立审阅和修订流程；策略用于控制研究与写作侧重，模型由系统自动路由。
                                         </div>
                                     </div>
                                 ) : null}
                             </div>
                         </section>
+
+                        {form.schedule_frequency === "weekly" ? (
+                            <section className="border-t border-slate-100 pt-5">
+                                <div className="mb-3 text-sm font-black text-slate-900">多智能体流程与提示词</div>
+                                <div className="grid gap-4 md:grid-cols-2">
+                                    <div className="space-y-2">
+                                        <Label>最多修订轮数</Label>
+                                        <Input type="number" min={1} max={4} value={form.workflow_config.max_revision_rounds} onChange={(event) => setForm((old) => ({ ...old, workflow_config: { ...old.workflow_config, max_revision_rounds: Number(event.target.value) } }))} />
+                                    </div>
+                                    <div className="rounded-lg border border-cyan-100 bg-cyan-50 px-3 py-2 text-xs leading-5 text-cyan-800">固定流程：策划 → 政策/竞对/客户/技术/原料研究 → 主笔 → 独立审阅 → 主笔修订 → 确定性校验。</div>
+                                    {([
+                                        ["planning", "策划智能体"],
+                                        ["research", "专题研究智能体"],
+                                        ["writing", "主笔智能体"],
+                                        ["reviewing", "审阅智能体"],
+                                        ["revision", "修订智能体"],
+                                    ] as const).map(([key, label]) => (
+                                        <div key={key} className="space-y-2">
+                                            <Label>{label}业务提示词</Label>
+                                            <Textarea className="min-h-28 resize-y" value={form.prompt_config[key]} placeholder="留空则使用系统迁移的现有周报策略" onChange={(event) => setForm((old) => ({ ...old, prompt_config: { ...old.prompt_config, [key]: event.target.value } }))} />
+                                        </div>
+                                    ))}
+                                </div>
+                                <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                                    <div className="space-y-2">
+                                        <Label>Markdown 模板</Label>
+                                        <Textarea className="min-h-80 resize-y font-mono text-xs leading-5" value={form.template_markdown || ""} onChange={(event) => setForm((old) => ({ ...old, template_markdown: event.target.value }))} />
+                                    </div>
+                                    <div className="space-y-2">
+                                        <Label>模板预览</Label>
+                                        <div className="prose prose-sm min-h-80 max-w-none overflow-auto rounded-lg border border-slate-200 bg-white p-4">
+                                            <ReactMarkdown>{form.template_markdown || "暂无模板"}</ReactMarkdown>
+                                        </div>
+                                    </div>
+                                </div>
+                            </section>
+                        ) : null}
 
                         <section className="border-t border-slate-100 pt-5">
                             <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
@@ -561,8 +722,8 @@ export function FeishuBriefPage() {
                             </div>
                             <div className="mt-4 grid gap-4 [grid-template-columns:repeat(auto-fit,minmax(min(100%,360px),1fr))]">
                                 <RecipientGroupCard
-                                    title="上午审阅组"
-                                    description="报告生成完成后立即发送，并授予云文档编辑权限。"
+                                    title="审阅组"
+                                    description={`按计划于周${Number(form.review_weekday ?? 0) + 1} ${form.review_time} 推送；若生成延迟则完成后立即发送。`}
                                     recipients={form.recipients}
                                     onChoose={() => setRecipientPickerStage("morning")}
                                     onRemove={(receiveId) => setForm((old) => ({
@@ -571,8 +732,8 @@ export function FeishuBriefPage() {
                                     }))}
                                 />
                                 <RecipientGroupCard
-                                    title="下午正式接收组"
-                                    description={`将在 ${form.afternoon_push_time} 发送上午审阅后的同一文档。`}
+                                    title="正式接收组"
+                                    description={`将在 ${form.release_time} 自动发送审阅后的同一文档。`}
                                     recipients={form.afternoon_recipients}
                                     onChoose={() => setRecipientPickerStage("afternoon")}
                                     onRemove={(receiveId) => setForm((old) => ({
@@ -585,8 +746,8 @@ export function FeishuBriefPage() {
                                             <Input
                                                 type="time"
                                                 className="h-8 w-28 bg-white"
-                                                value={form.afternoon_push_time}
-                                                onChange={(event) => setForm((old) => ({ ...old, afternoon_push_time: event.target.value }))}
+                                                value={form.release_time}
+                                                onChange={(event) => setForm((old) => ({ ...old, release_time: event.target.value, afternoon_push_time: event.target.value }))}
                                             />
                                         </div>
                                     )}
@@ -595,11 +756,44 @@ export function FeishuBriefPage() {
                         </section>
                     </div>
                     <DialogFooter className="shrink-0 border-t border-slate-100 px-6 py-4">
-                        <Button variant="outline" onClick={() => setDialogOpen(false)}>取消</Button>
-                        <Button disabled={!form.plan_name.trim() || saveMutation.isPending} onClick={() => saveMutation.mutate()}>
+                        <Button variant="outline" onClick={() => { setDialogOpen(false); resetPlanEditor(); }}>取消</Button>
+                        {editing && form.schedule_frequency === "weekly" ? (
+                            <Button variant="outline" disabled={!editing.can_edit || debugMutation.isPending || !options?.configured} onClick={() => debugMutation.mutate()}>
+                                {debugMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Bug className="size-4" />}
+                                使用当前草稿生成调试稿
+                            </Button>
+                        ) : null}
+                        <Button disabled={!form.plan_name.trim() || saveMutation.isPending || Boolean(editing && !editing.can_edit)} onClick={() => saveMutation.mutate()}>
                             {saveMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : null}
                             保存计划
                         </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+            <Dialog open={occurrencePlan !== null} onOpenChange={(open) => { if (!open) setOccurrencePlan(null); }}>
+                <DialogContent className="sm:max-w-xl">
+                    <DialogHeader>
+                        <DialogTitle>本期临时调整</DialogTitle>
+                        <DialogDescription>{occurrencePlan?.plan_name} 本期按以下时间执行，完成后自动恢复常规计划。</DialogDescription>
+                    </DialogHeader>
+                    <div className="grid gap-4 py-2 md:grid-cols-2">
+                        <div className="space-y-2 md:col-span-2"><Label>本期生成时间</Label><Input type="datetime-local" value={occurrenceForm.generation_scheduled_at.slice(0, 16)} onChange={(event) => setOccurrenceForm((old) => ({ ...old, generation_scheduled_at: event.target.value }))} /></div>
+                        <div className="space-y-2"><Label>审阅组推送时间</Label><Input type="datetime-local" value={occurrenceForm.review_scheduled_at.slice(0, 16)} onChange={(event) => setOccurrenceForm((old) => ({ ...old, review_scheduled_at: event.target.value }))} /></div>
+                        <div className="space-y-2"><Label>正式组推送时间</Label><Input type="datetime-local" value={occurrenceForm.release_scheduled_at.slice(0, 16)} onChange={(event) => setOccurrenceForm((old) => ({ ...old, release_scheduled_at: event.target.value }))} /></div>
+                        <InsightSelect label="本期素材范围" value={occurrenceForm.material_scope?.mode || "rolling_days"} options={[{ value: "rolling_days", label: "向前滚动天数" }, { value: "fixed_weekdays", label: "固定星期区间" }, { value: "custom_range", label: "指定日期区间" }]} onChange={(value) => setOccurrenceForm((old) => ({ ...old, material_scope: { ...(old.material_scope || emptyForm.material_scope), mode: value as InsightFeishuBriefPlanCreate["material_scope"]["mode"] } }))} />
+                        {occurrenceForm.material_scope?.mode === "rolling_days" ? <div className="space-y-2"><Label>向前取材天数</Label><Input type="number" min={1} max={90} value={occurrenceForm.material_scope?.rolling_days || 7} onChange={(event) => setOccurrenceForm((old) => ({ ...old, material_scope: { ...(old.material_scope || emptyForm.material_scope), rolling_days: Number(event.target.value) } }))} /></div> : null}
+                        {occurrenceForm.material_scope?.mode === "fixed_weekdays" ? <>
+                            <InsightSelect label="素材开始星期" value={String(occurrenceForm.material_scope.start_weekday)} options={weekdayOptions} onChange={(value) => setOccurrenceForm((old) => ({ ...old, material_scope: { ...(old.material_scope || emptyForm.material_scope), start_weekday: Number(value) } }))} />
+                            <InsightSelect label="素材结束星期" value={String(occurrenceForm.material_scope.end_weekday)} options={weekdayOptions} onChange={(value) => setOccurrenceForm((old) => ({ ...old, material_scope: { ...(old.material_scope || emptyForm.material_scope), end_weekday: Number(value) } }))} />
+                        </> : null}
+                        {occurrenceForm.material_scope?.mode === "custom_range" ? <>
+                            <div className="space-y-2"><Label>素材开始时间</Label><Input type="datetime-local" value={occurrenceForm.material_scope.custom_start?.slice(0, 16) || ""} onChange={(event) => setOccurrenceForm((old) => ({ ...old, material_scope: { ...(old.material_scope || emptyForm.material_scope), custom_start: event.target.value || null } }))} /></div>
+                            <div className="space-y-2"><Label>素材结束时间</Label><Input type="datetime-local" value={occurrenceForm.material_scope.custom_end?.slice(0, 16) || ""} onChange={(event) => setOccurrenceForm((old) => ({ ...old, material_scope: { ...(old.material_scope || emptyForm.material_scope), custom_end: event.target.value || null } }))} /></div>
+                        </> : null}
+                    </div>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setOccurrencePlan(null)}>取消</Button>
+                        <Button disabled={occurrenceMutation.isPending} onClick={() => occurrenceMutation.mutate()}>{occurrenceMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : null}保存本期调整</Button>
                     </DialogFooter>
                 </DialogContent>
             </Dialog>
@@ -707,6 +901,40 @@ function RuleChipGroup({
             </div>
         </div>
     );
+}
+
+function defaultOccurrenceForm(plan?: InsightFeishuBriefPlanRead): InsightFeishuBriefOccurrenceOverride {
+    const now = new Date();
+    const weekday = plan?.weekday ?? 0;
+    const daysAhead = (weekday - ((now.getDay() + 6) % 7) + 7) % 7;
+    const generation = new Date(now);
+    generation.setDate(now.getDate() + daysAhead);
+    const [generationHour, generationMinute] = (plan?.time_of_day || "09:00").split(":").map(Number);
+    generation.setHours(generationHour, generationMinute, 0, 0);
+    if (generation <= now) generation.setDate(generation.getDate() + 7);
+    const monday = new Date(generation);
+    monday.setDate(generation.getDate() - ((generation.getDay() + 6) % 7));
+    monday.setHours(0, 0, 0, 0);
+    const scheduled = (targetWeekday: number, time: string) => {
+        const value = new Date(monday);
+        const [hour, minute] = time.split(":").map(Number);
+        value.setDate(monday.getDate() + targetWeekday);
+        value.setHours(hour, minute, 0, 0);
+        return value;
+    };
+    const review = scheduled(plan?.review_weekday ?? weekday, plan?.review_time || "10:30");
+    const release = scheduled(plan?.release_weekday ?? weekday, plan?.release_time || "15:00");
+    if (release <= generation) release.setDate(release.getDate() + 7);
+    const localValue = (value: Date) => {
+        const offset = value.getTimezoneOffset() * 60_000;
+        return new Date(value.getTime() - offset).toISOString().slice(0, 16);
+    };
+    return {
+        generation_scheduled_at: localValue(generation),
+        review_scheduled_at: localValue(review),
+        release_scheduled_at: localValue(release),
+        material_scope: plan?.material_scope || { ...emptyForm.material_scope },
+    };
 }
 
 function statusLabel(value?: string | null) {

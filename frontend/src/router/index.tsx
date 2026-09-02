@@ -382,11 +382,9 @@ const router = createBrowserRouter([
             {
                 path: "feishu-briefs",
                 element: (
-                    <AdminRoute redirectTo="/insight">
-                        <Suspense fallback={<PageLoader />}>
-                            <FeishuBriefPage />
-                        </Suspense>
-                    </AdminRoute>
+                    <Suspense fallback={<PageLoader />}>
+                        <FeishuBriefPage />
+                    </Suspense>
                 ),
             },
             {

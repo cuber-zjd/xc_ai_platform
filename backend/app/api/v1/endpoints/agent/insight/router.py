@@ -65,11 +65,16 @@ from app.schemas.agent.insight.feishu import (
     InsightFeishuSyncResponse,
 )
 from app.schemas.agent.insight.feishu_brief import (
+    InsightFeishuBriefAgentStageRead,
+    InsightFeishuBriefDebugRequest,
     InsightFeishuBriefDueRunResponse,
+    InsightFeishuBriefOccurrenceOverride,
+    InsightFeishuBriefOccurrenceRead,
     InsightFeishuBriefOptionsRead,
     InsightFeishuBriefPlanCreate,
     InsightFeishuBriefPlanRead,
     InsightFeishuBriefPlanUpdate,
+    InsightFeishuBriefPlanVersionRead,
     InsightFeishuBriefRunRead,
     InsightFeishuBriefRunRequest,
     InsightFeishuBriefRunResponse,
@@ -1367,7 +1372,6 @@ async def run_due_report_subscriptions(
 async def get_feishu_brief_options(
     current_user: SysUser = Depends(get_current_user),
 ) -> Result[InsightFeishuBriefOptionsRead]:
-    _ensure_admin(current_user, "仅管理员可查看飞书简报配置")
     return Result.success(data=insight_feishu_brief_service.get_options())
 
 
@@ -1380,8 +1384,14 @@ async def list_feishu_brief_plans(
     size: int = 20,
     status: str | None = None,
 ) -> Result[Page[InsightFeishuBriefPlanRead]]:
-    _ensure_admin(current_user, "仅管理员可管理飞书简报计划")
-    result = await insight_feishu_brief_service.list_plans(db, page=page, size=size, status=status)
+    result = await insight_feishu_brief_service.list_plans(
+        db,
+        page=page,
+        size=size,
+        status=status,
+        current_user_id=current_user.id,
+        is_admin=_is_admin(current_user),
+    )
     return Result.success(data=result)
 
 
@@ -1392,7 +1402,6 @@ async def create_feishu_brief_plan(
     db: AsyncSession = Depends(get_db),
     current_user: SysUser = Depends(get_current_user),
 ) -> Result[InsightFeishuBriefPlanRead]:
-    _ensure_admin(current_user, "仅管理员可管理飞书简报计划")
     try:
         result = await insight_feishu_brief_service.create_plan(db, payload, user_id=current_user.id)
     except ValueError as exc:
@@ -1408,8 +1417,10 @@ async def update_feishu_brief_plan(
     db: AsyncSession = Depends(get_db),
     current_user: SysUser = Depends(get_current_user),
 ) -> Result[InsightFeishuBriefPlanRead]:
-    _ensure_admin(current_user, "仅管理员可管理飞书简报计划")
     try:
+        await insight_feishu_brief_service.ensure_can_edit_plan(
+            db, plan_id, user_id=current_user.id, is_admin=_is_admin(current_user)
+        )
         result = await insight_feishu_brief_service.update_plan(db, plan_id, payload, user_id=current_user.id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1423,8 +1434,10 @@ async def delete_feishu_brief_plan(
     db: AsyncSession = Depends(get_db),
     current_user: SysUser = Depends(get_current_user),
 ) -> Result[None]:
-    _ensure_admin(current_user, "仅管理员可管理飞书简报计划")
     try:
+        await insight_feishu_brief_service.ensure_can_edit_plan(
+            db, plan_id, user_id=current_user.id, is_admin=_is_admin(current_user)
+        )
         await insight_feishu_brief_service.delete_plan(db, plan_id, user_id=current_user.id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -1439,8 +1452,10 @@ async def run_feishu_brief_plan(
     db: AsyncSession = Depends(get_db),
     current_user: SysUser = Depends(get_current_user),
 ) -> Result[InsightFeishuBriefRunResponse]:
-    _ensure_admin(current_user, "仅管理员可执行飞书简报计划")
     try:
+        await insight_feishu_brief_service.ensure_can_edit_plan(
+            db, plan_id, user_id=current_user.id, is_admin=_is_admin(current_user)
+        )
         result = await insight_feishu_brief_service.run_plan(
             db,
             plan_id,
@@ -1461,7 +1476,6 @@ async def list_feishu_brief_runs(
     size: int = 20,
     plan_id: int | None = None,
 ) -> Result[Page[InsightFeishuBriefRunRead]]:
-    _ensure_admin(current_user, "仅管理员可查看飞书简报记录")
     result = await insight_feishu_brief_service.list_runs(db, page=page, size=size, plan_id=plan_id)
     return Result.success(data=result)
 
@@ -1476,12 +1490,113 @@ async def regenerate_feishu_brief_run(
     db: AsyncSession = Depends(get_db),
     current_user: SysUser = Depends(get_current_user),
 ) -> Result[InsightFeishuBriefRunResponse]:
-    _ensure_admin(current_user, "仅管理员可覆盖重生成飞书简报")
     try:
+        await insight_feishu_brief_service.ensure_can_edit_run(
+            db, run_id, user_id=current_user.id, is_admin=_is_admin(current_user)
+        )
         result = await insight_feishu_brief_service.regenerate_run_in_place(db, run_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return Result.success(data=result, msg=result.message)
+
+
+@router.post(
+    "/feishu-briefs/plans/{plan_id}/debug-runs",
+    response_model=Result[InsightFeishuBriefRunResponse],
+)
+async def debug_feishu_brief_plan(
+    *,
+    plan_id: int,
+    payload: InsightFeishuBriefDebugRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[InsightFeishuBriefRunResponse]:
+    try:
+        await insight_feishu_brief_service.ensure_can_edit_plan(
+            db, plan_id, user_id=current_user.id, is_admin=_is_admin(current_user)
+        )
+        result = await insight_feishu_brief_service.debug_plan(
+            db, plan_id, payload, current_user=current_user
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Result.success(data=result, msg=result.message)
+
+
+@router.get(
+    "/feishu-briefs/runs/{run_id}/stages",
+    response_model=Result[list[InsightFeishuBriefAgentStageRead]],
+)
+async def list_feishu_brief_agent_stages(
+    *,
+    run_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[list[InsightFeishuBriefAgentStageRead]]:
+    _ = current_user
+    return Result.success(data=await insight_feishu_brief_service.list_agent_stages(db, run_id))
+
+
+@router.get(
+    "/feishu-briefs/plans/{plan_id}/versions",
+    response_model=Result[list[InsightFeishuBriefPlanVersionRead]],
+)
+async def list_feishu_brief_plan_versions(
+    *,
+    plan_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[list[InsightFeishuBriefPlanVersionRead]]:
+    _ = current_user
+    return Result.success(data=await insight_feishu_brief_service.list_plan_versions(db, plan_id))
+
+
+@router.put(
+    "/feishu-briefs/plans/{plan_id}/occurrences/{period_key}",
+    response_model=Result[InsightFeishuBriefOccurrenceRead],
+)
+async def upsert_feishu_brief_occurrence(
+    *,
+    plan_id: int,
+    period_key: str,
+    payload: InsightFeishuBriefOccurrenceOverride,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[InsightFeishuBriefOccurrenceRead]:
+    try:
+        await insight_feishu_brief_service.ensure_can_edit_plan(
+            db, plan_id, user_id=current_user.id, is_admin=_is_admin(current_user)
+        )
+        normalized = payload.model_copy(update={"period_key": period_key})
+        result = await insight_feishu_brief_service.upsert_occurrence(
+            db, plan_id, normalized, user_id=current_user.id
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Result.success(data=result, msg="本期临时时间和素材范围已保存")
+
+
+@router.delete(
+    "/feishu-briefs/plans/{plan_id}/occurrences/{period_key}",
+    response_model=Result[None],
+)
+async def cancel_feishu_brief_occurrence(
+    *,
+    plan_id: int,
+    period_key: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[None]:
+    try:
+        await insight_feishu_brief_service.ensure_can_edit_plan(
+            db, plan_id, user_id=current_user.id, is_admin=_is_admin(current_user)
+        )
+        await insight_feishu_brief_service.cancel_occurrence(
+            db, plan_id, period_key, user_id=current_user.id
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Result.success(data=None, msg="本期临时覆盖已取消")
 
 
 @router.post("/feishu-briefs/run-due", response_model=Result[InsightFeishuBriefDueRunResponse])
@@ -1504,7 +1619,9 @@ async def run_due_feishu_brief_deliveries(
     limit: int = 20,
 ) -> Result[dict[str, Any]]:
     _ensure_admin(current_user, "仅管理员可执行飞书简报推送")
-    result = await insight_feishu_brief_service.run_due_afternoon_pushes(db, limit=limit)
+    review = await insight_feishu_brief_service.run_due_review_pushes(db, limit=limit)
+    release = await insight_feishu_brief_service.run_due_afternoon_pushes(db, limit=limit)
+    result = {"review": review, "release": release}
     return Result.success(data=result, msg="到期飞书简报推送已扫描")
 
 

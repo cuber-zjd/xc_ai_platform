@@ -18,7 +18,13 @@ from app.models.agent.insight.enums import (
     InsightTaskStatus,
     InsightVisibilityScope,
 )
-from app.models.agent.insight.feishu_brief import InsightFeishuBriefPlan, InsightFeishuBriefRun
+from app.models.agent.insight.feishu_brief import (
+    InsightFeishuBriefAgentStage,
+    InsightFeishuBriefOccurrence,
+    InsightFeishuBriefPlan,
+    InsightFeishuBriefPlanVersion,
+    InsightFeishuBriefRun,
+)
 from app.models.agent.insight.intelligence import (
     InsightIntelligence,
     InsightIntelligenceCandidate,
@@ -57,6 +63,9 @@ __all__ = [
     "InsightGraphNode",
     "InsightFeishuBriefPlan",
     "InsightFeishuBriefRun",
+    "InsightFeishuBriefOccurrence",
+    "InsightFeishuBriefPlanVersion",
+    "InsightFeishuBriefAgentStage",
     "InsightIntelligence",
     "InsightIntelligenceAsset",
     "InsightIntelligenceCandidate",

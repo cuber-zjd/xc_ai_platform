@@ -252,7 +252,15 @@
 - Insight 字典接口统一位于 `/ai-api/v1/insight/dictionaries/*`：`GET /overview` 返回分类、标签和情报类型总览，`GET/POST /tag-categories`、`PUT /tag-categories/{category_id}`、`POST /tag-categories/{category_id}/disable` 维护标签分类，`GET/POST /tags`、`PUT /tags/{tag_id}` 和 `POST /tags/{tag_id}/disable` 维护标签，`GET /intelligence-types` 返回内置受控情报类型。分类和标签写操作对登录用户开放，用于业务用户维护 AI 评审口径；禁用标签不得删除历史情报；情报类型当前为只读统一口径，如需在线增删类型需另建持久化类型表和审核规则。AI 评审只允许写入 `source=controlled_dictionary` 的受控标签，新增口径先进入建议字段，管理员确认后再成为字典标签。阶段六字典验收使用 `uv run python scripts/insight_dictionary_acceptance.py`。
 - 质量运营基础版接口为 `GET /ai-api/v1/insight/quality/overview`，聚合采集任务成功率、失败任务数、平均执行耗时、候选生成率、失败原因排行、候选审核通过/驳回率、AI 质量规则和数据源质量排行；前端入口为 `/insight/quality`。质量运营页只能展示真实聚合数据，图表缺数据时必须展示空状态，不得生成样例点冒充真实指标。阶段七验收使用 `uv run python scripts/insight_quality_acceptance.py`。
 
-## 9. SAP 助手流程
+## 9. Insight 飞书周报多智能体流程
+
+- 周报统一执行“素材准备 → 策划智能体 → 政策/竞对/客户/技术/原料专题研究智能体 → 主笔智能体 → 独立审阅智能体 → 主笔修订 → 确定性校验 → 云文档 → 审阅组 → 正式组”，不再调用旧单链路作为周报入口。
+- 计划分别维护生成、审阅和正式推送时间；单期实例可临时覆盖时间、素材范围和接收人，不改变后续常规周期。
+- Prompt、模板、生成策略和素材范围变化不得静默覆盖已生成文档，只标记内容配置已变化，由用户显式原文档重生成。
+- 调试运行使用页面未保存草稿，完整生成 `[调试]` 云文档但不推送；机器人写完后按当前用户工号转移所有权，阶段输出写入智能体执行记录。
+- 固定栏目、七条导读、公司业务边界、事实核验、链接白名单和推送幂等属于系统护栏，用户配置不得关闭。
+
+## 10. SAP 助手流程
 
 入口文件：
 - 前端页面：`frontend/src/features/sap-assistant/pages/SapAssistantPage.tsx`

@@ -454,7 +454,7 @@ async def _ensure_insight_report_template_columns(conn):
 
 
 async def _ensure_insight_feishu_brief_columns(conn):
-    """补齐飞书简报计划的周期、生成策略和分批推送字段。"""
+    """补齐飞书简报计划的可配置工作流、多阶段调度和审计字段。"""
     await conn.execute(
         text(
             "ALTER TABLE insight_feishu_brief_plan "
@@ -519,6 +519,93 @@ async def _ensure_insight_feishu_brief_columns(conn):
         text(
             "CREATE INDEX IF NOT EXISTS ix_insight_feishu_brief_run_afternoon_due "
             "ON insight_feishu_brief_run (afternoon_push_status, afternoon_push_scheduled_at)"
+        )
+    )
+    plan_columns = {
+        "owner_user_id": "INTEGER",
+        "review_weekday": "INTEGER DEFAULT 0",
+        "review_time": "VARCHAR(5) DEFAULT '10:30' NOT NULL",
+        "release_weekday": "INTEGER DEFAULT 1",
+        "release_time": "VARCHAR(5) DEFAULT '15:00' NOT NULL",
+        "workflow_config_json": "JSONB DEFAULT '{}'::jsonb NOT NULL",
+        "prompt_config_json": "JSONB DEFAULT '{}'::jsonb NOT NULL",
+        "material_scope_json": "JSONB DEFAULT '{}'::jsonb NOT NULL",
+        "template_markdown": "TEXT",
+        "config_version": "INTEGER DEFAULT 1 NOT NULL",
+    }
+    for column_name, column_type in plan_columns.items():
+        await conn.execute(
+            text(
+                f"ALTER TABLE insight_feishu_brief_plan ADD COLUMN IF NOT EXISTS {column_name} {column_type}"
+            )
+        )
+    run_columns = {
+        "run_mode": "VARCHAR(20) DEFAULT 'formal' NOT NULL",
+        "review_push_scheduled_at": "TIMESTAMP",
+        "review_push_status": "VARCHAR(30)",
+        "review_pushed_count": "INTEGER DEFAULT 0 NOT NULL",
+        "review_failed_push_count": "INTEGER DEFAULT 0 NOT NULL",
+        "occurrence_id": "INTEGER",
+        "config_snapshot_json": "JSONB DEFAULT '{}'::jsonb NOT NULL",
+        "owner_transfer_status": "VARCHAR(30)",
+    }
+    for column_name, column_type in run_columns.items():
+        await conn.execute(
+            text(
+                f"ALTER TABLE insight_feishu_brief_run ADD COLUMN IF NOT EXISTS {column_name} {column_type}"
+            )
+        )
+    await conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_insight_feishu_brief_run_review_due "
+            "ON insight_feishu_brief_run (review_push_status, review_push_scheduled_at)"
+        )
+    )
+    await conn.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_insight_feishu_brief_occurrence_period "
+            "ON insight_feishu_brief_occurrence (plan_id, period_key) WHERE is_deleted = 0"
+        )
+    )
+    await conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_insight_feishu_brief_agent_stage_run_sequence "
+            "ON insight_feishu_brief_agent_stage (run_id, sequence_no)"
+        )
+    )
+    # 旧计划直接迁入新工作流：原生成时间继续作为生成时间，原下午时间成为正式推送时间。
+    await conn.execute(
+        text(
+            "UPDATE insight_feishu_brief_plan SET owner_user_id = NULLIF(create_by, '')::INTEGER "
+            "WHERE owner_user_id IS NULL AND create_by ~ '^[0-9]+$'"
+        )
+    )
+    await conn.execute(
+        text(
+            "UPDATE insight_feishu_brief_plan SET release_time = afternoon_push_time "
+            "WHERE afternoon_push_time IS NOT NULL AND (release_time IS NULL OR release_time = '15:00')"
+        )
+    )
+    await conn.execute(
+        text(
+            "UPDATE insight_feishu_brief_plan SET "
+            "review_weekday = weekday, release_weekday = weekday, review_time = time_of_day, "
+            "workflow_config_json = '{\"max_revision_rounds\":2,\"research_sections\":[\"政策\",\"竞对\",\"客户\",\"技术\",\"原料\"]}'::jsonb, "
+            "material_scope_json = jsonb_build_object('mode','rolling_days','rolling_days',material_days,'start_weekday',0,'end_weekday',6,'filters','{}'::jsonb) "
+            "WHERE workflow_config_json = '{}'::jsonb"
+        )
+    )
+    await conn.execute(
+        text(
+            "INSERT INTO insight_feishu_brief_plan_version "
+            "(plan_id, version_no, config_json, diff_json, create_time, update_time, is_deleted) "
+            "SELECT p.id, COALESCE(p.config_version, 1), "
+            "jsonb_build_object('migrated', true, 'generation_strategy', p.generation_strategy, "
+            "'generation_rules', p.generation_rules_json, 'prompt_override', p.prompt_override, "
+            "'template_markdown', p.template_markdown, 'workflow_config', p.workflow_config_json, "
+            "'material_scope', p.material_scope_json), '{\"legacy_migrated\":true}'::jsonb, "
+            "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0 FROM insight_feishu_brief_plan p "
+            "WHERE NOT EXISTS (SELECT 1 FROM insight_feishu_brief_plan_version v WHERE v.plan_id = p.id)"
         )
     )
 

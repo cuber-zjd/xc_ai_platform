@@ -15,7 +15,7 @@ const insightNavItems = [
     { label: "经营智能", path: "/insight/operation-intelligence", icon: Gauge, adminOnly: true },
     { label: "质量运营", path: "/insight/quality", icon: BarChart3, adminOnly: true },
     { label: "定时任务", path: "/insight/schedules", icon: CalendarClock, adminOnly: true },
-    { label: "飞书简报", path: "/insight/feishu-briefs", icon: Bot, adminOnly: true },
+    { label: "飞书简报", path: "/insight/feishu-briefs", icon: Bot },
     { label: "系统设置", path: "/insight/settings", icon: Settings, adminOnly: true },
 ];
 

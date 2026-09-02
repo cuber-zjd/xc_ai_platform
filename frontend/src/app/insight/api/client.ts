@@ -167,6 +167,22 @@ export const insightApi = {
         ),
     listFeishuBriefRuns: (params: { page: number; size: number; plan_id?: number }) =>
         apiClient.get<InsightPage<InsightFeishuBriefRunRead>, InsightPage<InsightFeishuBriefRunRead>>(`${insightApiPrefix}/feishu-briefs/runs`, { params }),
+    debugFeishuBriefPlan: (planId: number, draftConfig: InsightFeishuBriefPlanCreate) =>
+        apiClient.post<InsightFeishuBriefRunResponse, InsightFeishuBriefRunResponse>(
+            `${insightApiPrefix}/feishu-briefs/plans/${planId}/debug-runs`,
+            { draft_config: draftConfig },
+            { timeout: 1800000 },
+        ),
+    regenerateFeishuBriefRun: (runId: number) =>
+        apiClient.post<InsightFeishuBriefRunResponse, InsightFeishuBriefRunResponse>(
+            `${insightApiPrefix}/feishu-briefs/runs/${runId}/regenerate`,
+            undefined,
+            { timeout: 1800000 },
+        ),
+    listFeishuBriefAgentStages: (runId: number) =>
+        apiClient.get<InsightFeishuBriefAgentStageRead[], InsightFeishuBriefAgentStageRead[]>(`${insightApiPrefix}/feishu-briefs/runs/${runId}/stages`),
+    upsertFeishuBriefOccurrence: (planId: number, periodKey: string, payload: InsightFeishuBriefOccurrenceOverride) =>
+        apiClient.put<InsightFeishuBriefOccurrenceRead, InsightFeishuBriefOccurrenceRead>(`${insightApiPrefix}/feishu-briefs/plans/${planId}/occurrences/${periodKey}`, payload),
     updateReport: (reportId: number, payload: InsightReportUpdateRequest) =>
         apiClient.put<InsightReportDetail, InsightReportDetail>(`${insightApiPrefix}/reports/${reportId}`, payload),
     listReportExports: (reportId: number) =>
@@ -2342,6 +2358,29 @@ export interface InsightFeishuBriefGenerationRules {
     include_business_insight: boolean;
 }
 
+export interface InsightFeishuBriefWorkflowConfig {
+    max_revision_rounds: number;
+    research_sections: Array<"政策" | "竞对" | "客户" | "技术" | "原料">;
+}
+
+export interface InsightFeishuBriefPromptConfig {
+    planning: string;
+    research: string;
+    writing: string;
+    reviewing: string;
+    revision: string;
+}
+
+export interface InsightFeishuBriefMaterialScope {
+    mode: "rolling_days" | "fixed_weekdays" | "custom_range";
+    rolling_days: number;
+    start_weekday: number;
+    end_weekday: number;
+    custom_start?: string | null;
+    custom_end?: string | null;
+    filters: Record<string, unknown>;
+}
+
 export interface InsightFeishuBriefOptionsRead {
     enabled: boolean;
     configured: boolean;
@@ -2361,11 +2400,19 @@ export interface InsightFeishuBriefPlanCreate {
     weekday?: number | null;
     day_of_month?: number | null;
     time_of_day: string;
+    review_weekday?: number | null;
+    review_time: string;
+    release_weekday?: number | null;
+    release_time: string;
     material_days: number;
     max_materials: number;
     generation_strategy: "auto" | "single_model" | "section_parallel" | "multi_agent_ensemble";
     prompt_override?: string | null;
     generation_rules: InsightFeishuBriefGenerationRules;
+    workflow_config: InsightFeishuBriefWorkflowConfig;
+    prompt_config: InsightFeishuBriefPromptConfig;
+    material_scope: InsightFeishuBriefMaterialScope;
+    template_markdown?: string | null;
     recipients: InsightFeishuBriefRecipient[];
     afternoon_recipients: InsightFeishuBriefRecipient[];
     afternoon_push_time: string;
@@ -2376,18 +2423,29 @@ export interface InsightFeishuBriefPlanRead {
     id: number;
     plan_uid: string;
     plan_name: string;
+    owner_user_id?: number | null;
+    can_edit: boolean;
     sys_company_id?: number | null;
     sys_company_name?: string | null;
     schedule_frequency: "daily" | "weekly" | "monthly";
     weekday?: number | null;
     day_of_month?: number | null;
     time_of_day: string;
+    review_weekday?: number | null;
+    review_time: string;
+    release_weekday?: number | null;
+    release_time: string;
     timezone: string;
     material_days: number;
     max_materials: number;
     generation_strategy: "auto" | "single_model" | "section_parallel" | "multi_agent_ensemble";
     prompt_override?: string | null;
     generation_rules: InsightFeishuBriefGenerationRules;
+    workflow_config: InsightFeishuBriefWorkflowConfig;
+    prompt_config: InsightFeishuBriefPromptConfig;
+    material_scope: InsightFeishuBriefMaterialScope;
+    template_markdown: string;
+    config_version: number;
     recipients: InsightFeishuBriefRecipient[];
     afternoon_recipients: InsightFeishuBriefRecipient[];
     afternoon_push_time: string;
@@ -2405,6 +2463,7 @@ export interface InsightFeishuBriefRunRead {
     id: number;
     plan_id: number;
     trigger_type: string;
+    run_mode: "formal" | "debug";
     status: string;
     period_start: string;
     period_end: string;
@@ -2418,10 +2477,17 @@ export interface InsightFeishuBriefRunRead {
     afternoon_push_status?: string | null;
     afternoon_pushed_count: number;
     afternoon_failed_push_count: number;
+    review_push_scheduled_at?: string | null;
+    review_push_status?: string | null;
+    review_pushed_count: number;
+    review_failed_push_count: number;
+    occurrence_id?: number | null;
+    owner_transfer_status?: string | null;
     error_message?: string | null;
     output_payload: {
         pipeline_version?: string;
         final_score?: number;
+        multi_agent?: Record<string, unknown>;
         artifacts?: Array<{
             artifact_type: "candidate" | "audit";
             strategy_code?: string;
@@ -2441,6 +2507,41 @@ export interface InsightFeishuBriefRunRead {
 export interface InsightFeishuBriefRunResponse {
     run: InsightFeishuBriefRunRead;
     message: string;
+}
+
+export interface InsightFeishuBriefAgentStageRead {
+    id: number;
+    run_id: number;
+    stage_code: string;
+    stage_name: string;
+    sequence_no: number;
+    status: string;
+    output_content?: string | null;
+    output_json: Record<string, unknown>;
+    model_name?: string | null;
+    token_usage_json: Record<string, unknown>;
+    duration_ms: number;
+    error_message?: string | null;
+    started_at?: string | null;
+    finished_at?: string | null;
+}
+
+export interface InsightFeishuBriefOccurrenceOverride {
+    period_key?: string;
+    generation_scheduled_at: string;
+    review_scheduled_at: string;
+    release_scheduled_at: string;
+    material_scope?: InsightFeishuBriefMaterialScope | null;
+}
+
+export interface InsightFeishuBriefOccurrenceRead extends InsightFeishuBriefOccurrenceOverride {
+    id: number;
+    plan_id: number;
+    period_key: string;
+    material_scope: InsightFeishuBriefMaterialScope;
+    status: string;
+    run_id?: number | null;
+    error_message?: string | null;
 }
 
 export interface InsightManualUrlCrawlResponse {
