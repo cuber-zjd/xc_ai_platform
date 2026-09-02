@@ -17,7 +17,13 @@ from app.schemas.agent.insight.crawl import InsightSearchDiscoveryRequest
 from app.schemas.agent.insight.data_source import InsightDataSourceScheduleExecution, InsightDataSourceScheduleRunResponse
 from app.services.agent.insight.crawler.channel_adapter_service import insight_channel_adapter_service
 from app.services.agent.insight.crawler import insight_search_discovery_service
-from app.services.agent.insight.crawler.search_client import InsightSearchHit, bocha_search_client, doubao_web_search_client
+from app.services.agent.insight.crawler.search_client import (
+    BaiduAntiBotError,
+    BaiduCircuitOpenError,
+    InsightSearchHit,
+    bocha_search_client,
+    doubao_web_search_client,
+)
 
 
 @dataclass(slots=True)
@@ -212,6 +218,23 @@ class InsightMonitorExecutionService:
                         "hits": len(response.hits),
                         "candidates": len(response.candidates),
                     }
+                except BaiduCircuitOpenError as exc:
+                    return {
+                        "monitor_config_id": row.id,
+                        "status": "circuit_open",
+                        "error": str(exc)[:500],
+                        "hits": 0,
+                        "candidates": 0,
+                    }
+                except BaiduAntiBotError as exc:
+                    return {
+                        "monitor_config_id": row.id,
+                        "status": "failed",
+                        "error_code": "baidu_antibot",
+                        "error": str(exc)[:500],
+                        "hits": 0,
+                        "candidates": 0,
+                    }
                 except Exception as exc:
                     return {
                         "monitor_config_id": row.id,
@@ -277,9 +300,14 @@ class InsightMonitorExecutionService:
         )
         return {
             "checked_count": len(rows),
-            "baidu_attempted_count": len(rows) if baidu_channel else 0,
+            "baidu_attempted_count": sum(
+                1 for item in baidu_logs if item.get("status") in {"success", "failed"}
+            ),
             "baidu_success_count": sum(1 for item in baidu_logs if item.get("status") == "success"),
             "baidu_failed_count": sum(1 for item in baidu_logs if item.get("status") == "failed"),
+            "baidu_circuit_skipped_count": sum(
+                1 for item in baidu_logs if item.get("status") == "circuit_open"
+            ),
             "grouped_batch_count": len(grouped_logs),
             "grouped_failed_count": sum(1 for item in grouped_logs if item.get("status") != "success"),
             "grouped_partial_count": sum(1 for item in grouped_logs if item.get("status") == "partial"),
@@ -313,6 +341,7 @@ class InsightMonitorExecutionService:
             + daily_adapter_candidate_count,
             "signal_monitor_config_ids": sorted(signal_ids),
             "errors": [item for item in baidu_logs if item.get("status") == "failed"][:50]
+            + [item for item in baidu_logs if item.get("status") == "circuit_open"][:1]
             + [item for item in grouped_logs if item.get("status") != "success"][:50]
             + [item for item in daily_adapter_logs if item.get("status") == "failed"][:50],
             "grouped_batches": grouped_logs,

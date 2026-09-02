@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from html import unescape
 import asyncio
 import json
@@ -32,6 +32,18 @@ class InsightSearchHit:
     raw: dict[str, Any] | None = None
 
 
+class BaiduSearchUnavailableError(RuntimeError):
+    """百度当前不可用，调用方应停止密集重试。"""
+
+
+class BaiduAntiBotError(BaiduSearchUnavailableError):
+    """百度返回了安全验证或限流页面。"""
+
+
+class BaiduCircuitOpenError(BaiduSearchUnavailableError):
+    """百度反爬熔断期内跳过请求。"""
+
+
 class BaiduSearchClient:
     """百度搜索发现适配器，第一版仅抽取公开搜索结果标题和链接。"""
 
@@ -39,6 +51,17 @@ class BaiduSearchClient:
         r"<h3[^>]*>.*?<a[^>]+href=[\"'](?P<url>[^\"']+)[\"'][^>]*>(?P<title>.*?)</a>.*?</h3>",
         IGNORECASE | DOTALL,
     )
+    _antibot_markers = (
+        "百度安全验证",
+        "请输入验证码",
+        "网络不给力，请稍后重试",
+        "wappass.baidu.com",
+        "captcha",
+    )
+
+    def __init__(self) -> None:
+        self._request_lock = asyncio.Lock()
+        self._blocked_until: datetime | None = None
 
     async def search(self, query: str, count: int) -> list[InsightSearchHit]:
         url = f"https://www.baidu.com/s?wd={quote_plus(query)}&rn={count}"
@@ -60,12 +83,22 @@ class BaiduSearchClient:
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
-            )
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Cache-Control": "no-cache",
         }
-        await asyncio.sleep(random.uniform(0.4, 1.2))
-        async with httpx.AsyncClient(timeout=settings.INSIGHT_SEARCH_TIMEOUT_SECONDS, follow_redirects=True) as client:
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
+        async with self._request_lock:
+            self._raise_if_circuit_open()
+            await asyncio.sleep(random.uniform(0.8, 1.8))
+            async with httpx.AsyncClient(
+                timeout=settings.INSIGHT_SEARCH_TIMEOUT_SECONDS,
+                follow_redirects=True,
+            ) as client:
+                response = await client.get(url, headers=headers)
+                if self._is_antibot_response(response):
+                    self._open_antibot_circuit(response)
+                response.raise_for_status()
 
         hits: list[InsightSearchHit] = []
         seen: set[str] = set()
@@ -93,6 +126,36 @@ class BaiduSearchClient:
                 if len(hits) >= count:
                     break
         return hits
+
+    def _raise_if_circuit_open(self) -> None:
+        if not self._blocked_until:
+            return
+        now = datetime.now()
+        if now >= self._blocked_until:
+            self._blocked_until = None
+            return
+        remaining_seconds = max(int((self._blocked_until - now).total_seconds()), 1)
+        raise BaiduCircuitOpenError(
+            f"百度安全验证熔断中，剩余约 {remaining_seconds} 秒，已跳过请求"
+        )
+
+    def _is_antibot_response(self, response: httpx.Response) -> bool:
+        host = (response.url.host or "").lower()
+        if host == "wappass.baidu.com" or host.endswith(".wappass.baidu.com"):
+            return True
+        if response.status_code in {403, 429}:
+            return True
+        text = response.text[:20000].lower()
+        return any(marker.lower() in text for marker in self._antibot_markers)
+
+    def _open_antibot_circuit(self, response: httpx.Response) -> None:
+        cooldown_seconds = max(settings.INSIGHT_BAIDU_ANTIBOT_COOLDOWN_SECONDS, 300)
+        self._blocked_until = datetime.now() + timedelta(seconds=cooldown_seconds)
+        raise BaiduAntiBotError(
+            "百度返回安全验证/限流页面，已熔断后续百度请求；"
+            f"HTTP {response.status_code}，最终地址 {response.url.host or '未知'}，"
+            f"冷却 {cooldown_seconds} 秒"
+        )
 
     async def _resolve_result_url(self, client: httpx.AsyncClient, url: str, headers: dict[str, str]) -> str | None:
         if not url:
