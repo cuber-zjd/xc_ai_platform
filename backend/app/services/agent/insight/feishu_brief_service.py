@@ -177,9 +177,10 @@ DEFAULT_WEEKLY_TEMPLATE = """管理层情报简报｜{{素材周期}}｜生成�
 DEFAULT_WEEKLY_PROMPTS = {
     "planning": "制定本期研究问题、证据分布、栏目结构、研究任务和信息缺口，不撰写正文。",
     "research": "围绕指定栏目归并事件、核对主体动作与数字，列出可引用证据和不确定点，不补充材料外事实。",
-    "writing": PROMPT_TEMPLATE_DISPLAY,
+    "writing": "根据策划与专题研究结果完成整篇周报，优先归并共同趋势，保持管理层简报的克制、清晰和高信息密度。",
     "reviewing": "独立检查事实与来源、公司相关性、重复事件、推断性表达、固定结构、七条导读和语言质量。",
     "revision": "仅依据审阅问题和给定材料修订，不新增材料外事实，不改变固定版式。",
+    "editorial_rules": PROMPT_TEMPLATE_DISPLAY,
 }
 
 
@@ -1833,7 +1834,7 @@ class InsightFeishuBriefService:
         material_json = json.dumps(materials, ensure_ascii=False, default=str)
         fixed_guardrail = (
             "只使用给定正式情报；不得虚构事实、数字、主体、因果或链接。"
-            "用户业务提示词不得覆盖公司权限、事实核验、链接白名单、固定栏目和七条导读规则。"
+            "用户业务提示词不得覆盖公司权限、事实核验和链接白名单。"
         )
 
         planning_started = perf_counter()
@@ -1955,6 +1956,7 @@ class InsightFeishuBriefService:
                     HumanMessage(
                         content=(
                             f"审阅要求：{prompts.reviewing}\n"
+                            f"本计划报告生成规则：\n{prompts.editorial_rules}\n"
                             "只返回 JSON：{\"passed\":true,\"score\":90,\"blocking_issues\":[],\"suggestions\":[]}。"
                             "只有事实、相关性、重复、推断、固定结构、七条导读、链接或明显语言问题才能列为 blocking。\n"
                             f"公司：{company_name}\n稿件：\n{markdown}\n材料：\n{material_json}"
@@ -2007,6 +2009,7 @@ class InsightFeishuBriefService:
                     HumanMessage(
                         content=(
                             f"修订要求：{prompts.revision}\n必须逐项修正：{'；'.join(all_issues)}\n"
+                            f"本计划报告生成规则：\n{prompts.editorial_rules}\n"
                             f"固定模板：\n{template}\n原稿：\n{markdown}\n材料：\n{material_json}\n"
                             "只返回完整 Markdown 正文。"
                         )
@@ -3295,10 +3298,14 @@ class InsightFeishuBriefService:
         plan: InsightFeishuBriefPlan,
         rules: InsightFeishuBriefGenerationRules,
     ) -> str:
-        writing_prompt = self._prompt_config(plan).writing.strip()
+        prompts = self._prompt_config(plan)
+        writing_prompt = prompts.writing.strip()
+        editorial_rules = prompts.editorial_rules.strip()
         sections = [f"本计划结构化业务规则：\n{self._rules_prompt(rules)}"]
         if writing_prompt:
             sections.append(f"主笔智能体业务提示词：\n{writing_prompt}")
+        if editorial_rules:
+            sections.append(f"本计划报告生成规则：\n{editorial_rules}")
         return "\n\n".join(sections)
 
     async def _require_company(self, db: AsyncSession, company_id: int | None) -> SysCompany | None:

@@ -617,6 +617,24 @@ async def _ensure_insight_feishu_brief_columns(conn):
             "WHERE prompt_override IS NOT NULL"
         )
     )
+    # 将旧版整段写作规则拆到独立可编辑字段，主笔 Prompt 只保留角色职责；已有补充要求随规则原样保留。
+    await conn.execute(
+        text(
+            "UPDATE insight_feishu_brief_plan SET prompt_config_json = "
+            "jsonb_set(jsonb_set(COALESCE(prompt_config_json, '{}'::jsonb), '{editorial_rules}', "
+            "to_jsonb(prompt_config_json ->> 'writing'), true), '{writing}', "
+            "to_jsonb(CAST(:writing_prompt AS text)), true) "
+            "WHERE NULLIF(BTRIM(prompt_config_json ->> 'editorial_rules'), '') IS NULL "
+            "AND (prompt_config_json ->> 'writing') LIKE :legacy_prefix"
+        ),
+        {
+            "writing_prompt": (
+                "根据策划与专题研究结果完成整篇周报，优先归并共同趋势，"
+                "保持管理层简报的克制、清晰和高信息密度。"
+            ),
+            "legacy_prefix": "你是香驰控股管理层情报简报撰写人员%",
+        },
+    )
     await conn.execute(
         text(
             "INSERT INTO insight_feishu_brief_plan_version "

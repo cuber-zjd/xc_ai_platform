@@ -60,6 +60,7 @@ class InsightFeishuBriefPromptConfig(BaseModel):
     writing: str = Field(default="", max_length=20000)
     reviewing: str = Field(default="", max_length=12000)
     revision: str = Field(default="", max_length=12000)
+    editorial_rules: str = Field(default="", max_length=30000)
 
 
 class InsightFeishuBriefMaterialScope(BaseModel):

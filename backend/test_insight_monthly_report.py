@@ -18,6 +18,7 @@ from app.schemas.agent.insight.feishu_brief import (
     InsightFeishuBriefGenerationRules,
     InsightFeishuBriefMaterialScope,
     InsightFeishuBriefPlanCreate,
+    InsightFeishuBriefPromptConfig,
 )
 from app.services.agent.insight.feishu_brief_service import InsightFeishuBriefService
 
@@ -183,12 +184,15 @@ class InsightFeishuBriefScheduleTest(unittest.TestCase):
         self.assertEqual(rules.supporting_score, 65)
         self.assertEqual(rules.minimum_citations, 10)
 
-    def test_weekly_generation_context_uses_new_writing_prompt_only(self) -> None:
+    def test_weekly_generation_context_uses_writing_and_editorial_rules(self) -> None:
         plan = InsightFeishuBriefPlan(
             plan_uid="new-prompt-config",
             plan_name="新提示词配置",
             prompt_override="旧版补充要求不应再生效",
-            prompt_config_json={"writing": "重点说明客户与竞对之间的关联变化。"},
+            prompt_config_json={
+                "writing": "重点说明客户与竞对之间的关联变化。",
+                "editorial_rules": "每段先概括共同变化。",
+            },
         )
         context = self.service._generation_context(
             plan,
@@ -196,7 +200,15 @@ class InsightFeishuBriefScheduleTest(unittest.TestCase):
         )
         self.assertIn("主笔智能体业务提示词", context)
         self.assertIn("重点说明客户与竞对之间的关联变化", context)
+        self.assertIn("本计划报告生成规则", context)
+        self.assertIn("每段先概括共同变化", context)
         self.assertNotIn("旧版补充要求不应再生效", context)
+
+    def test_weekly_prompt_defaults_split_writer_role_and_editorial_rules(self) -> None:
+        prompts = self.service._effective_prompt_config(InsightFeishuBriefPromptConfig())
+        self.assertIn("完成整篇周报", prompts.writing)
+        self.assertNotIn("写作要求", prompts.writing)
+        self.assertIn("写作要求", prompts.editorial_rules)
 
     def test_replace_document_preserves_document_and_rewrites_blocks(self) -> None:
         request = AsyncMock(

@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bot, Bug, CalendarClock, ChevronDown, Clock3, ExternalLink, FileText, Loader2, Pencil, Play, Plus, RefreshCw, Send, Trash2, UserRound, X } from "lucide-react";
+import { Bot, Bug, CalendarClock, Clock3, ExternalLink, FileText, Loader2, Pencil, Play, Plus, RefreshCw, Send, Trash2, UserRound, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { toast } from "sonner";
 
@@ -85,7 +85,7 @@ const emptyForm: InsightFeishuBriefPlanCreate = {
     generation_strategy: "multi_agent_ensemble",
     generation_rules: generationRulesForCompany(),
     workflow_config: { max_revision_rounds: 2, research_sections: [...sectionNames] },
-    prompt_config: { planning: "", research: "", writing: "", reviewing: "", revision: "" },
+    prompt_config: { planning: "", research: "", writing: "", reviewing: "", revision: "", editorial_rules: "" },
     material_scope: { mode: "rolling_days", rolling_days: 7, start_weekday: 0, end_weekday: 6, filters: {} },
     template_markdown: `管理层情报简报｜{{素材周期}}｜生成时间：{{生成日期}}
 
@@ -112,7 +112,6 @@ export function FeishuBriefPage() {
     const [dialogOpen, setDialogOpen] = useState(false);
     const [editing, setEditing] = useState<InsightFeishuBriefPlanRead | null>(null);
     const [form, setForm] = useState<InsightFeishuBriefPlanCreate>(emptyForm);
-    const [promptExpanded, setPromptExpanded] = useState(false);
     const [editorSection, setEditorSection] = useState<"plan" | "content" | "advanced" | "debug">("plan");
     const [recipientPickerStage, setRecipientPickerStage] = useState<"morning" | "afternoon" | null>(null);
     const [selectedRunId, setSelectedRunId] = useState<number | null>(null);
@@ -152,7 +151,6 @@ export function FeishuBriefPage() {
     const resetPlanEditor = () => {
         setEditing(null);
         setForm({ ...emptyForm, generation_rules: generationRulesForCompany() });
-        setPromptExpanded(false);
         setEditorSection("plan");
         setRecipientPickerStage(null);
     };
@@ -621,7 +619,7 @@ export function FeishuBriefPage() {
                             <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                                 <div>
                                     <div className="text-sm font-black text-slate-900">内容规则</div>
-                                    <div className="mt-1 text-xs leading-5 text-slate-500">调整业务关注范围和写作侧重；领导固定版式、七条导读和事实核验规则不会被改变。</div>
+                                    <div className="mt-1 text-xs leading-5 text-slate-500">调整业务关注范围和写作侧重；更详细的报告规则可在“高级编排”中单独编辑。</div>
                                 </div>
                                 <Button
                                     type="button"
@@ -728,24 +726,43 @@ export function FeishuBriefPage() {
 
                         {editorSection === "advanced" ? (
                         <section className="border-t border-slate-100 pt-5">
-                            <div className="mb-2 text-sm font-black text-slate-900">系统护栏</div>
-                            <div className="mb-3 rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs leading-5 text-emerald-800">
-                                固定栏目、七条导读、权限过滤、事实核验和引用合法性由系统强制执行，不占用业务 Prompt，也不能被自定义配置关闭。
+                            <div className="mb-2 text-sm font-black text-slate-900">安全护栏</div>
+                            <div className="rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs leading-5 text-emerald-800">
+                                权限过滤、事实与来源核验、链接合法性和防重复推送由系统强制执行，不能被自定义规则关闭。
                             </div>
-                            <Button
-                                type="button"
-                                variant="outline"
-                                className="h-10 w-full justify-between bg-white"
-                                onClick={() => setPromptExpanded((value) => !value)}
-                            >
-                                <span>查看系统固定规则</span>
-                                <ChevronDown className={promptExpanded ? "size-4 rotate-180 transition-transform" : "size-4 transition-transform"} />
-                            </Button>
-                            {promptExpanded ? (
-                                <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap rounded-lg border border-slate-200 bg-slate-50 p-4 text-xs leading-6 text-slate-700">
-                                    {options?.prompt_template || "提示词加载中"}
-                                </pre>
-                            ) : null}
+                            <div className="mt-5 space-y-2">
+                                <div className="flex flex-wrap items-start justify-between gap-3">
+                                    <div>
+                                        <Label>报告生成规则</Label>
+                                        <div className="mt-1 max-w-3xl text-xs leading-5 text-slate-500">
+                                            可调整归并方式、表述口径、链接位置和导读写法。当前必需栏目与七条导读数量仍由 Markdown 模板和确定性校验控制。
+                                        </div>
+                                    </div>
+                                    <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => setForm((old) => ({
+                                            ...old,
+                                            prompt_config: {
+                                                ...old.prompt_config,
+                                                editorial_rules: options?.prompt_template || "",
+                                            },
+                                        }))}
+                                    >
+                                        恢复系统默认
+                                    </Button>
+                                </div>
+                                <Textarea
+                                    className="min-h-80 resize-y font-mono text-xs leading-6"
+                                    value={form.prompt_config.editorial_rules || options?.prompt_template || ""}
+                                    placeholder="报告生成规则加载中"
+                                    onChange={(event) => setForm((old) => ({
+                                        ...old,
+                                        prompt_config: { ...old.prompt_config, editorial_rules: event.target.value },
+                                    }))}
+                                />
+                            </div>
                         </section>
                         ) : null}
 

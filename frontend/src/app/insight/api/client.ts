@@ -2369,6 +2369,7 @@ export interface InsightFeishuBriefPromptConfig {
     writing: string;
     reviewing: string;
     revision: string;
+    editorial_rules: string;
 }
 
 export interface InsightFeishuBriefMaterialScope {
