@@ -1,11 +1,19 @@
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import pytest
 
+from app.core.config import settings
 from app.models.agent.insight import (
     InsightChannel,
     InsightCrawlerChannel,
     InsightMonitorConfig,
 )
 from app.services.agent.insight.crawler.search_client import InsightSearchHit
+from app.services.agent.insight.crawler.channel_adapter_service import (
+    AdapterDefinition,
+    insight_channel_adapter_service,
+)
 from app.services.agent.insight.monitor_execution_service import (
     GroupedDiscoveryBatch,
     InsightMonitorExecutionService,
@@ -35,6 +43,75 @@ def test_grouped_discovery_supports_independent_batch_sizes() -> None:
 
     assert [len(batch.rows) for batch in bocha_batches] == [8, 1]
     assert [len(batch.rows) for batch in doubao_batches] == [4, 4, 1]
+
+
+def test_default_doubao_batch_size_reduces_daily_call_count() -> None:
+    service = InsightMonitorExecutionService()
+    rows = [_monitor(index) for index in range(1, 145)]
+
+    batches = service._build_grouped_discovery_batches(
+        rows,
+        batch_size=settings.INSIGHT_SCHEDULER_GROUPED_AI_BATCH_SIZE,
+    )
+
+    assert len(batches) == 18
+    assert all(len(batch.rows) == 8 for batch in batches)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "HTTP 403 Forbidden",
+        "HTTP 429 Too Many Requests",
+        "页面要求完成安全验证",
+        "触发 CAPTCHA",
+    ],
+)
+def test_adapter_antibot_error_detection(message: str) -> None:
+    assert insight_channel_adapter_service.is_antibot_error(RuntimeError(message))
+
+
+def test_adapter_normal_timeout_is_not_antibot() -> None:
+    assert not insight_channel_adapter_service.is_antibot_error(
+        TimeoutError("适配器执行超过 180 秒")
+    )
+
+
+@pytest.mark.asyncio
+async def test_adapter_does_not_retry_antibot_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = insight_channel_adapter_service
+    execute = AsyncMock(side_effect=RuntimeError("HTTP 403 Forbidden"))
+    monkeypatch.setattr(service, "_execute_definition", execute)
+    db = SimpleNamespace(commit=AsyncMock())
+    run = SimpleNamespace(
+        retry_count=0,
+        error_type=None,
+        error_message=None,
+        response_excerpt=None,
+        status="running",
+        update_time=None,
+    )
+    definition = AdapterDefinition(
+        channel_code="test_channel",
+        source_name="测试渠道",
+        task_dir="test",
+        script_name="test.py",
+        function_name="crawl",
+    )
+
+    with pytest.raises(RuntimeError, match="403"):
+        await service._execute_with_retries(
+            db,
+            run,
+            definition,
+            "测试关键词",
+            timeout_seconds=60,
+        )
+
+    assert execute.await_count == 1
+    db.commit.assert_not_awaited()
 
 
 def test_daily_key_channel_prefers_matching_business_topics() -> None:

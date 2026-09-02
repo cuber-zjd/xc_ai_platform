@@ -46,6 +46,20 @@ class AdapterRunContext:
 class InsightChannelAdapterService:
     """运行 crawler_research 迁移来的独立渠道适配器。"""
 
+    _antibot_markers = (
+        "403",
+        "429",
+        "captcha",
+        "forbidden",
+        "access denied",
+        "robot check",
+        "安全验证",
+        "访问频繁",
+        "请求过于频繁",
+        "人机验证",
+        "验证码",
+    )
+
     base_dir = Path(__file__).resolve().parent / "research_sources"
     output_dir = Path(__file__).resolve().parents[5] / "storage" / "insight_adapter_runs"
     adapters: tuple[AdapterDefinition, ...] = (
@@ -144,7 +158,9 @@ class InsightChannelAdapterService:
             return hits
         except Exception as exc:
             run.status = "failed"
-            run.error_type = exc.__class__.__name__
+            run.error_type = (
+                "anti_bot" if self.is_antibot_error(exc) else exc.__class__.__name__
+            )
             run.error_message = str(exc)[:2000]
             run.response_excerpt = str(exc)[:2000]
             run.raw_output_path = self._write_failure_output(run.id or 0, definition, keyword, exc)
@@ -224,6 +240,8 @@ class InsightChannelAdapterService:
                 run.error_type = exc.__class__.__name__
                 run.error_message = str(exc)[:2000]
                 run.response_excerpt = str(exc)[:2000]
+                if self.is_antibot_error(exc):
+                    break
                 if attempt + 1 >= max_attempts:
                     break
                 run.status = "retrying"
@@ -234,6 +252,11 @@ class InsightChannelAdapterService:
         if last_exc:
             raise last_exc
         raise RuntimeError("适配器重试异常结束")
+
+    @classmethod
+    def is_antibot_error(cls, exc: Exception | str) -> bool:
+        message = str(exc).strip().lower()
+        return any(marker.lower() in message for marker in cls._antibot_markers)
 
     def _subprocess_wrapper(self) -> str:
         return r"""

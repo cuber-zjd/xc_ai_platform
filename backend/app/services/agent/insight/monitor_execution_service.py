@@ -218,16 +218,7 @@ class InsightMonitorExecutionService:
         elif include_baidu:
             baidu_logs = [await run_baidu(row) for row in rows]
 
-        grouped_summary = await self._execute_grouped_daily_discovery(
-            db,
-            row_ids,
-            user_id=user_id,
-            freshness_override=freshness,
-            published_start=published_start,
-            published_end=published_end,
-        )
-        grouped_logs = list(grouped_summary.get("batches") or [])
-        grouped_by_monitor = grouped_summary.get("by_monitor_config_id") or {}
+        # 重点网站必须先于长耗时的 AI 联网搜索执行，避免豆包阶段达到总预算后挤掉垂直来源。
         daily_adapter_summary = await self._execute_daily_key_channel_sweep(
             db,
             rows,
@@ -238,6 +229,16 @@ class InsightMonitorExecutionService:
         )
         daily_adapter_logs = list(daily_adapter_summary.get("runs") or [])
         daily_adapter_by_monitor = daily_adapter_summary.get("by_monitor_config_id") or {}
+        grouped_summary = await self._execute_grouped_daily_discovery(
+            db,
+            row_ids,
+            user_id=user_id,
+            freshness_override=freshness,
+            published_start=published_start,
+            published_end=published_end,
+        )
+        grouped_logs = list(grouped_summary.get("batches") or [])
+        grouped_by_monitor = grouped_summary.get("by_monitor_config_id") or {}
         signal_ids = {
             int(item["monitor_config_id"])
             for item in baidu_logs
@@ -279,7 +280,9 @@ class InsightMonitorExecutionService:
                 1 for item in daily_adapter_logs if item.get("status") == "success"
             ),
             "daily_adapter_failed_count": sum(
-                1 for item in daily_adapter_logs if item.get("status") == "failed"
+                1
+                for item in daily_adapter_logs
+                if item.get("status") in {"failed", "circuit_open"}
             ),
             "daily_adapter_channel_count": len(
                 {str(item.get("channel_code")) for item in daily_adapter_logs}
@@ -305,7 +308,11 @@ class InsightMonitorExecutionService:
             "errors": [item for item in baidu_logs if item.get("status") == "failed"][:50]
             + [item for item in baidu_logs if item.get("status") == "circuit_open"][:1]
             + [item for item in grouped_logs if item.get("status") != "success"][:50]
-            + [item for item in daily_adapter_logs if item.get("status") == "failed"][:50],
+            + [
+                item
+                for item in daily_adapter_logs
+                if item.get("status") in {"failed", "circuit_open"}
+            ][:50],
             "grouped_batches": grouped_logs,
             "daily_adapter_runs": daily_adapter_logs,
         }
@@ -822,6 +829,7 @@ class InsightMonitorExecutionService:
         )
         http_semaphore = asyncio.Semaphore(max(1, self.api_concurrency))
         channel_locks = {channel.channel_code: asyncio.Lock() for channel in channels}
+        blocked_channels: dict[str, str] = {}
         by_monitor: dict[int, dict[str, int]] = defaultdict(
             lambda: {"hits": 0, "candidates": 0}
         )
@@ -839,6 +847,20 @@ class InsightMonitorExecutionService:
             query = self._daily_adapter_query(row, channel)
             started_at = datetime.now()
             async with channel_locks[channel.channel_code]:
+                blocked_reason = blocked_channels.get(channel.channel_code)
+                if blocked_reason:
+                    return {
+                        "channel_code": channel.channel_code,
+                        "channel_name": channel.channel_name,
+                        "monitor_config_id": row.id,
+                        "monitor_config_name": row.config_name,
+                        "query": query,
+                        "status": "circuit_open",
+                        "hits": 0,
+                        "candidates": 0,
+                        "duration_ms": 0,
+                        "error": blocked_reason,
+                    }
                 async with semaphore:
                     try:
                         response = await asyncio.wait_for(
@@ -862,6 +884,15 @@ class InsightMonitorExecutionService:
                             ),
                         )
                     except Exception as exc:
+                        error_message = (
+                            f"{exc.__class__.__name__}: "
+                            f"{str(exc) or '渠道请求失败或超时'}"
+                        )[:500]
+                        if insight_channel_adapter_service.is_antibot_error(exc):
+                            blocked_channels[channel.channel_code] = (
+                                f"检测到反爬/限流，已停止 {channel.channel_name} 本轮后续请求："
+                                f"{error_message}"
+                            )[:500]
                         return {
                             "channel_code": channel.channel_code,
                             "channel_name": channel.channel_name,
@@ -874,10 +905,7 @@ class InsightMonitorExecutionService:
                             "duration_ms": int(
                                 (datetime.now() - started_at).total_seconds() * 1000
                             ),
-                            "error": (
-                                f"{exc.__class__.__name__}: "
-                                f"{str(exc) or '渠道请求失败或超时'}"
-                            )[:500],
+                            "error": error_message,
                         }
 
             hit_count = len(response.hits)

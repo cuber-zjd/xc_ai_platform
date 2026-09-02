@@ -112,8 +112,8 @@ class InsightSchedulerService:
             warnings.append("INSIGHT_SCHEDULER_GROUPED_BATCH_SIZE 不能小于 2。")
         if settings.INSIGHT_SCHEDULER_GROUPED_AI_BATCH_SIZE <= 0:
             warnings.append("INSIGHT_SCHEDULER_GROUPED_AI_BATCH_SIZE 必须大于 0。")
-        elif settings.INSIGHT_SCHEDULER_GROUPED_AI_BATCH_SIZE > 4:
-            recommendations.append("豆包联网搜索单组对象数大于 4，长查询可能增加超时和漏检风险。")
+        elif settings.INSIGHT_SCHEDULER_GROUPED_AI_BATCH_SIZE > 8:
+            recommendations.append("豆包联网搜索单组对象数大于 8，长查询可能增加漏检风险。")
         if settings.INSIGHT_SCHEDULER_GROUPED_AI_TIMEOUT_SECONDS < 120:
             recommendations.append("豆包联网搜索总时限低于 120 秒，联网检索和流式整理可能无法完整返回。")
         if (
