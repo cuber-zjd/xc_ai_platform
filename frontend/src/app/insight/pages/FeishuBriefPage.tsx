@@ -36,6 +36,15 @@ const excludedOptions = [
     "植物油动态", "普通大豆行情", "泛食品资讯", "宽泛玉米行情",
 ];
 const sectionNames = ["政策", "竞对", "客户", "技术", "原料"] as const;
+type AgentPromptKey = "planning" | "research" | "writing" | "reviewing" | "revision";
+
+const agentPromptOptions: Array<{ key: AgentPromptKey; label: string; description: string }> = [
+    { key: "planning", label: "策划", description: "规划研究问题、证据分布、栏目任务和信息缺口，不直接撰写正文。" },
+    { key: "research", label: "专题研究", description: "政策、竞对、客户、技术、原料五个专题共用，负责核对主体、动作、数字和来源。" },
+    { key: "writing", label: "主笔", description: "汇总策划与专题研究结果，依据模板和编辑规范完成整篇初稿。" },
+    { key: "reviewing", label: "独立审阅", description: "检查事实来源、公司相关性、重复事件、推断表达、结构和语言质量。" },
+    { key: "revision", label: "主笔修订", description: "按照审阅问题修改原稿，不新增材料外事实，直至通过或达到轮数上限。" },
+];
 
 const defaultGenerationRules: InsightFeishuBriefGenerationRules = {
     focus_topics: ["客户动态", "竞对变化", "政策监管", "技术与产品", "原料行情", "消费趋势"],
@@ -113,6 +122,8 @@ export function FeishuBriefPage() {
     const [editing, setEditing] = useState<InsightFeishuBriefPlanRead | null>(null);
     const [form, setForm] = useState<InsightFeishuBriefPlanCreate>(emptyForm);
     const [editorSection, setEditorSection] = useState<"plan" | "content" | "advanced" | "debug">("plan");
+    const [activeAgentPrompt, setActiveAgentPrompt] = useState<AgentPromptKey>("planning");
+    const [advancedDocumentSection, setAdvancedDocumentSection] = useState<"template" | "rules">("template");
     const [recipientPickerStage, setRecipientPickerStage] = useState<"morning" | "afternoon" | null>(null);
     const [selectedRunId, setSelectedRunId] = useState<number | null>(null);
     const [occurrencePlan, setOccurrencePlan] = useState<InsightFeishuBriefPlanRead | null>(null);
@@ -152,6 +163,8 @@ export function FeishuBriefPage() {
         setEditing(null);
         setForm({ ...emptyForm, generation_rules: generationRulesForCompany() });
         setEditorSection("plan");
+        setActiveAgentPrompt("planning");
+        setAdvancedDocumentSection("template");
         setRecipientPickerStage(null);
     };
     const saveMutation = useMutation({
@@ -219,6 +232,8 @@ export function FeishuBriefPage() {
     const openEdit = (item: InsightFeishuBriefPlanRead) => {
         setEditing(item);
         setEditorSection("plan");
+        setActiveAgentPrompt("planning");
+        setAdvancedDocumentSection("template");
         setForm({
             plan_name: item.plan_name,
             sys_company_id: item.sys_company_id,
@@ -578,40 +593,113 @@ export function FeishuBriefPage() {
                         ) : null}
 
                         {editorSection === "advanced" && form.schedule_frequency === "weekly" ? (
-                            <section>
-                                <div className="mb-3 text-sm font-black text-slate-900">多智能体流程与提示词</div>
-                                <div className="grid gap-4 md:grid-cols-2">
-                                    <div className="space-y-2">
-                                        <Label>最多修订轮数</Label>
-                                        <Input type="number" min={1} max={4} value={form.workflow_config.max_revision_rounds} onChange={(event) => setForm((old) => ({ ...old, workflow_config: { ...old.workflow_config, max_revision_rounds: Number(event.target.value) } }))} />
-                                    </div>
-                                    <div className="rounded-lg border border-cyan-100 bg-cyan-50 px-3 py-2 text-xs leading-5 text-cyan-800">固定流程：策划 → 政策/竞对/客户/技术/原料研究 → 主笔 → 独立审阅 → 主笔修订 → 确定性校验。</div>
-                                    {([
-                                        ["planning", "策划智能体"],
-                                        ["research", "专题研究智能体"],
-                                        ["writing", "主笔智能体"],
-                                        ["reviewing", "审阅智能体"],
-                                        ["revision", "修订智能体"],
-                                    ] as const).map(([key, label]) => (
-                                        <div key={key} className="space-y-2">
-                                            <Label>{label}业务提示词</Label>
-                                            <Textarea className="min-h-28 resize-y" value={form.prompt_config[key]} placeholder="留空则使用系统迁移的现有周报策略" onChange={(event) => setForm((old) => ({ ...old, prompt_config: { ...old.prompt_config, [key]: event.target.value } }))} />
-                                        </div>
-                                    ))}
+                            <div className="space-y-4">
+                                <div className="rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs leading-5 text-emerald-800">
+                                    安全护栏：权限过滤、事实与来源核验、链接合法性和防重复推送由系统强制执行，不能被自定义配置关闭。
                                 </div>
-                                <div className="mt-4 grid gap-4 lg:grid-cols-2">
-                                    <div className="space-y-2">
-                                        <Label>Markdown 模板</Label>
-                                        <Textarea className="min-h-80 resize-y font-mono text-xs leading-5" value={form.template_markdown || ""} onChange={(event) => setForm((old) => ({ ...old, template_markdown: event.target.value }))} />
-                                    </div>
-                                    <div className="space-y-2">
-                                        <Label>模板预览</Label>
-                                        <div className="prose prose-sm min-h-80 max-w-none overflow-auto rounded-lg border border-slate-200 bg-white p-4">
-                                            <ReactMarkdown>{form.template_markdown || "暂无模板"}</ReactMarkdown>
+
+                                <section className="rounded-xl border border-slate-200 bg-white p-4">
+                                    <div className="mb-3 text-sm font-black text-slate-900">流程参数</div>
+                                    <div className="grid items-end gap-4 md:grid-cols-[220px_minmax(0,1fr)]">
+                                        <div className="space-y-2">
+                                            <Label>最多修订轮数</Label>
+                                            <Input type="number" min={1} max={4} value={form.workflow_config.max_revision_rounds} onChange={(event) => setForm((old) => ({ ...old, workflow_config: { ...old.workflow_config, max_revision_rounds: Number(event.target.value) } }))} />
+                                        </div>
+                                        <div className="rounded-lg border border-cyan-100 bg-cyan-50 px-3 py-2 text-xs leading-5 text-cyan-800">
+                                            固定流程：策划 → 政策/竞对/客户/技术/原料研究 → 主笔 → 独立审阅 → 主笔修订 → 确定性校验。设置为 2 时，最多修订 2 次、审阅 3 次。
                                         </div>
                                     </div>
-                                </div>
-                            </section>
+                                </section>
+
+                                <section className="rounded-xl border border-slate-200 bg-white p-4">
+                                    <div className="mb-3">
+                                        <div className="text-sm font-black text-slate-900">智能体职责</div>
+                                        <div className="mt-1 text-xs leading-5 text-slate-500">选择一个智能体查看和修改其职责与业务要求，其他智能体配置不会受到影响。</div>
+                                    </div>
+                                    <div className="flex flex-wrap gap-2">
+                                        {agentPromptOptions.map((item) => (
+                                            <Button
+                                                key={item.key}
+                                                type="button"
+                                                size="sm"
+                                                variant={activeAgentPrompt === item.key ? "default" : "outline"}
+                                                className={activeAgentPrompt === item.key ? "bg-blue-600 hover:bg-blue-700" : "bg-white"}
+                                                onClick={() => setActiveAgentPrompt(item.key)}
+                                            >
+                                                {item.label}
+                                            </Button>
+                                        ))}
+                                    </div>
+                                    <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50/60 p-4">
+                                        <div className="text-sm font-bold text-slate-900">
+                                            {agentPromptOptions.find((item) => item.key === activeAgentPrompt)?.label}智能体
+                                        </div>
+                                        <div className="mt-1 text-xs leading-5 text-slate-500">
+                                            {agentPromptOptions.find((item) => item.key === activeAgentPrompt)?.description}
+                                        </div>
+                                        <Textarea
+                                            className="mt-3 min-h-36 resize-y bg-white"
+                                            value={form.prompt_config[activeAgentPrompt]}
+                                            placeholder="留空则使用系统默认职责"
+                                            onChange={(event) => setForm((old) => ({
+                                                ...old,
+                                                prompt_config: { ...old.prompt_config, [activeAgentPrompt]: event.target.value },
+                                            }))}
+                                        />
+                                    </div>
+                                </section>
+
+                                <section className="rounded-xl border border-slate-200 bg-white p-4">
+                                    <div className="mb-3">
+                                        <div className="text-sm font-black text-slate-900">文档模板与编辑规范</div>
+                                        <div className="mt-1 text-xs leading-5 text-slate-500">模板负责文档结构，编辑规范负责归并方式、表述口径、链接位置和导读写法。</div>
+                                    </div>
+                                    <div className="flex gap-2">
+                                        <Button type="button" size="sm" variant={advancedDocumentSection === "template" ? "default" : "outline"} className={advancedDocumentSection === "template" ? "bg-blue-600 hover:bg-blue-700" : "bg-white"} onClick={() => setAdvancedDocumentSection("template")}>Markdown 模板</Button>
+                                        <Button type="button" size="sm" variant={advancedDocumentSection === "rules" ? "default" : "outline"} className={advancedDocumentSection === "rules" ? "bg-blue-600 hover:bg-blue-700" : "bg-white"} onClick={() => setAdvancedDocumentSection("rules")}>编辑规范</Button>
+                                    </div>
+
+                                    {advancedDocumentSection === "template" ? (
+                                        <div className="mt-4 grid gap-4 lg:grid-cols-2">
+                                            <div className="space-y-2">
+                                                <Label>Markdown 模板</Label>
+                                                <Textarea className="min-h-80 resize-y font-mono text-xs leading-5" value={form.template_markdown || ""} onChange={(event) => setForm((old) => ({ ...old, template_markdown: event.target.value }))} />
+                                            </div>
+                                            <div className="space-y-2">
+                                                <Label>模板预览</Label>
+                                                <div className="prose prose-sm min-h-80 max-w-none overflow-auto rounded-lg border border-slate-200 bg-white p-4">
+                                                    <ReactMarkdown>{form.template_markdown || "暂无模板"}</ReactMarkdown>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <div className="mt-4 space-y-2">
+                                            <div className="flex flex-wrap items-start justify-between gap-3">
+                                                <div>
+                                                    <Label>编辑规范</Label>
+                                                    <div className="mt-1 max-w-3xl text-xs leading-5 text-slate-500">可调整段落归并、语言口径、链接位置和导读写法；必需栏目与七条导读数量仍由模板和确定性校验控制。</div>
+                                                </div>
+                                                <Button type="button" variant="outline" size="sm" onClick={() => setForm((old) => ({ ...old, prompt_config: { ...old.prompt_config, editorial_rules: options?.prompt_template || "" } }))}>恢复系统默认</Button>
+                                            </div>
+                                            <Textarea
+                                                className="min-h-[28rem] resize-y font-mono text-xs leading-6"
+                                                value={form.prompt_config.editorial_rules || options?.prompt_template || ""}
+                                                placeholder="编辑规范加载中"
+                                                onChange={(event) => setForm((old) => ({
+                                                    ...old,
+                                                    prompt_config: { ...old.prompt_config, editorial_rules: event.target.value },
+                                                }))}
+                                            />
+                                        </div>
+                                    )}
+                                </section>
+                            </div>
+                        ) : null}
+
+                        {editorSection === "advanced" && form.schedule_frequency !== "weekly" ? (
+                            <div className="rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-sm leading-6 text-blue-800">
+                                月报当前在“素材与生成”中维护生成策略；这里的多智能体职责、周报模板和编辑规范仅用于周报计划。
+                            </div>
                         ) : null}
 
                         {editorSection === "content" ? (
@@ -720,48 +808,6 @@ export function FeishuBriefPage() {
                                         <Switch checked={form.generation_rules.include_business_insight} onCheckedChange={(checked) => setForm((old) => ({ ...old, generation_rules: { ...old.generation_rules, include_business_insight: checked } }))} />
                                     </div>
                                 </div>
-                            </div>
-                        </section>
-                        ) : null}
-
-                        {editorSection === "advanced" ? (
-                        <section className="border-t border-slate-100 pt-5">
-                            <div className="mb-2 text-sm font-black text-slate-900">安全护栏</div>
-                            <div className="rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs leading-5 text-emerald-800">
-                                权限过滤、事实与来源核验、链接合法性和防重复推送由系统强制执行，不能被自定义规则关闭。
-                            </div>
-                            <div className="mt-5 space-y-2">
-                                <div className="flex flex-wrap items-start justify-between gap-3">
-                                    <div>
-                                        <Label>报告生成规则</Label>
-                                        <div className="mt-1 max-w-3xl text-xs leading-5 text-slate-500">
-                                            可调整归并方式、表述口径、链接位置和导读写法。当前必需栏目与七条导读数量仍由 Markdown 模板和确定性校验控制。
-                                        </div>
-                                    </div>
-                                    <Button
-                                        type="button"
-                                        variant="outline"
-                                        size="sm"
-                                        onClick={() => setForm((old) => ({
-                                            ...old,
-                                            prompt_config: {
-                                                ...old.prompt_config,
-                                                editorial_rules: options?.prompt_template || "",
-                                            },
-                                        }))}
-                                    >
-                                        恢复系统默认
-                                    </Button>
-                                </div>
-                                <Textarea
-                                    className="min-h-80 resize-y font-mono text-xs leading-6"
-                                    value={form.prompt_config.editorial_rules || options?.prompt_template || ""}
-                                    placeholder="报告生成规则加载中"
-                                    onChange={(event) => setForm((old) => ({
-                                        ...old,
-                                        prompt_config: { ...old.prompt_config, editorial_rules: event.target.value },
-                                    }))}
-                                />
                             </div>
                         </section>
                         ) : null}
