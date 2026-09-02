@@ -100,7 +100,6 @@ class InsightFeishuBriefPlanCreate(BaseModel):
         "section_parallel",
         "multi_agent_ensemble",
     ] = "auto"
-    prompt_override: str | None = None
     generation_rules: InsightFeishuBriefGenerationRules = Field(
         default_factory=InsightFeishuBriefGenerationRules
     )
@@ -152,7 +151,6 @@ class InsightFeishuBriefPlanUpdate(BaseModel):
         "section_parallel",
         "multi_agent_ensemble",
     ] | None = None
-    prompt_override: str | None = None
     generation_rules: InsightFeishuBriefGenerationRules | None = None
     workflow_config: InsightFeishuBriefWorkflowConfig | None = None
     prompt_config: InsightFeishuBriefPromptConfig | None = None
@@ -199,7 +197,6 @@ class InsightFeishuBriefPlanRead(BaseModel):
     material_days: int
     max_materials: int
     generation_strategy: str
-    prompt_override: str | None
     generation_rules: InsightFeishuBriefGenerationRules
     workflow_config: InsightFeishuBriefWorkflowConfig
     prompt_config: InsightFeishuBriefPromptConfig

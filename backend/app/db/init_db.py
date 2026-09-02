@@ -601,13 +601,29 @@ async def _ensure_insight_feishu_brief_columns(conn):
             )
         },
     )
+    # 旧版自由补充要求一次性并入主笔智能体 Prompt；字段保留仅用于兼容历史表结构，不再参与业务读写。
+    await conn.execute(
+        text(
+            "UPDATE insight_feishu_brief_plan SET "
+            "prompt_config_json = jsonb_set(COALESCE(prompt_config_json, '{}'::jsonb), '{writing}', "
+            "to_jsonb(BTRIM(CONCAT_WS(E'\\n\\n', NULLIF(prompt_config_json ->> 'writing', ''), "
+            "NULLIF(BTRIM(prompt_override), '')))), true), prompt_override = NULL "
+            "WHERE NULLIF(BTRIM(prompt_override), '') IS NOT NULL"
+        )
+    )
+    await conn.execute(
+        text(
+            "UPDATE insight_feishu_brief_plan SET prompt_override = NULL "
+            "WHERE prompt_override IS NOT NULL"
+        )
+    )
     await conn.execute(
         text(
             "INSERT INTO insight_feishu_brief_plan_version "
             "(plan_id, version_no, config_json, diff_json, create_time, update_time, is_deleted) "
             "SELECT p.id, COALESCE(p.config_version, 1), "
             "jsonb_build_object('migrated', true, 'generation_strategy', p.generation_strategy, "
-            "'generation_rules', p.generation_rules_json, 'prompt_override', p.prompt_override, "
+            "'generation_rules', p.generation_rules_json, 'prompt_config', p.prompt_config_json, "
             "'template_markdown', p.template_markdown, 'workflow_config', p.workflow_config_json, "
             "'material_scope', p.material_scope_json), CAST(:diff_json AS jsonb), "
             "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 0 FROM insight_feishu_brief_plan p "

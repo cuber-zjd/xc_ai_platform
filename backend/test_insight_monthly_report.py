@@ -183,6 +183,21 @@ class InsightFeishuBriefScheduleTest(unittest.TestCase):
         self.assertEqual(rules.supporting_score, 65)
         self.assertEqual(rules.minimum_citations, 10)
 
+    def test_weekly_generation_context_uses_new_writing_prompt_only(self) -> None:
+        plan = InsightFeishuBriefPlan(
+            plan_uid="new-prompt-config",
+            plan_name="新提示词配置",
+            prompt_override="旧版补充要求不应再生效",
+            prompt_config_json={"writing": "重点说明客户与竞对之间的关联变化。"},
+        )
+        context = self.service._generation_context(
+            plan,
+            InsightFeishuBriefGenerationRules(focus_topics=["客户动态"]),
+        )
+        self.assertIn("主笔智能体业务提示词", context)
+        self.assertIn("重点说明客户与竞对之间的关联变化", context)
+        self.assertNotIn("旧版补充要求不应再生效", context)
+
     def test_replace_document_preserves_document_and_rewrites_blocks(self) -> None:
         request = AsyncMock(
             side_effect=[

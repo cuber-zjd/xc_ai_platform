@@ -514,7 +514,6 @@ class InsightFeishuBriefService:
             ),
             max_materials=payload.max_materials,
             generation_strategy=payload.generation_strategy,
-            prompt_override=payload.prompt_override,
             generation_rules_json=payload.generation_rules.model_dump(mode="json"),
             workflow_config_json=payload.workflow_config.model_dump(mode="json"),
             prompt_config_json=self._effective_prompt_config(payload.prompt_config).model_dump(mode="json"),
@@ -605,7 +604,6 @@ class InsightFeishuBriefService:
                 changed_fields
                 & {
                     "generation_strategy",
-                    "prompt_override",
                     "generation_rules",
                     "workflow_config",
                     "prompt_config",
@@ -787,10 +785,7 @@ class InsightFeishuBriefService:
             company = await self._require_company(db, plan.sys_company_id)
             company_name = company.name if company else "香驰控股"
             generation_rules = self._generation_rules(plan, company_name)
-            effective_prompt_override = self._merge_rule_prompt(
-                plan.prompt_override,
-                generation_rules,
-            )
+            generation_context = self._generation_context(plan, generation_rules)
             final_folder = await self._resolve_document_folder(
                 company_name=company_name,
                 frequency=plan.schedule_frequency,
@@ -830,7 +825,7 @@ class InsightFeishuBriefService:
                     period_start=period_start,
                     period_end=period_end,
                     materials=materials,
-                    prompt_override=effective_prompt_override,
+                    prompt_override=generation_context,
                     generation_strategy=plan.generation_strategy,
                 )
                 title = monthly_result.title
@@ -901,7 +896,7 @@ class InsightFeishuBriefService:
                     generated_at=execution_started_at,
                     materials=selected_materials,
                     original_material_count=len(materials),
-                    prompt_override=effective_prompt_override,
+                    generation_context=generation_context,
                     generation_rules=generation_rules,
                 )
                 pipeline_output = {
@@ -1132,7 +1127,7 @@ class InsightFeishuBriefService:
             generated_at=datetime.now(),
             materials=selected_materials,
             original_material_count=len(materials),
-            prompt_override=self._merge_rule_prompt(plan.prompt_override, generation_rules),
+            generation_context=self._generation_context(plan, generation_rules),
             generation_rules=generation_rules,
         )
         await self._replace_document_content(run.document_id, markdown)
@@ -1829,7 +1824,7 @@ class InsightFeishuBriefService:
         generated_at: datetime,
         materials: list[dict[str, Any]],
         original_material_count: int,
-        prompt_override: str | None,
+        generation_context: str,
         generation_rules: InsightFeishuBriefGenerationRules,
     ) -> tuple[str, str, dict[str, Any]]:
         """周报唯一生成链路：策划、专题研究、主笔、独立审阅与修订。"""
@@ -1920,8 +1915,7 @@ class InsightFeishuBriefService:
             f"\n\n研究总监计划：\n{planning}\n\n专题研究结果：\n"
             + json.dumps(research_outputs, ensure_ascii=False)
             + f"\n\n本计划 Markdown 模板：\n{template}\n"
-            + f"\n\n主笔补充要求：\n{prompts.writing}\n"
-            + (f"\n\n计划补充要求：\n{prompt_override}" if prompt_override else "")
+            + f"\n\n业务配置：\n{generation_context}"
         )
         writing_started = perf_counter()
         title, markdown = await self._generate_markdown(
@@ -1932,7 +1926,7 @@ class InsightFeishuBriefService:
             generated_at=generated_at,
             materials=materials,
             original_material_count=original_material_count,
-            prompt_override=writing_context,
+            generation_context=writing_context,
             generation_rules=generation_rules,
         )
         await self._save_agent_stage(
@@ -2112,7 +2106,7 @@ class InsightFeishuBriefService:
         generated_at: datetime,
         materials: list[dict[str, Any]],
         original_material_count: int,
-        prompt_override: str | None,
+        generation_context: str | None,
         generation_rules: InsightFeishuBriefGenerationRules,
         use_all_materials: bool = False,
     ) -> tuple[str, str]:
@@ -2263,7 +2257,7 @@ class InsightFeishuBriefService:
         messages = [
             SystemMessage(content=system_prompt),
             HumanMessage(
-                content=f"{format_prompt}\n{prompt_override or ''}\n正式情报材料：\n"
+                content=f"{format_prompt}\n{generation_context or ''}\n正式情报材料：\n"
                 + json.dumps(materials, ensure_ascii=False, default=str)
             ),
         ]
@@ -3296,14 +3290,16 @@ class InsightFeishuBriefService:
             f"正文来源覆盖：至少{rules.minimum_citations}个、最多按{rules.maximum_citations}个控制"
         )
 
-    def _merge_rule_prompt(
+    def _generation_context(
         self,
-        prompt_override: str | None,
+        plan: InsightFeishuBriefPlan,
         rules: InsightFeishuBriefGenerationRules,
     ) -> str:
-        custom = (prompt_override or "").strip()
-        rule_text = f"本计划结构化业务规则：\n{self._rules_prompt(rules)}"
-        return f"{rule_text}\n\n本计划补充要求：\n{custom}" if custom else rule_text
+        writing_prompt = self._prompt_config(plan).writing.strip()
+        sections = [f"本计划结构化业务规则：\n{self._rules_prompt(rules)}"]
+        if writing_prompt:
+            sections.append(f"主笔智能体业务提示词：\n{writing_prompt}")
+        return "\n\n".join(sections)
 
     async def _require_company(self, db: AsyncSession, company_id: int | None) -> SysCompany | None:
         if company_id is None:
@@ -3373,7 +3369,6 @@ class InsightFeishuBriefService:
         draft.material_days = payload.material_scope.rolling_days
         draft.max_materials = payload.max_materials
         draft.generation_strategy = payload.generation_strategy
-        draft.prompt_override = payload.prompt_override
         draft.generation_rules_json = payload.generation_rules.model_dump(mode="json")
         draft.workflow_config_json = payload.workflow_config.model_dump(mode="json")
         draft.prompt_config_json = self._effective_prompt_config(payload.prompt_config).model_dump(mode="json")
@@ -3458,7 +3453,6 @@ class InsightFeishuBriefService:
             material_days=row.material_days,
             max_materials=row.max_materials,
             generation_strategy=row.generation_strategy,
-            prompt_override=row.prompt_override,
             generation_rules=self._generation_rules(row, company_name or "香驰控股"),
             workflow_config=self._workflow_config(row),
             prompt_config=self._prompt_config(row),

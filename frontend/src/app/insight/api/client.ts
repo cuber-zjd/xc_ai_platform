@@ -2407,7 +2407,6 @@ export interface InsightFeishuBriefPlanCreate {
     material_days: number;
     max_materials: number;
     generation_strategy: "auto" | "single_model" | "section_parallel" | "multi_agent_ensemble";
-    prompt_override?: string | null;
     generation_rules: InsightFeishuBriefGenerationRules;
     workflow_config: InsightFeishuBriefWorkflowConfig;
     prompt_config: InsightFeishuBriefPromptConfig;
@@ -2439,7 +2438,6 @@ export interface InsightFeishuBriefPlanRead {
     material_days: number;
     max_materials: number;
     generation_strategy: "auto" | "single_model" | "section_parallel" | "multi_agent_ensemble";
-    prompt_override?: string | null;
     generation_rules: InsightFeishuBriefGenerationRules;
     workflow_config: InsightFeishuBriefWorkflowConfig;
     prompt_config: InsightFeishuBriefPromptConfig;

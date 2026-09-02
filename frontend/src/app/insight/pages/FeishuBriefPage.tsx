@@ -82,8 +82,7 @@ const emptyForm: InsightFeishuBriefPlanCreate = {
     release_time: "15:00",
     material_days: 7,
     max_materials: 200,
-    generation_strategy: "auto",
-    prompt_override: "",
+    generation_strategy: "multi_agent_ensemble",
     generation_rules: generationRulesForCompany(),
     workflow_config: { max_revision_rounds: 2, research_sections: [...sectionNames] },
     prompt_config: { planning: "", research: "", writing: "", reviewing: "", revision: "" },
@@ -114,6 +113,7 @@ export function FeishuBriefPage() {
     const [editing, setEditing] = useState<InsightFeishuBriefPlanRead | null>(null);
     const [form, setForm] = useState<InsightFeishuBriefPlanCreate>(emptyForm);
     const [promptExpanded, setPromptExpanded] = useState(false);
+    const [editorSection, setEditorSection] = useState<"plan" | "content" | "advanced" | "debug">("plan");
     const [recipientPickerStage, setRecipientPickerStage] = useState<"morning" | "afternoon" | null>(null);
     const [selectedRunId, setSelectedRunId] = useState<number | null>(null);
     const [occurrencePlan, setOccurrencePlan] = useState<InsightFeishuBriefPlanRead | null>(null);
@@ -153,6 +153,7 @@ export function FeishuBriefPage() {
         setEditing(null);
         setForm({ ...emptyForm, generation_rules: generationRulesForCompany() });
         setPromptExpanded(false);
+        setEditorSection("plan");
         setRecipientPickerStage(null);
     };
     const saveMutation = useMutation({
@@ -219,6 +220,7 @@ export function FeishuBriefPage() {
 
     const openEdit = (item: InsightFeishuBriefPlanRead) => {
         setEditing(item);
+        setEditorSection("plan");
         setForm({
             plan_name: item.plan_name,
             sys_company_id: item.sys_company_id,
@@ -232,8 +234,7 @@ export function FeishuBriefPage() {
             release_time: item.release_time,
             material_days: item.material_days,
             max_materials: item.max_materials,
-            generation_strategy: item.generation_strategy,
-            prompt_override: item.prompt_override,
+            generation_strategy: item.schedule_frequency === "weekly" ? "multi_agent_ensemble" : item.generation_strategy,
             generation_rules: item.generation_rules,
             workflow_config: item.workflow_config,
             prompt_config: item.prompt_config,
@@ -430,12 +431,34 @@ export function FeishuBriefPage() {
                 <DialogContent className="flex max-h-[min(900px,calc(100vh-32px))] !w-[min(1040px,calc(100vw-32px))] !max-w-[1040px] flex-col gap-0 overflow-hidden p-0 sm:!max-w-[1040px]">
                     <DialogHeader className="shrink-0 border-b border-slate-100 px-6 py-5">
                         <DialogTitle>{editing ? "编辑飞书简报计划" : "新建飞书简报计划"}</DialogTitle>
-                        <DialogDescription>设置生成时间、素材范围和接收人；文档由独立飞书机器人创建并发送。</DialogDescription>
+                        <DialogDescription>常用计划设置与高级生成编排分开维护，修改后可先生成调试稿验证。</DialogDescription>
                     </DialogHeader>
+                    <div className="flex shrink-0 gap-1 overflow-x-auto border-b border-slate-100 bg-slate-50/70 px-6 py-2">
+                        {([
+                            ["plan", "计划设置"],
+                            ["content", "素材与生成"],
+                            ["advanced", "高级编排"],
+                            ["debug", "调试与记录"],
+                        ] as const).map(([value, label]) => (
+                            <Button
+                                key={value}
+                                type="button"
+                                size="sm"
+                                variant={editorSection === value ? "default" : "ghost"}
+                                className={editorSection === value ? "shrink-0" : "shrink-0 text-slate-600"}
+                                onClick={() => setEditorSection(value)}
+                            >
+                                {label}
+                            </Button>
+                        ))}
+                    </div>
                     <div className="min-h-0 flex-1 space-y-5 overflow-auto px-6 py-5">
+                        {editorSection === "plan" || editorSection === "content" ? (
                         <section>
-                            <div className="mb-3 text-sm font-black text-slate-900">基础计划</div>
+                            <div className="mb-3 text-sm font-black text-slate-900">{editorSection === "plan" ? "计划与时间" : "素材范围与生成方式"}</div>
                             <div className="grid gap-4 md:grid-cols-2">
+                                {editorSection === "plan" ? (
+                                <>
                                 <div className="space-y-2 md:col-span-2">
                                     <Label>计划名称</Label>
                                     <Input value={form.plan_name} placeholder="如：御馨市场信息周报" onChange={(event) => setForm((old) => ({ ...old, plan_name: event.target.value }))} />
@@ -448,6 +471,7 @@ export function FeishuBriefPage() {
                                     onChange={(value) => setForm((old) => ({
                                         ...old,
                                         schedule_frequency: value as "daily" | "weekly" | "monthly",
+                                        generation_strategy: value === "weekly" ? "multi_agent_ensemble" : old.generation_strategy,
                                         material_days: value === "daily" ? 1 : value === "weekly" ? 7 : 31,
                                         material_scope: { ...old.material_scope, rolling_days: value === "daily" ? 1 : value === "weekly" ? 7 : 31 },
                                     }))}
@@ -483,6 +507,10 @@ export function FeishuBriefPage() {
                                         </div>
                                     </>
                                 ) : null}
+                                <InsightSelect label="状态" value={form.status} options={[{ value: "active", label: "启用" }, { value: "paused", label: "暂停" }]} onChange={(value) => setForm((old) => ({ ...old, status: value as "active" | "paused" }))} />
+                                </>
+                                ) : (
+                                <>
                                 <InsightSelect
                                     label="素材范围模式"
                                     value={form.material_scope.mode}
@@ -523,30 +551,36 @@ export function FeishuBriefPage() {
                                     <Input type="number" min={20} max={500} value={form.max_materials} onChange={(event) => setForm((old) => ({ ...old, max_materials: Number(event.target.value) }))} />
                                     <div className="text-xs leading-5 text-slate-500">只控制单次扫描性能，不限制符合规则的素材入选数量。</div>
                                 </div>
-                                <InsightSelect label="状态" value={form.status} options={[{ value: "active", label: "启用" }, { value: "paused", label: "暂停" }]} onChange={(value) => setForm((old) => ({ ...old, status: value as "active" | "paused" }))} />
                                 {form.schedule_frequency !== "daily" ? (
                                     <div className="md:col-span-2">
                                         <InsightSelect
                                             label={form.schedule_frequency === "weekly" ? "周报生成策略" : "月报生成策略"}
                                             value={form.generation_strategy}
-                                            options={[
-                                                { value: "auto", label: "多策略择优（推荐）" },
-                                                { value: "single_model", label: "单模型整篇生成" },
-                                                { value: "section_parallel", label: "分章节并行生成" },
-                                                { value: "multi_agent_ensemble", label: "策划＋研究＋主笔＋审阅多智能体" },
-                                            ]}
+                                            options={form.schedule_frequency === "weekly"
+                                                ? [{ value: "multi_agent_ensemble", label: "多智能体编排（固定）" }]
+                                                : [
+                                                    { value: "auto", label: "多策略择优（推荐）" },
+                                                    { value: "single_model", label: "单模型整篇生成" },
+                                                    { value: "section_parallel", label: "分章节并行生成" },
+                                                    { value: "multi_agent_ensemble", label: "多智能体集成" },
+                                                ]}
                                             onChange={(value) => setForm((old) => ({ ...old, generation_strategy: value as InsightFeishuBriefPlanCreate["generation_strategy"] }))}
                                         />
                                         <div className="mt-2 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-800">
-                                            周报固定使用策划、五专题研究、主笔、独立审阅和修订流程；策略用于控制研究与写作侧重，模型由系统自动路由。
+                                            {form.schedule_frequency === "weekly"
+                                                ? "周报固定使用策划、五专题研究、主笔、独立审阅和修订流程，模型由系统自动路由。"
+                                                : "模型由系统自动路由，生成策略仅控制月报的组织方式。"}
                                         </div>
                                     </div>
                                 ) : null}
+                                </>
+                                )}
                             </div>
                         </section>
+                        ) : null}
 
-                        {form.schedule_frequency === "weekly" ? (
-                            <section className="border-t border-slate-100 pt-5">
+                        {editorSection === "advanced" && form.schedule_frequency === "weekly" ? (
+                            <section>
                                 <div className="mb-3 text-sm font-black text-slate-900">多智能体流程与提示词</div>
                                 <div className="grid gap-4 md:grid-cols-2">
                                     <div className="space-y-2">
@@ -582,6 +616,7 @@ export function FeishuBriefPage() {
                             </section>
                         ) : null}
 
+                        {editorSection === "content" ? (
                         <section className="border-t border-slate-100 pt-5">
                             <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
                                 <div>
@@ -689,16 +724,21 @@ export function FeishuBriefPage() {
                                 </div>
                             </div>
                         </section>
+                        ) : null}
 
+                        {editorSection === "advanced" ? (
                         <section className="border-t border-slate-100 pt-5">
-                            <div className="mb-3 text-sm font-black text-slate-900">固定规则与补充要求</div>
+                            <div className="mb-2 text-sm font-black text-slate-900">系统护栏</div>
+                            <div className="mb-3 rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs leading-5 text-emerald-800">
+                                固定栏目、七条导读、权限过滤、事实核验和引用合法性由系统强制执行，不占用业务 Prompt，也不能被自定义配置关闭。
+                            </div>
                             <Button
                                 type="button"
                                 variant="outline"
                                 className="h-10 w-full justify-between bg-white"
                                 onClick={() => setPromptExpanded((value) => !value)}
                             >
-                                <span>查看领导固定模板与写作规则</span>
+                                <span>查看系统固定规则</span>
                                 <ChevronDown className={promptExpanded ? "size-4 rotate-180 transition-transform" : "size-4 transition-transform"} />
                             </Button>
                             {promptExpanded ? (
@@ -706,12 +746,10 @@ export function FeishuBriefPage() {
                                     {options?.prompt_template || "提示词加载中"}
                                 </pre>
                             ) : null}
-                            <div className="mt-3 space-y-2">
-                                <Label>本计划补充要求（可选）</Label>
-                                <Textarea className="min-h-24 resize-none" value={form.prompt_override || ""} placeholder="只补充本计划特有的关注重点，不会覆盖领导固定格式。" onChange={(event) => setForm((old) => ({ ...old, prompt_override: event.target.value }))} />
-                            </div>
                         </section>
+                        ) : null}
 
+                        {editorSection === "plan" ? (
                         <section className="border-t border-slate-100 pt-5">
                             <div className="mb-3 flex items-center gap-2 text-sm font-black text-slate-900">
                                 <Send className="size-4 text-blue-600" />
@@ -754,15 +792,54 @@ export function FeishuBriefPage() {
                                 />
                             </div>
                         </section>
+                        ) : null}
+
+                        {editorSection === "debug" ? (
+                            <section className="space-y-4">
+                                <div>
+                                    <div className="text-sm font-black text-slate-900">调试当前配置</div>
+                                    <div className="mt-1 text-xs leading-5 text-slate-500">使用页面中尚未保存的配置运行完整流程，生成带“[调试]”前缀的云文档，不向任何人推送。</div>
+                                </div>
+                                <div className="rounded-xl border border-violet-100 bg-violet-50/70 p-4">
+                                    <div className="flex flex-wrap items-center justify-between gap-3">
+                                        <div>
+                                            <div className="text-sm font-bold text-violet-950">策划、研究、主笔、审阅和修订都会真实执行</div>
+                                            <div className="mt-1 text-xs leading-5 text-violet-700">调试稿所有权会转给当前登录用户，执行过程保留模型、耗时和阶段输出。</div>
+                                        </div>
+                                        <Button
+                                            type="button"
+                                            disabled={!editing?.can_edit || debugMutation.isPending || !options?.configured}
+                                            onClick={() => debugMutation.mutate()}
+                                        >
+                                            {debugMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Bug className="size-4" />}
+                                            生成调试稿
+                                        </Button>
+                                    </div>
+                                    {!editing ? <div className="mt-3 text-xs font-semibold text-amber-700">请先保存计划，再使用当前页面草稿生成调试稿。</div> : null}
+                                </div>
+                                <div>
+                                    <div className="mb-2 text-sm font-black text-slate-900">本计划最近执行</div>
+                                    <div className="space-y-2">
+                                        {runs.filter((item) => item.plan_id === editing?.id).slice(0, 5).map((item) => (
+                                            <div key={item.id} className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white p-3">
+                                                <div className="min-w-0">
+                                                    <div className="truncate text-sm font-bold text-slate-900">{item.report_title || `执行记录 #${item.id}`}</div>
+                                                    <div className="mt-1 text-xs text-slate-500">{item.run_mode === "debug" ? "调试" : "正式"} · {formatDateTime(item.finished_at || item.started_at)} · {item.material_count} 条素材</div>
+                                                </div>
+                                                <div className="flex shrink-0 items-center gap-2">
+                                                    <Badge variant="outline" className={statusClass(item.status)}>{statusLabel(item.status)}</Badge>
+                                                    {item.document_url ? <Button type="button" variant="ghost" size="sm" onClick={() => window.open(item.document_url || "", "_blank", "noopener,noreferrer")}>打开文档</Button> : null}
+                                                </div>
+                                            </div>
+                                        ))}
+                                        {editing && !runs.some((item) => item.plan_id === editing.id) ? <div className="rounded-lg border border-dashed border-slate-200 py-10 text-center text-sm text-slate-400">暂无执行记录</div> : null}
+                                    </div>
+                                </div>
+                            </section>
+                        ) : null}
                     </div>
                     <DialogFooter className="shrink-0 border-t border-slate-100 px-6 py-4">
                         <Button variant="outline" onClick={() => { setDialogOpen(false); resetPlanEditor(); }}>取消</Button>
-                        {editing && form.schedule_frequency === "weekly" ? (
-                            <Button variant="outline" disabled={!editing.can_edit || debugMutation.isPending || !options?.configured} onClick={() => debugMutation.mutate()}>
-                                {debugMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : <Bug className="size-4" />}
-                                使用当前草稿生成调试稿
-                            </Button>
-                        ) : null}
                         <Button disabled={!form.plan_name.trim() || saveMutation.isPending || Boolean(editing && !editing.can_edit)} onClick={() => saveMutation.mutate()}>
                             {saveMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : null}
                             保存计划
