@@ -210,6 +210,40 @@ class InsightFeishuBriefScheduleTest(unittest.TestCase):
         self.assertNotIn("写作要求", prompts.writing)
         self.assertIn("写作要求", prompts.editorial_rules)
 
+    def test_plan_manager_can_edit_but_cannot_manage_permissions(self) -> None:
+        plan = InsightFeishuBriefPlan(
+            id=7,
+            plan_uid="manager-permission",
+            plan_name="管理员权限测试",
+            owner_user_id=100,
+        )
+        db = AsyncMock()
+        db.exec.return_value = SimpleNamespace(first=lambda: 9)
+        with patch.object(self.service, "_require_plan", AsyncMock(return_value=plan)):
+            editable = asyncio.run(
+                self.service.ensure_can_edit_plan(db, 7, user_id=200, is_admin=False)
+            )
+            self.assertEqual(editable.id, 7)
+            with self.assertRaisesRegex(ValueError, "计划所有者"):
+                asyncio.run(
+                    self.service.ensure_can_manage_plan(db, 7, user_id=200, is_admin=False)
+                )
+
+    def test_user_without_plan_manager_rule_cannot_edit(self) -> None:
+        plan = InsightFeishuBriefPlan(
+            id=8,
+            plan_uid="manager-permission-denied",
+            plan_name="未授权用户测试",
+            owner_user_id=100,
+        )
+        db = AsyncMock()
+        db.exec.return_value = SimpleNamespace(first=lambda: None)
+        with patch.object(self.service, "_require_plan", AsyncMock(return_value=plan)):
+            with self.assertRaisesRegex(ValueError, "计划管理员"):
+                asyncio.run(
+                    self.service.ensure_can_edit_plan(db, 8, user_id=300, is_admin=False)
+                )
+
     def test_replace_document_preserves_document_and_rewrites_blocks(self) -> None:
         request = AsyncMock(
             side_effect=[

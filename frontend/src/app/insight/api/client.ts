@@ -145,6 +145,10 @@ export const insightApi = {
         apiClient.get<InsightFeishuBriefOptionsRead, InsightFeishuBriefOptionsRead>(`${insightApiPrefix}/feishu-briefs/options`),
     listFeishuBriefPlans: (params: { page: number; size: number; status?: string }) =>
         apiClient.get<InsightPage<InsightFeishuBriefPlanRead>, InsightPage<InsightFeishuBriefPlanRead>>(`${insightApiPrefix}/feishu-briefs/plans`, { params }),
+    listFeishuBriefPlanManagers: (planId: number) =>
+        apiClient.get<InsightFeishuBriefPlanManagerRead[], InsightFeishuBriefPlanManagerRead[]>(`${insightApiPrefix}/feishu-briefs/plans/${planId}/managers`),
+    replaceFeishuBriefPlanManagers: (planId: number, userIds: number[]) =>
+        apiClient.put<InsightFeishuBriefPlanManagerRead[], InsightFeishuBriefPlanManagerRead[]>(`${insightApiPrefix}/feishu-briefs/plans/${planId}/managers`, { user_ids: userIds }),
     createFeishuBriefPlan: (payload: InsightFeishuBriefPlanCreate) =>
         apiClient.post<InsightFeishuBriefPlanRead, InsightFeishuBriefPlanRead>(`${insightApiPrefix}/feishu-briefs/plans`, payload),
     updateFeishuBriefPlan: (planId: number, payload: Partial<InsightFeishuBriefPlanCreate>) =>
@@ -2425,6 +2429,7 @@ export interface InsightFeishuBriefPlanRead {
     plan_name: string;
     owner_user_id?: number | null;
     can_edit: boolean;
+    can_manage_managers: boolean;
     sys_company_id?: number | null;
     sys_company_name?: string | null;
     schedule_frequency: "daily" | "weekly" | "monthly";
@@ -2456,6 +2461,14 @@ export interface InsightFeishuBriefPlanRead {
     status: "active" | "paused";
     create_time: string;
     update_time: string;
+}
+
+export interface InsightFeishuBriefPlanManagerRead {
+    user_id: number;
+    full_name: string;
+    username: string;
+    employee_id?: string | null;
+    dept_id?: string | null;
 }
 
 export interface InsightFeishuBriefRunRead {

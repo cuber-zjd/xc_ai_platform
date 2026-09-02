@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bot, Bug, CalendarClock, Clock3, ExternalLink, FileText, Loader2, Pencil, Play, Plus, RefreshCw, Send, Trash2, UserRound, X } from "lucide-react";
+import { Bot, Bug, CalendarClock, Clock3, ExternalLink, FileText, Loader2, Pencil, Play, Plus, RefreshCw, Send, Trash2, UserRound, Users, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { toast } from "sonner";
 
@@ -16,6 +16,7 @@ import { Switch } from "@/components/ui/switch";
 
 import { insightApi, type InsightFeishuBriefGenerationRules, type InsightFeishuBriefOccurrenceOverride, type InsightFeishuBriefPlanCreate, type InsightFeishuBriefPlanRead, type InsightFeishuBriefRecipient } from "../api";
 import { DemoCard } from "../components/DemoPrimitives";
+import { FeishuBriefManagerDialog } from "../components/FeishuBriefManagerDialog";
 import { FeishuRecipientPickerDialog } from "../components/FeishuRecipientPickerDialog";
 import { InsightSelect } from "../components/InsightSelect";
 import { PageContainer } from "../layout/PageContainer";
@@ -126,6 +127,7 @@ export function FeishuBriefPage() {
     const [advancedDocumentSection, setAdvancedDocumentSection] = useState<"template" | "rules">("template");
     const [recipientPickerStage, setRecipientPickerStage] = useState<"morning" | "afternoon" | null>(null);
     const [selectedRunId, setSelectedRunId] = useState<number | null>(null);
+    const [managerPlan, setManagerPlan] = useState<InsightFeishuBriefPlanRead | null>(null);
     const [occurrencePlan, setOccurrencePlan] = useState<InsightFeishuBriefPlanRead | null>(null);
     const [occurrenceForm, setOccurrenceForm] = useState<InsightFeishuBriefOccurrenceOverride>(() => defaultOccurrenceForm());
     const optionsQuery = useQuery({ queryKey: ["insight-feishu-brief-options"], queryFn: insightApi.getFeishuBriefOptions });
@@ -340,8 +342,9 @@ export function FeishuBriefPage() {
                                                     {runMutation.isPending && runMutation.variables === item.id ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
                                                 </Button>
                                                 <Button variant="ghost" size="icon" className="size-8" title="本期临时调整" disabled={!item.can_edit || item.schedule_frequency !== "weekly"} onClick={() => { setOccurrencePlan(item); setOccurrenceForm(defaultOccurrenceForm(item)); }}><CalendarClock className="size-4" /></Button>
+                                                <Button variant="ghost" size="icon" className="size-8" title={item.can_manage_managers ? "配置计划管理员" : "仅计划所有者可配置管理员"} disabled={!item.can_manage_managers} onClick={() => setManagerPlan(item)}><Users className="size-4" /></Button>
                                                 <Button variant="ghost" size="icon" className="size-8" title={item.can_edit ? "编辑" : "只读查看"} onClick={() => openEdit(item)}><Pencil className="size-4" /></Button>
-                                                <Button variant="ghost" size="icon" className="size-8 text-rose-600" title="删除" disabled={!item.can_edit} onClick={() => deleteMutation.mutate(item.id)}><Trash2 className="size-4" /></Button>
+                                                <Button variant="ghost" size="icon" className="size-8 text-rose-600" title="删除" disabled={!item.can_manage_managers} onClick={() => deleteMutation.mutate(item.id)}><Trash2 className="size-4" /></Button>
                                             </div>
                                         </TableCell>
                                     </TableRow>
@@ -950,6 +953,18 @@ export function FeishuBriefPage() {
                     setRecipientPickerStage(null);
                 }}
             />
+            {managerPlan ? (
+                <FeishuBriefManagerDialog
+                    open
+                    planId={managerPlan.id}
+                    planName={managerPlan.plan_name}
+                    ownerUserId={managerPlan.owner_user_id}
+                    onOpenChange={(open) => {
+                        if (!open) setManagerPlan(null);
+                    }}
+                    onSaved={refresh}
+                />
+            ) : null}
         </PageContainer>
     );
 }

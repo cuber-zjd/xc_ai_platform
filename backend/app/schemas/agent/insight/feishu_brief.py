@@ -184,6 +184,7 @@ class InsightFeishuBriefPlanRead(BaseModel):
     plan_name: str
     owner_user_id: int | None
     can_edit: bool = False
+    can_manage_managers: bool = False
     sys_company_id: int | None
     sys_company_name: str | None
     schedule_frequency: str
@@ -215,6 +216,18 @@ class InsightFeishuBriefPlanRead(BaseModel):
     status: str
     create_time: datetime
     update_time: datetime
+
+
+class InsightFeishuBriefPlanManagerRead(BaseModel):
+    user_id: int
+    full_name: str
+    username: str
+    employee_id: str | None = None
+    dept_id: str | None = None
+
+
+class InsightFeishuBriefPlanManagerUpdate(BaseModel):
+    user_ids: list[int] = Field(default_factory=list, max_length=100)
 
 
 class InsightFeishuBriefRunRead(BaseModel):

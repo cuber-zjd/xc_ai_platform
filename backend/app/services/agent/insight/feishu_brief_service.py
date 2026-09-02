@@ -27,6 +27,7 @@ from app.models.agent.insight import (
     InsightFeishuBriefPlanVersion,
     InsightFeishuBriefRun,
     InsightIntelligence,
+    InsightVisibilityRule,
 )
 from app.models.system.sys_company import SysCompany
 from app.models.system.sys_user import SysUser
@@ -41,6 +42,7 @@ from app.schemas.agent.insight.feishu_brief import (
     InsightFeishuBriefOptionsRead,
     InsightFeishuBriefPlanCreate,
     InsightFeishuBriefPlanRead,
+    InsightFeishuBriefPlanManagerRead,
     InsightFeishuBriefPlanUpdate,
     InsightFeishuBriefPlanVersionRead,
     InsightFeishuBriefPromptConfig,
@@ -70,6 +72,8 @@ FIXED_FORMAT = [
     "原料",
     "二、重点情报导读（固定 7 条）",
 ]
+
+PLAN_MANAGER_TARGET_TYPE = "feishu_brief_plan"
 
 UNSUPPORTED_INFERENCE_PATTERNS = (
     r"(?:预计|将)(?:在)?(?:短期内)?(?:显著|直接)?(?:增加|拉动|带动)[^。\n]{0,35}(?:采购需求|原料需求)",
@@ -253,13 +257,33 @@ class InsightFeishuBriefService:
                 )
             ).all()
         )
+        managed_plan_ids: set[int] = set()
+        if current_user_id and not is_admin:
+            now = datetime.now()
+            managed_plan_ids = set(
+                (
+                    await db.exec(
+                        select(InsightVisibilityRule.target_id).where(
+                            InsightVisibilityRule.target_type == PLAN_MANAGER_TARGET_TYPE,
+                            InsightVisibilityRule.principal_type == "user",
+                            InsightVisibilityRule.principal_id == current_user_id,
+                            InsightVisibilityRule.permission.in_(("edit", "owner")),
+                            InsightVisibilityRule.status == "active",
+                            InsightVisibilityRule.is_deleted == 0,
+                            (InsightVisibilityRule.effective_from.is_(None) | (InsightVisibilityRule.effective_from <= now)),
+                            (InsightVisibilityRule.effective_to.is_(None) | (InsightVisibilityRule.effective_to >= now)),
+                        )
+                    )
+                ).all()
+            )
         companies = await self._company_names(db, [row.sys_company_id for row in rows if row.sys_company_id])
         return Page.create(
             items=[
                 self._plan_read(
                     row,
                     companies.get(row.sys_company_id),
-                    can_edit=is_admin or row.owner_user_id == current_user_id,
+                    can_edit=is_admin or row.owner_user_id == current_user_id or (row.id or 0) in managed_plan_ids,
+                    can_manage_managers=is_admin or row.owner_user_id == current_user_id,
                 )
                 for row in rows
             ],
@@ -551,7 +575,12 @@ class InsightFeishuBriefService:
         )
         await db.commit()
         await db.refresh(row)
-        return self._plan_read(row, company.name if company else None, can_edit=True)
+        return self._plan_read(
+            row,
+            company.name if company else None,
+            can_edit=True,
+            can_manage_managers=True,
+        )
 
     async def update_plan(
         self,
@@ -560,6 +589,7 @@ class InsightFeishuBriefService:
         payload: InsightFeishuBriefPlanUpdate,
         *,
         user_id: int,
+        is_admin: bool = False,
     ) -> InsightFeishuBriefPlanRead:
         row = await self._require_plan(db, plan_id)
         before = self._plan_config_snapshot(row)
@@ -629,7 +659,12 @@ class InsightFeishuBriefService:
         await db.commit()
         await db.refresh(row)
         company = await db.get(SysCompany, row.sys_company_id) if row.sys_company_id else None
-        return self._plan_read(row, company.name if company else None, can_edit=True)
+        return self._plan_read(
+            row,
+            company.name if company else None,
+            can_edit=True,
+            can_manage_managers=is_admin or row.owner_user_id == user_id,
+        )
 
     async def delete_plan(self, db: AsyncSession, plan_id: int, *, user_id: int) -> None:
         row = await self._require_plan(db, plan_id)
@@ -649,9 +684,148 @@ class InsightFeishuBriefService:
         is_admin: bool,
     ) -> InsightFeishuBriefPlan:
         row = await self._require_plan(db, plan_id)
-        if not is_admin and row.owner_user_id != user_id:
-            raise ValueError("只有管理员或计划所有者可以修改、调试或执行该计划")
+        if is_admin or row.owner_user_id == user_id:
+            return row
+        now = datetime.now()
+        manager_rule = (
+            await db.exec(
+                select(InsightVisibilityRule.id).where(
+                    InsightVisibilityRule.target_type == PLAN_MANAGER_TARGET_TYPE,
+                    InsightVisibilityRule.target_id == plan_id,
+                    InsightVisibilityRule.principal_type == "user",
+                    InsightVisibilityRule.principal_id == user_id,
+                    InsightVisibilityRule.permission.in_(("edit", "owner")),
+                    InsightVisibilityRule.status == "active",
+                    InsightVisibilityRule.is_deleted == 0,
+                    (InsightVisibilityRule.effective_from.is_(None) | (InsightVisibilityRule.effective_from <= now)),
+                    (InsightVisibilityRule.effective_to.is_(None) | (InsightVisibilityRule.effective_to >= now)),
+                )
+            )
+        ).first()
+        if manager_rule is None:
+            raise ValueError("只有系统管理员、计划所有者或计划管理员可以修改、调试或执行该计划")
         return row
+
+    async def ensure_can_manage_plan(
+        self,
+        db: AsyncSession,
+        plan_id: int,
+        *,
+        user_id: int,
+        is_admin: bool,
+    ) -> InsightFeishuBriefPlan:
+        row = await self._require_plan(db, plan_id)
+        if not is_admin and row.owner_user_id != user_id:
+            raise ValueError("只有系统管理员或计划所有者可以配置管理员或删除计划")
+        return row
+
+    async def list_plan_managers(
+        self,
+        db: AsyncSession,
+        plan_id: int,
+    ) -> list[InsightFeishuBriefPlanManagerRead]:
+        rows = list(
+            (
+                await db.exec(
+                    select(SysUser)
+                    .join(
+                        InsightVisibilityRule,
+                        (InsightVisibilityRule.principal_id == SysUser.id)
+                        & (InsightVisibilityRule.principal_type == "user"),
+                    )
+                    .where(
+                        InsightVisibilityRule.target_type == PLAN_MANAGER_TARGET_TYPE,
+                        InsightVisibilityRule.target_id == plan_id,
+                        InsightVisibilityRule.permission.in_(("edit", "owner")),
+                        InsightVisibilityRule.status == "active",
+                        InsightVisibilityRule.is_deleted == 0,
+                        SysUser.is_deleted == 0,
+                        SysUser.status == 1,
+                    )
+                    .order_by(SysUser.full_name.asc(), SysUser.id.asc())
+                )
+            ).all()
+        )
+        return [
+            InsightFeishuBriefPlanManagerRead(
+                user_id=user.id or 0,
+                full_name=user.full_name or user.username,
+                username=user.username,
+                employee_id=user.employee_id,
+                dept_id=user.dept_id,
+            )
+            for user in rows
+        ]
+
+    async def replace_plan_managers(
+        self,
+        db: AsyncSession,
+        plan_id: int,
+        user_ids: list[int],
+        *,
+        changed_by_user_id: int,
+    ) -> list[InsightFeishuBriefPlanManagerRead]:
+        plan = await self._require_plan(db, plan_id)
+        requested_ids = list(dict.fromkeys(user_ids))
+        requested_ids = [user_id for user_id in requested_ids if user_id != plan.owner_user_id]
+        users = list(
+            (
+                await db.exec(
+                    select(SysUser).where(
+                        SysUser.id.in_(requested_ids),
+                        SysUser.is_deleted == 0,
+                        SysUser.status == 1,
+                    )
+                )
+            ).all()
+        ) if requested_ids else []
+        valid_ids = {user.id for user in users if user.id is not None}
+        missing_ids = [user_id for user_id in requested_ids if user_id not in valid_ids]
+        if missing_ids:
+            raise ValueError(f"以下用户不存在或已停用：{','.join(str(item) for item in missing_ids)}")
+
+        existing_rules = list(
+            (
+                await db.exec(
+                    select(InsightVisibilityRule).where(
+                        InsightVisibilityRule.target_type == PLAN_MANAGER_TARGET_TYPE,
+                        InsightVisibilityRule.target_id == plan_id,
+                        InsightVisibilityRule.principal_type == "user",
+                        InsightVisibilityRule.permission == "edit",
+                        InsightVisibilityRule.is_deleted == 0,
+                    )
+                )
+            ).all()
+        )
+        existing_by_user_id = {rule.principal_id: rule for rule in existing_rules}
+        now = datetime.now()
+        for rule in existing_rules:
+            if rule.principal_id not in valid_ids:
+                rule.is_deleted = 1
+                rule.status = "revoked"
+                rule.update_by = str(changed_by_user_id)
+                rule.update_time = now
+                db.add(rule)
+        for user_id in valid_ids:
+            rule = existing_by_user_id.get(user_id)
+            if rule is None:
+                rule = InsightVisibilityRule(
+                    target_type=PLAN_MANAGER_TARGET_TYPE,
+                    target_id=plan_id,
+                    principal_type="user",
+                    principal_id=user_id,
+                    permission="edit",
+                    grant_type="manual",
+                    create_by=str(changed_by_user_id),
+                )
+            rule.status = "active"
+            rule.effective_from = None
+            rule.effective_to = None
+            rule.update_by = str(changed_by_user_id)
+            rule.update_time = now
+            db.add(rule)
+        await db.commit()
+        return await self.list_plan_managers(db, plan_id)
 
     async def ensure_can_edit_run(
         self,
@@ -3439,6 +3613,7 @@ class InsightFeishuBriefService:
         company_name: str | None,
         *,
         can_edit: bool = False,
+        can_manage_managers: bool = False,
     ) -> InsightFeishuBriefPlanRead:
         return InsightFeishuBriefPlanRead(
             id=row.id or 0,
@@ -3446,6 +3621,7 @@ class InsightFeishuBriefService:
             plan_name=row.plan_name,
             owner_user_id=row.owner_user_id,
             can_edit=can_edit,
+            can_manage_managers=can_manage_managers,
             sys_company_id=row.sys_company_id,
             sys_company_name=company_name,
             schedule_frequency=row.schedule_frequency,

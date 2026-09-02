@@ -168,6 +168,7 @@ export {
     type InsightFeishuBriefWorkflowConfig,
     type InsightFeishuBriefAgentStageRead,
     type InsightFeishuBriefPlanCreate,
+    type InsightFeishuBriefPlanManagerRead,
     type InsightFeishuBriefPlanRead,
     type InsightFeishuBriefRecipient,
     type InsightFeishuBriefRunRead,

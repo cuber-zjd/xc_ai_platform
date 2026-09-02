@@ -11,7 +11,7 @@ from sqlmodel import func, select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.api.deps import get_current_user, get_db
-from app.models.agent.insight import InsightChannelAdapterRun, InsightRole
+from app.models.agent.insight import InsightChannelAdapterRun, InsightRole, InsightVisibilityRule
 from app.models.system.sys_company import SysCompany
 from app.models.system.sys_dept import SysDept
 from app.models.system.sys_user import SysUser
@@ -72,6 +72,8 @@ from app.schemas.agent.insight.feishu_brief import (
     InsightFeishuBriefOccurrenceRead,
     InsightFeishuBriefOptionsRead,
     InsightFeishuBriefPlanCreate,
+    InsightFeishuBriefPlanManagerRead,
+    InsightFeishuBriefPlanManagerUpdate,
     InsightFeishuBriefPlanRead,
     InsightFeishuBriefPlanUpdate,
     InsightFeishuBriefPlanVersionRead,
@@ -1395,6 +1397,58 @@ async def list_feishu_brief_plans(
     return Result.success(data=result)
 
 
+@router.get(
+    "/feishu-briefs/plans/{plan_id}/managers",
+    response_model=Result[list[InsightFeishuBriefPlanManagerRead]],
+)
+async def list_feishu_brief_plan_managers(
+    *,
+    plan_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[list[InsightFeishuBriefPlanManagerRead]]:
+    try:
+        await insight_feishu_brief_service.ensure_can_manage_plan(
+            db,
+            plan_id,
+            user_id=current_user.id,
+            is_admin=_is_admin(current_user),
+        )
+        managers = await insight_feishu_brief_service.list_plan_managers(db, plan_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return Result.success(data=managers)
+
+
+@router.put(
+    "/feishu-briefs/plans/{plan_id}/managers",
+    response_model=Result[list[InsightFeishuBriefPlanManagerRead]],
+)
+async def replace_feishu_brief_plan_managers(
+    *,
+    plan_id: int,
+    payload: InsightFeishuBriefPlanManagerUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: SysUser = Depends(get_current_user),
+) -> Result[list[InsightFeishuBriefPlanManagerRead]]:
+    try:
+        await insight_feishu_brief_service.ensure_can_manage_plan(
+            db,
+            plan_id,
+            user_id=current_user.id,
+            is_admin=_is_admin(current_user),
+        )
+        managers = await insight_feishu_brief_service.replace_plan_managers(
+            db,
+            plan_id,
+            payload.user_ids,
+            changed_by_user_id=current_user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return Result.success(data=managers, msg="计划管理员已更新")
+
+
 @router.post("/feishu-briefs/plans", response_model=Result[InsightFeishuBriefPlanRead])
 async def create_feishu_brief_plan(
     *,
@@ -1421,7 +1475,13 @@ async def update_feishu_brief_plan(
         await insight_feishu_brief_service.ensure_can_edit_plan(
             db, plan_id, user_id=current_user.id, is_admin=_is_admin(current_user)
         )
-        result = await insight_feishu_brief_service.update_plan(db, plan_id, payload, user_id=current_user.id)
+        result = await insight_feishu_brief_service.update_plan(
+            db,
+            plan_id,
+            payload,
+            user_id=current_user.id,
+            is_admin=_is_admin(current_user),
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return Result.success(data=result, msg="飞书简报计划已更新")
@@ -1435,7 +1495,7 @@ async def delete_feishu_brief_plan(
     current_user: SysUser = Depends(get_current_user),
 ) -> Result[None]:
     try:
-        await insight_feishu_brief_service.ensure_can_edit_plan(
+        await insight_feishu_brief_service.ensure_can_manage_plan(
             db, plan_id, user_id=current_user.id, is_admin=_is_admin(current_user)
         )
         await insight_feishu_brief_service.delete_plan(db, plan_id, user_id=current_user.id)
@@ -1892,6 +1952,8 @@ async def list_access_rules(
     db: AsyncSession = Depends(get_db),
     current_user: SysUser = Depends(get_current_user),
 ) -> Result[list[InsightAccessRuleRead]]:
+    if target_type == "feishu_brief_plan":
+        raise HTTPException(status_code=400, detail="飞书简报计划请使用专用管理员接口")
     _ = current_user
     result = await insight_permission_service.list_rules(db, target_type=target_type, target_id=target_id)
     return Result.success(data=result)
@@ -1905,6 +1967,8 @@ async def grant_access_rules_bulk(
     db: AsyncSession = Depends(get_db),
     current_user: SysUser = Depends(get_current_user),
 ) -> Result[InsightAccessRuleBulkResponse]:
+    if target_type == "feishu_brief_plan":
+        raise HTTPException(status_code=400, detail="飞书简报计划请使用专用管理员接口")
     result = await insight_permission_service.grant_rules_bulk(
         db,
         target_type=target_type,
@@ -1923,6 +1987,8 @@ async def grant_access_rule(
     db: AsyncSession = Depends(get_db),
     current_user: SysUser = Depends(get_current_user),
 ) -> Result[InsightAccessRuleRead]:
+    if target_type == "feishu_brief_plan":
+        raise HTTPException(status_code=400, detail="飞书简报计划请使用专用管理员接口")
     result = await insight_permission_service.grant_rule(
         db,
         target_type=target_type,
@@ -1941,6 +2007,14 @@ async def revoke_access_rule(
     current_user: SysUser = Depends(get_current_user),
 ) -> Result[None]:
     try:
+        rule = await db.get(InsightVisibilityRule, rule_id)
+        if rule and rule.target_type == "feishu_brief_plan":
+            await insight_feishu_brief_service.ensure_can_manage_plan(
+                db,
+                rule.target_id,
+                user_id=current_user.id,
+                is_admin=_is_admin(current_user),
+            )
         await insight_permission_service.revoke_rule(db, rule_id=rule_id, user_id=current_user.id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
