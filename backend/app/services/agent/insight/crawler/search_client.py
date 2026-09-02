@@ -11,11 +11,13 @@ from urllib.parse import urlsplit
 from urllib.parse import quote_plus, urlparse
 
 import httpx
+from redis.asyncio import Redis
 from sqlalchemy import or_
 from sqlmodel import select
 
 from app.core.config import settings
 from app.core.llm_usage import record_llm_usage_payload
+from app.core.logger import logger
 from app.db.session import async_session
 from app.models.agent.insight import InsightCrawlerChannel
 from app.models.system.sys_model import SysModel
@@ -58,10 +60,13 @@ class BaiduSearchClient:
         "wappass.baidu.com",
         "captcha",
     )
+    _circuit_key = "insight:baidu:antibot_blocked_until"
 
     def __init__(self) -> None:
         self._request_lock = asyncio.Lock()
         self._blocked_until: datetime | None = None
+        self._redis: Redis | None = None
+        self._redis_warning_logged = False
 
     async def search(self, query: str, count: int) -> list[InsightSearchHit]:
         url = f"https://www.baidu.com/s?wd={quote_plus(query)}&rn={count}"
@@ -89,7 +94,7 @@ class BaiduSearchClient:
             "Cache-Control": "no-cache",
         }
         async with self._request_lock:
-            self._raise_if_circuit_open()
+            await self._raise_if_circuit_open()
             await asyncio.sleep(random.uniform(0.8, 1.8))
             async with httpx.AsyncClient(
                 timeout=settings.INSIGHT_SEARCH_TIMEOUT_SECONDS,
@@ -97,7 +102,7 @@ class BaiduSearchClient:
             ) as client:
                 response = await client.get(url, headers=headers)
                 if self._is_antibot_response(response):
-                    self._open_antibot_circuit(response)
+                    await self._open_antibot_circuit(response)
                 response.raise_for_status()
 
         hits: list[InsightSearchHit] = []
@@ -127,7 +132,12 @@ class BaiduSearchClient:
                     break
         return hits
 
-    def _raise_if_circuit_open(self) -> None:
+    async def _raise_if_circuit_open(self) -> None:
+        persistent_blocked_until = await self._read_persistent_blocked_until()
+        if persistent_blocked_until and (
+            not self._blocked_until or persistent_blocked_until > self._blocked_until
+        ):
+            self._blocked_until = persistent_blocked_until
         if not self._blocked_until:
             return
         now = datetime.now()
@@ -148,14 +158,59 @@ class BaiduSearchClient:
         text = response.text[:20000].lower()
         return any(marker.lower() in text for marker in self._antibot_markers)
 
-    def _open_antibot_circuit(self, response: httpx.Response) -> None:
+    async def _open_antibot_circuit(self, response: httpx.Response) -> None:
         cooldown_seconds = max(settings.INSIGHT_BAIDU_ANTIBOT_COOLDOWN_SECONDS, 300)
         self._blocked_until = datetime.now() + timedelta(seconds=cooldown_seconds)
+        await self._write_persistent_blocked_until(self._blocked_until, cooldown_seconds)
         raise BaiduAntiBotError(
             "百度返回安全验证/限流页面，已熔断后续百度请求；"
             f"HTTP {response.status_code}，最终地址 {response.url.host or '未知'}，"
             f"冷却 {cooldown_seconds} 秒"
         )
+
+    def _redis_client(self) -> Redis:
+        if self._redis is None:
+            self._redis = Redis(
+                host=settings.REDIS_HOST,
+                port=settings.REDIS_PORT,
+                decode_responses=True,
+                socket_connect_timeout=1,
+                socket_timeout=1,
+            )
+        return self._redis
+
+    async def _read_persistent_blocked_until(self) -> datetime | None:
+        try:
+            value = await self._redis_client().get(self._circuit_key)
+        except Exception as exc:
+            self._log_redis_warning(exc)
+            return None
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+
+    async def _write_persistent_blocked_until(
+        self,
+        blocked_until: datetime,
+        cooldown_seconds: int,
+    ) -> None:
+        try:
+            await self._redis_client().set(
+                self._circuit_key,
+                blocked_until.isoformat(),
+                ex=cooldown_seconds,
+            )
+        except Exception as exc:
+            self._log_redis_warning(exc)
+
+    def _log_redis_warning(self, exc: Exception) -> None:
+        if self._redis_warning_logged:
+            return
+        self._redis_warning_logged = True
+        logger.warning("百度反爬熔断状态无法读写 Redis，将使用进程内状态：{}", exc)
 
     async def _resolve_result_url(self, client: httpx.AsyncClient, url: str, headers: dict[str, str]) -> str | None:
         if not url:

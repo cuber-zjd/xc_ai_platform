@@ -39,6 +39,7 @@ from app.services.agent.insight.crawler.crawl_service import insight_crawl_servi
 from app.services.agent.insight.crawler.channel_adapter_service import AdapterRunContext, insight_channel_adapter_service
 from app.services.agent.insight.crawler.content_cleaner import insight_content_cleaner
 from app.services.agent.insight.crawler.search_client import (
+    BaiduSearchUnavailableError,
     InsightSearchHit,
     baidu_search_client,
     bocha_search_client,
@@ -421,12 +422,20 @@ class InsightSearchDiscoveryService:
         if "baidu" in channels:
             try:
                 hits.extend(await baidu_search_client.search(request.query, per_channel_count))
+            except BaiduSearchUnavailableError:
+                if channels <= {"baidu", "baidu_news"}:
+                    raise
+                errors.append("百度搜索暂不可用")
             except Exception as exc:
                 errors.append(f"百度搜索失败: {exc}")
 
         if "baidu_news" in channels:
             try:
                 hits.extend(await baidu_search_client.search_news(request.query, per_channel_count))
+            except BaiduSearchUnavailableError:
+                if channels <= {"baidu", "baidu_news"}:
+                    raise
+                errors.append("百度资讯搜索暂不可用")
             except Exception as exc:
                 errors.append(f"百度资讯搜索失败: {exc}")
 

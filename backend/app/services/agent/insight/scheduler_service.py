@@ -25,6 +25,7 @@ from app.services.agent.insight.report_subscription_service import insight_repor
 class InsightSchedulerService:
     def __init__(self) -> None:
         self._task: asyncio.Task | None = None
+        self._baidu_task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
         self._enabled = settings.INSIGHT_SCHEDULER_ENABLED
         self._last_tick_at: datetime | None = None
@@ -32,6 +33,8 @@ class InsightSchedulerService:
         self._next_tick_at: datetime | None = None
         self._last_error: str | None = None
         self._last_result: dict[str, Any] | None = None
+        self._next_baidu_tick_at: datetime | None = None
+        self._last_baidu_result: dict[str, Any] | None = None
 
     @property
     def running(self) -> bool:
@@ -50,6 +53,10 @@ class InsightSchedulerService:
             "batch_limit": settings.INSIGHT_SCHEDULER_BATCH_LIMIT,
             "daily_discovery_enabled": settings.INSIGHT_SCHEDULER_DAILY_DISCOVERY_ENABLED,
             "daily_discovery_freshness": settings.INSIGHT_SCHEDULER_DAILY_DISCOVERY_FRESHNESS,
+            "baidu_spread_enabled": settings.INSIGHT_SCHEDULER_BAIDU_SPREAD_ENABLED,
+            "baidu_slot_interval_seconds": settings.INSIGHT_SCHEDULER_BAIDU_SLOT_INTERVAL_SECONDS,
+            "next_baidu_tick_at": self._next_baidu_tick_at,
+            "last_baidu_result": self._last_baidu_result,
             "startup_delay_seconds": settings.INSIGHT_SCHEDULER_STARTUP_DELAY_SECONDS,
             "advisory_lock_id": settings.INSIGHT_SCHEDULER_ADVISORY_LOCK_ID,
             "scheduler_user_id": settings.INSIGHT_SCHEDULER_USER_ID,
@@ -96,6 +103,11 @@ class InsightSchedulerService:
             warnings.append("INSIGHT_SCHEDULER_BAIDU_CONCURRENCY 必须大于 0。")
         elif settings.INSIGHT_SCHEDULER_BAIDU_CONCURRENCY > 5:
             recommendations.append("百度资讯并发高于 5，可能增加触发反爬的风险。")
+        if settings.INSIGHT_SCHEDULER_BAIDU_SPREAD_ENABLED:
+            if settings.INSIGHT_SCHEDULER_BAIDU_SLOT_INTERVAL_SECONDS < 300:
+                warnings.append("百度全天分片间隔不得低于 300 秒，避免再次触发反爬。")
+            elif settings.INSIGHT_SCHEDULER_BAIDU_SLOT_INTERVAL_SECONDS > 3600:
+                recommendations.append("百度全天分片间隔超过 1 小时，单个时间槽可能堆积较多监测对象。")
         if settings.INSIGHT_SCHEDULER_GROUPED_BATCH_SIZE < 2:
             warnings.append("INSIGHT_SCHEDULER_GROUPED_BATCH_SIZE 不能小于 2。")
         if settings.INSIGHT_SCHEDULER_GROUPED_AI_BATCH_SIZE <= 0:
@@ -137,26 +149,38 @@ class InsightSchedulerService:
 
     async def start(self) -> None:
         self._enabled = True
-        if self.running:
-            return
         self._stop_event = asyncio.Event()
-        self._next_tick_at = self._next_scheduled_tick()
-        self._task = asyncio.create_task(self._loop(), name="insight-scheduler")
-        logger.info("Insight 调度器已启动，下一次执行时间：{}", self._next_tick_at)
+        if not self.running:
+            self._next_tick_at = self._next_scheduled_tick()
+            self._task = asyncio.create_task(self._loop(), name="insight-scheduler")
+            logger.info("Insight 调度器已启动，下一次执行时间：{}", self._next_tick_at)
+        if settings.INSIGHT_SCHEDULER_BAIDU_SPREAD_ENABLED and (
+            self._baidu_task is None or self._baidu_task.done()
+        ):
+            self._next_baidu_tick_at = self._next_baidu_slot_tick()
+            self._baidu_task = asyncio.create_task(
+                self._baidu_loop(),
+                name="insight-baidu-spread-scheduler",
+            )
+            logger.info("百度全天分片调度器已启动，下一时间槽：{}", self._next_baidu_tick_at)
 
     async def stop(self) -> None:
         self._enabled = False
-        if not self._task:
+        tasks = [task for task in (self._task, self._baidu_task) if task is not None]
+        if not tasks:
             return
         self._stop_event.set()
         try:
-            await asyncio.wait_for(self._task, timeout=10)
+            await asyncio.wait_for(asyncio.gather(*tasks), timeout=10)
         except asyncio.TimeoutError:
-            self._task.cancel()
-            await asyncio.gather(self._task, return_exceptions=True)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
         finally:
             self._task = None
+            self._baidu_task = None
             self._next_tick_at = None
+            self._next_baidu_tick_at = None
         logger.info("Insight 调度器已停止")
 
     async def start_from_settings(self) -> None:
@@ -224,6 +248,7 @@ class InsightSchedulerService:
                             **await insight_monitor_execution_service.run_daily_discovery_all(
                                 db,
                                 user_id=settings.INSIGHT_SCHEDULER_USER_ID,
+                                include_baidu=not settings.INSIGHT_SCHEDULER_BAIDU_SPREAD_ENABLED,
                             ),
                         }
                     result = await insight_monitor_execution_service.run_due_monitor_configs(
@@ -333,7 +358,10 @@ class InsightSchedulerService:
     ) -> Page[InsightSchedulerRunLogRead]:
         page = max(page, 1)
         size = min(max(size, 1), 100)
-        filters = [InsightTask.is_deleted == 0, InsightTask.task_type == "scheduler_tick"]
+        filters = [
+            InsightTask.is_deleted == 0,
+            InsightTask.task_type.in_(("scheduler_tick", "baidu_spread_tick")),
+        ]
         if status:
             filters.append(InsightTask.status == status.upper())
         if date_from:
@@ -367,6 +395,13 @@ class InsightSchedulerService:
         report_result = output_payload.get("report_subscriptions") or {}
         feishu_result = output_payload.get("feishu_sync") or {}
         token_usage = output_payload.get("token_usage") or {}
+        if task.task_type == "baidu_spread_tick":
+            daily_discovery = {
+                "checked_count": output_payload.get("scheduled_count"),
+                "hit_count": output_payload.get("hit_count"),
+                "candidate_count": output_payload.get("candidate_count"),
+                "baidu_failed_count": output_payload.get("failed_count"),
+            }
         duration_seconds = 0.0
         if task.started_at and task.finished_at:
             duration_seconds = max((task.finished_at - task.started_at).total_seconds(), 0.0)
@@ -374,7 +409,11 @@ class InsightSchedulerService:
             id=task.id or 0,
             task_uid=task.task_uid,
             status=task.status.value if hasattr(task.status, "value") else str(task.status),
-            triggered_by=str(input_payload.get("triggered_by") or output_payload.get("triggered_by") or "scheduler"),
+            triggered_by=str(
+                input_payload.get("triggered_by")
+                or output_payload.get("triggered_by")
+                or ("baidu_spread" if task.task_type == "baidu_spread_tick" else "scheduler")
+            ),
             started_at=task.started_at,
             finished_at=task.finished_at,
             duration_seconds=round(duration_seconds, 2),
@@ -415,6 +454,143 @@ class InsightSchedulerService:
             except Exception as exc:
                 logger.exception("Insight 调度器执行失败：{}", exc)
             self._next_tick_at = self._next_scheduled_tick()
+
+    async def _baidu_loop(self) -> None:
+        while self._enabled and not self._stop_event.is_set():
+            if self._next_baidu_tick_at is None:
+                self._next_baidu_tick_at = self._next_baidu_slot_tick()
+            await self._sleep_or_stop(self._seconds_until(self._next_baidu_tick_at))
+            if not self._enabled or self._stop_event.is_set():
+                break
+            try:
+                self._last_baidu_result = await self.run_baidu_slot(
+                    scheduled_at=self._next_baidu_tick_at,
+                )
+            except Exception as exc:
+                self._last_baidu_result = {
+                    "status": "failed",
+                    "error": f"{exc.__class__.__name__}: {str(exc) or '无错误详情'}"[:1000],
+                }
+                logger.exception("百度全天分片执行失败：{}", exc)
+            self._next_baidu_tick_at = self._next_baidu_slot_tick()
+
+    async def run_baidu_slot(self, *, scheduled_at: datetime | None = None) -> dict[str, Any]:
+        run_at = scheduled_at or self._now()
+        slot_index, slot_count = self._baidu_slot_context(run_at)
+        task_uid = f"insight_baidu_slot_{run_at:%Y%m%d}_{slot_index:04d}"
+        lock_id = settings.INSIGHT_SCHEDULER_ADVISORY_LOCK_ID + 1
+        async with async_session() as db:
+            locked = await self._try_advisory_lock(db, lock_id=lock_id)
+            if not locked:
+                return {
+                    "status": "skipped",
+                    "reason": "另一个百度分片调度器实例正在执行",
+                    "slot_index": slot_index,
+                    "slot_count": slot_count,
+                }
+            try:
+                existing = (
+                    await db.exec(select(InsightTask).where(InsightTask.task_uid == task_uid))
+                ).first()
+                if existing:
+                    return {
+                        "status": "skipped",
+                        "reason": "当前百度时间槽已执行",
+                        "task_id": existing.id,
+                        "slot_index": slot_index,
+                        "slot_count": slot_count,
+                    }
+
+                task = InsightTask(
+                    task_uid=task_uid,
+                    task_type="baidu_spread_tick",
+                    status=InsightTaskStatus.RUNNING,
+                    progress=10,
+                    started_at=self._now(),
+                    input_payload={
+                        "scheduled_at": run_at.isoformat(),
+                        "slot_index": slot_index,
+                        "slot_count": slot_count,
+                        "slot_interval_seconds": settings.INSIGHT_SCHEDULER_BAIDU_SLOT_INTERVAL_SECONDS,
+                    },
+                )
+                db.add(task)
+                await db.commit()
+                await db.refresh(task)
+                with collect_llm_usage() as usage_collector:
+                    try:
+                        result = await insight_monitor_execution_service.run_baidu_discovery_slot(
+                            db,
+                            slot_index=slot_index,
+                            slot_count=slot_count,
+                            user_id=settings.INSIGHT_SCHEDULER_USER_ID,
+                        )
+                        task.status = (
+                            InsightTaskStatus.SUCCESS
+                            if int(result.get("failed_count") or 0) == 0
+                            and int(result.get("circuit_skipped_count") or 0) == 0
+                            else InsightTaskStatus.FAILED
+                        )
+                        task.progress = 100
+                        task.finished_at = self._now()
+                        task.output_payload = {
+                            **result,
+                            "token_usage": usage_collector.snapshot(),
+                        }
+                        task.error_message = next(
+                            (
+                                str(item.get("error") or "")[:1000]
+                                for item in result.get("executions") or []
+                                if item.get("status") in {"failed", "circuit_open"}
+                            ),
+                            None,
+                        )
+                        db.add(task)
+                        await db.commit()
+                        return {
+                            "status": str(task.status.value),
+                            "task_id": task.id,
+                            **result,
+                        }
+                    except Exception as exc:
+                        task.status = InsightTaskStatus.FAILED
+                        task.progress = 100
+                        task.finished_at = self._now()
+                        task.error_message = str(exc)[:1000]
+                        task.output_payload = {
+                            "slot_index": slot_index,
+                            "slot_count": slot_count,
+                            "error": str(exc)[:1000],
+                            "token_usage": usage_collector.snapshot(),
+                        }
+                        db.add(task)
+                        await db.commit()
+                        raise
+            finally:
+                await self._release_advisory_lock(db, lock_id=lock_id)
+
+    def _next_baidu_slot_tick(self) -> datetime:
+        interval = max(settings.INSIGHT_SCHEDULER_BAIDU_SLOT_INTERVAL_SECONDS, 300)
+        now = self._now()
+        midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        elapsed_seconds = int((now - midnight).total_seconds())
+        slot_index = elapsed_seconds // interval
+        slot_start = midnight + timedelta(seconds=slot_index * interval)
+        jitter_seconds = 15 + ((now.date().toordinal() + slot_index * 17) % 46)
+        target = slot_start + timedelta(seconds=jitter_seconds)
+        if target <= now:
+            slot_index += 1
+            slot_start = midnight + timedelta(seconds=slot_index * interval)
+            jitter_seconds = 15 + ((slot_start.date().toordinal() + slot_index * 17) % 46)
+            target = slot_start + timedelta(seconds=jitter_seconds)
+        return target
+
+    def _baidu_slot_context(self, run_at: datetime) -> tuple[int, int]:
+        interval = max(settings.INSIGHT_SCHEDULER_BAIDU_SLOT_INTERVAL_SECONDS, 300)
+        slot_count = max(86400 // interval, 1)
+        midnight = run_at.replace(hour=0, minute=0, second=0, microsecond=0)
+        elapsed_seconds = max(int((run_at - midnight).total_seconds()), 0)
+        return min(elapsed_seconds // interval, slot_count - 1), slot_count
 
     def _now(self) -> datetime:
         return datetime.now(self._timezone()).replace(tzinfo=None)
@@ -465,17 +641,17 @@ class InsightSchedulerService:
         except asyncio.TimeoutError:
             return
 
-    async def _try_advisory_lock(self, db) -> bool:
+    async def _try_advisory_lock(self, db, *, lock_id: int | None = None) -> bool:
         result = await db.execute(
             text("SELECT pg_try_advisory_lock(:lock_id)"),
-            {"lock_id": settings.INSIGHT_SCHEDULER_ADVISORY_LOCK_ID},
+            {"lock_id": lock_id or settings.INSIGHT_SCHEDULER_ADVISORY_LOCK_ID},
         )
         return bool(result.scalar_one())
 
-    async def _release_advisory_lock(self, db) -> None:
+    async def _release_advisory_lock(self, db, *, lock_id: int | None = None) -> None:
         await db.execute(
             text("SELECT pg_advisory_unlock(:lock_id)"),
-            {"lock_id": settings.INSIGHT_SCHEDULER_ADVISORY_LOCK_ID},
+            {"lock_id": lock_id or settings.INSIGHT_SCHEDULER_ADVISORY_LOCK_ID},
         )
 
 

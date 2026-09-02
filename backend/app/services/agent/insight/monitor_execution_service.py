@@ -132,6 +132,7 @@ class InsightMonitorExecutionService:
         freshness_override: str | None = None,
         published_start: datetime | None = None,
         published_end: datetime | None = None,
+        include_baidu: bool = True,
     ) -> dict[str, Any]:
         """每日覆盖全部监测对象，百度逐对象发现，博查和豆包按对象组补充。"""
 
@@ -157,6 +158,8 @@ class InsightMonitorExecutionService:
                 "baidu_attempted_count": 0,
                 "baidu_success_count": 0,
                 "baidu_failed_count": 0,
+                "baidu_circuit_skipped_count": 0,
+                "baidu_deferred_count": 0,
                 "grouped_batch_count": 0,
                 "grouped_failed_count": 0,
                 "hit_count": 0,
@@ -197,64 +200,22 @@ class InsightMonitorExecutionService:
                     "candidates": 0,
                 }
             async with semaphore:
-                try:
-                    response = await asyncio.wait_for(
-                        self._execute_search_channel_in_new_session(
-                            row_id=row.id,
-                            channel_id=baidu_channel.id,
-                            query=prepared_queries.get(row.id) or row.object_name or row.config_name,
-                            handler_code="baidu_news",
-                            max_results=min(10, self._frequency_max_results(row.fetch_frequency)),
-                            user_id=user_id,
-                            freshness_override=freshness,
-                            published_start=published_start,
-                            published_end=published_end,
-                        ),
-                        timeout=self.channel_timeout_seconds,
-                    )
-                    return {
-                        "monitor_config_id": row.id,
-                        "status": "success",
-                        "hits": len(response.hits),
-                        "candidates": len(response.candidates),
-                    }
-                except BaiduCircuitOpenError as exc:
-                    return {
-                        "monitor_config_id": row.id,
-                        "status": "circuit_open",
-                        "error": str(exc)[:500],
-                        "hits": 0,
-                        "candidates": 0,
-                    }
-                except BaiduAntiBotError as exc:
-                    return {
-                        "monitor_config_id": row.id,
-                        "status": "failed",
-                        "error_code": "baidu_antibot",
-                        "error": str(exc)[:500],
-                        "hits": 0,
-                        "candidates": 0,
-                    }
-                except Exception as exc:
-                    return {
-                        "monitor_config_id": row.id,
-                        "status": "failed",
-                        "error": f"{exc.__class__.__name__}: {str(exc) or '无错误详情'}"[:500],
-                        "hits": 0,
-                        "candidates": 0,
-                    }
-                finally:
-                    cooldown_min = max(0.0, settings.INSIGHT_SCHEDULER_BAIDU_COOLDOWN_MIN_SECONDS)
-                    cooldown_max = max(cooldown_min, settings.INSIGHT_SCHEDULER_BAIDU_COOLDOWN_MAX_SECONDS)
-                    if cooldown_max > 0:
-                        await asyncio.sleep(random.uniform(cooldown_min, cooldown_max))
+                return await self._run_baidu_monitor_row(
+                    row,
+                    baidu_channel,
+                    query=prepared_queries.get(row.id) or row.object_name or row.config_name,
+                    user_id=user_id,
+                    freshness=freshness,
+                    published_start=published_start,
+                    published_end=published_end,
+                )
 
-        if baidu_channel:
+        if baidu_channel and include_baidu:
             baidu_logs = [
                 await task
                 for task in asyncio.as_completed([asyncio.create_task(run_baidu(row)) for row in rows])
             ]
-        else:
+        elif include_baidu:
             baidu_logs = [await run_baidu(row) for row in rows]
 
         grouped_summary = await self._execute_grouped_daily_discovery(
@@ -308,6 +269,7 @@ class InsightMonitorExecutionService:
             "baidu_circuit_skipped_count": sum(
                 1 for item in baidu_logs if item.get("status") == "circuit_open"
             ),
+            "baidu_deferred_count": len(rows) if baidu_channel and not include_baidu else 0,
             "grouped_batch_count": len(grouped_logs),
             "grouped_failed_count": sum(1 for item in grouped_logs if item.get("status") != "success"),
             "grouped_partial_count": sum(1 for item in grouped_logs if item.get("status") == "partial"),
@@ -347,6 +309,196 @@ class InsightMonitorExecutionService:
             "grouped_batches": grouped_logs,
             "daily_adapter_runs": daily_adapter_logs,
         }
+
+    async def run_baidu_discovery_slot(
+        self,
+        db: AsyncSession,
+        *,
+        slot_index: int,
+        slot_count: int,
+        user_id: int | None = None,
+        freshness_override: str | None = None,
+    ) -> dict[str, Any]:
+        """执行全天均匀分片中的一个百度时间槽。"""
+
+        safe_slot_count = max(slot_count, 1)
+        safe_slot_index = slot_index % safe_slot_count
+        rows = list(
+            (
+                await db.exec(
+                    select(InsightMonitorConfig)
+                    .where(
+                        InsightMonitorConfig.is_deleted == 0,
+                        InsightMonitorConfig.status == "active",
+                        InsightMonitorConfig.schedule_enabled == True,  # noqa: E712
+                        InsightMonitorConfig.fetch_frequency != "manual",
+                    )
+                    .order_by(InsightMonitorConfig.id.asc())
+                )
+            ).all()
+        )
+        slot_rows = self._rows_for_baidu_slot(rows, safe_slot_index, safe_slot_count)
+        if not slot_rows:
+            return {
+                "slot_index": safe_slot_index,
+                "slot_count": safe_slot_count,
+                "scheduled_count": 0,
+                "attempted_count": 0,
+                "success_count": 0,
+                "failed_count": 0,
+                "circuit_skipped_count": 0,
+                "hit_count": 0,
+                "candidate_count": 0,
+                "executions": [],
+            }
+
+        channels = {channel.channel_code: channel for channel in await self._active_channels(db)}
+        baidu_channel = channels.get("baidu_news")
+        if not baidu_channel or not baidu_channel.id:
+            return {
+                "slot_index": safe_slot_index,
+                "slot_count": safe_slot_count,
+                "scheduled_count": len(slot_rows),
+                "attempted_count": 0,
+                "success_count": 0,
+                "failed_count": len(slot_rows),
+                "circuit_skipped_count": 0,
+                "hit_count": 0,
+                "candidate_count": 0,
+                "executions": [
+                    {
+                        "monitor_config_id": row.id,
+                        "status": "failed",
+                        "error": "百度资讯渠道未启用",
+                    }
+                    for row in slot_rows
+                ],
+            }
+
+        company_ids = {
+            int(row.object_id)
+            for row in slot_rows
+            if row.object_type == "company" and row.object_id is not None
+        }
+        companies = (
+            list((await db.exec(select(InsightCompany).where(InsightCompany.id.in_(company_ids)))).all())
+            if company_ids
+            else []
+        )
+        company_by_id = {company.id: company for company in companies if company.id}
+        freshness = freshness_override or settings.INSIGHT_SCHEDULER_DAILY_DISCOVERY_FRESHNESS
+        executions: list[dict[str, Any]] = []
+        for row in slot_rows:
+            if not row.id:
+                continue
+            result = await self._run_baidu_monitor_row(
+                row,
+                baidu_channel,
+                query=self._build_query_parts(row, company_by_id.get(row.object_id)),
+                user_id=user_id,
+                freshness=freshness,
+            )
+            executions.append(result)
+            if result.get("status") == "circuit_open" or result.get("error_code") == "baidu_antibot":
+                break
+
+        deferred_count = max(len(slot_rows) - len(executions), 0)
+
+        return {
+            "slot_index": safe_slot_index,
+            "slot_count": safe_slot_count,
+            "scheduled_count": len(slot_rows),
+            "attempted_count": sum(
+                1 for item in executions if item.get("status") in {"success", "failed"}
+            ),
+            "success_count": sum(1 for item in executions if item.get("status") == "success"),
+            "failed_count": sum(1 for item in executions if item.get("status") == "failed"),
+            "circuit_skipped_count": sum(
+                1 for item in executions if item.get("status") == "circuit_open"
+            )
+            + deferred_count,
+            "deferred_count": deferred_count,
+            "hit_count": sum(int(item.get("hits") or 0) for item in executions),
+            "candidate_count": sum(int(item.get("candidates") or 0) for item in executions),
+            "executions": executions,
+        }
+
+    async def _run_baidu_monitor_row(
+        self,
+        row: InsightMonitorConfig,
+        channel: InsightChannel,
+        *,
+        query: str,
+        user_id: int | None,
+        freshness: str,
+        published_start: datetime | None = None,
+        published_end: datetime | None = None,
+    ) -> dict[str, Any]:
+        try:
+            response = await asyncio.wait_for(
+                self._execute_search_channel_in_new_session(
+                    row_id=row.id or 0,
+                    channel_id=channel.id or 0,
+                    query=query,
+                    handler_code="baidu_news",
+                    max_results=min(10, self._frequency_max_results(row.fetch_frequency)),
+                    user_id=user_id,
+                    freshness_override=freshness,
+                    published_start=published_start,
+                    published_end=published_end,
+                ),
+                timeout=self.channel_timeout_seconds,
+            )
+            return {
+                "monitor_config_id": row.id,
+                "status": "success",
+                "hits": len(response.hits),
+                "candidates": len(response.candidates),
+            }
+        except BaiduCircuitOpenError as exc:
+            return {
+                "monitor_config_id": row.id,
+                "status": "circuit_open",
+                "error": str(exc)[:500],
+                "hits": 0,
+                "candidates": 0,
+            }
+        except BaiduAntiBotError as exc:
+            return {
+                "monitor_config_id": row.id,
+                "status": "failed",
+                "error_code": "baidu_antibot",
+                "error": str(exc)[:500],
+                "hits": 0,
+                "candidates": 0,
+            }
+        except Exception as exc:
+            return {
+                "monitor_config_id": row.id,
+                "status": "failed",
+                "error": f"{exc.__class__.__name__}: {str(exc) or '无错误详情'}"[:500],
+                "hits": 0,
+                "candidates": 0,
+            }
+        finally:
+            cooldown_min = max(0.0, settings.INSIGHT_SCHEDULER_BAIDU_COOLDOWN_MIN_SECONDS)
+            cooldown_max = max(cooldown_min, settings.INSIGHT_SCHEDULER_BAIDU_COOLDOWN_MAX_SECONDS)
+            if cooldown_max > 0:
+                await asyncio.sleep(random.uniform(cooldown_min, cooldown_max))
+
+    @staticmethod
+    def _rows_for_baidu_slot(
+        rows: list[InsightMonitorConfig],
+        slot_index: int,
+        slot_count: int,
+    ) -> list[InsightMonitorConfig]:
+        safe_slot_count = max(slot_count, 1)
+        safe_slot_index = slot_index % safe_slot_count
+        return [
+            row
+            for row in rows
+            if row.id is not None and row.id % safe_slot_count == safe_slot_index
+        ]
 
     async def run_due_monitor_configs(
         self,
