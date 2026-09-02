@@ -35,7 +35,7 @@ if (-not (Test-Path -LiteralPath $SshKey)) {
     throw "SSH 密钥不存在：$SshKey"
 }
 
-$gitExecutable = (Get-Command git -CommandType Application -ErrorAction Stop).Source
+$gitExecutable = (Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 Push-Location $repositoryRoot
