@@ -5,6 +5,7 @@ import asyncio
 import json
 import random
 import re
+from time import monotonic
 from re import DOTALL, IGNORECASE, compile as compile_regex, sub
 from typing import Any
 from urllib.parse import urlsplit
@@ -253,6 +254,10 @@ class BochaSearchClient:
     """
 
     async def search(self, query: str, count: int, freshness: str | None) -> list[InsightSearchHit]:
+        async with asyncio.timeout(max(settings.INSIGHT_BOCHA_SEARCH_TOTAL_TIMEOUT_SECONDS, 5)):
+            return await self._search(query, count, freshness)
+
+    async def _search(self, query: str, count: int, freshness: str | None) -> list[InsightSearchHit]:
         if not settings.INSIGHT_BOCHA_API_KEY:
             raise ValueError("未配置 INSIGHT_BOCHA_API_KEY，无法调用 Bocha/博查搜索")
 
@@ -355,12 +360,17 @@ class DoubaoWebSearchClient:
     preferred_model_code = "doubao-seed-2-1-turbo-260628"
 
     async def search(self, query: str, count: int, freshness: str | None) -> list[InsightSearchHit]:
+        async with asyncio.timeout(max(settings.INSIGHT_DOUBAO_SEARCH_TOTAL_TIMEOUT_SECONDS, 30)):
+            return await self._search(query, count, freshness)
+
+    async def _search(self, query: str, count: int, freshness: str | None) -> list[InsightSearchHit]:
         model = await self._load_model_config()
         endpoint = f"{model.base_url.rstrip('/')}/responses"
         prompt = self._build_prompt(query, count, freshness)
         payload = {
             "model": model.model_code,
             "stream": True,
+            "thinking": {"type": "enabled" if settings.INSIGHT_DOUBAO_SEARCH_THINKING_ENABLED else "disabled"},
             "tools": [{"type": "web_search"}],
             "input": [
                 {
@@ -378,6 +388,11 @@ class DoubaoWebSearchClient:
         annotations: list[dict[str, Any]] = []
         event_samples: list[dict[str, Any]] = []
         response_usage: dict[str, Any] | None = None
+        started = monotonic()
+        first_event_seconds = None
+        first_text_seconds = None
+        completed = False
+        request_id = None
 
         timeout = httpx.Timeout(
             connect=max(settings.INSIGHT_DOUBAO_SEARCH_CONNECT_TIMEOUT_SECONDS, 5),
@@ -388,6 +403,7 @@ class DoubaoWebSearchClient:
         async with httpx.AsyncClient(timeout=timeout) as client:
             async with client.stream("POST", endpoint, json=payload, headers=headers) as response:
                 response.raise_for_status()
+                request_id = response.headers.get("x-request-id") or response.headers.get("x-tt-logid")
                 async for raw_line in response.aiter_lines():
                     line = raw_line.strip()
                     if not line.startswith("data:"):
@@ -400,13 +416,19 @@ class DoubaoWebSearchClient:
                     except json.JSONDecodeError:
                         continue
                     event_type = str(event.get("type") or "")
+                    if first_event_seconds is None:
+                        first_event_seconds = round(monotonic() - started, 2)
                     if event_type in {"error", "response.failed", "response.incomplete"}:
-                        raise RuntimeError(f"豆包联网流未正常完成：{event_type}")
+                        details = event.get("response") or event
+                        reason = details.get("error") or details.get("incomplete_details") or {}
+                        raise RuntimeError(f"豆包联网流未正常完成：{event_type} request_id={request_id} reason={str(reason)[:400]}")
                     if len(event_samples) < 40:
                         event_samples.append(self._event_excerpt(event))
                     if event_type == "response.output_text.delta":
                         delta = event.get("delta")
                         if isinstance(delta, str):
+                            if first_text_seconds is None:
+                                first_text_seconds = round(monotonic() - started, 2)
                             text_parts.append(delta)
                     if event_type == "response.output_text.annotation.added":
                         annotation = event.get("annotation")
@@ -418,6 +440,7 @@ class DoubaoWebSearchClient:
                     usage = event.get("usage")
                     response_payload = event.get("response")
                     if isinstance(response_payload, dict) and event_type == "response.completed":
+                        completed = True
                         final_parts = []
                         for output in response_payload.get("output", []):
                             for content in output.get("content", []):
@@ -433,6 +456,8 @@ class DoubaoWebSearchClient:
 
         answer_text = "".join(text_parts).strip()
         record_llm_usage_payload(model.model_code, response_usage)
+        if not completed:
+            raise RuntimeError(f"豆包联网流提前结束，缺少完成事件：request_id={request_id} elapsed={monotonic() - started:.1f}s")
         if not answer_text and not annotations:
             raise RuntimeError("豆包联网流未返回回答或引用，不能按成功零命中处理")
         raw_context = {
@@ -442,8 +467,18 @@ class DoubaoWebSearchClient:
             "annotations": annotations[:50],
             "answer_text": answer_text,
             "event_samples": event_samples,
+            "diagnostics": {
+                "request_id": request_id,
+                "first_event_seconds": first_event_seconds,
+                "first_text_seconds": first_text_seconds,
+                "total_seconds": round(monotonic() - started, 2),
+                "thinking_enabled": settings.INSIGHT_DOUBAO_SEARCH_THINKING_ENABLED,
+            },
         }
-        return self._parse_answer(answer_text, raw_context, count)
+        hits = self._parse_answer(answer_text, raw_context, count)
+        logger.info("豆包联网完成: diagnostics={} queries={} annotations={} answer_chars={} hits={}",
+                    raw_context["diagnostics"], len(web_queries), len(annotations), len(answer_text), len(hits))
+        return hits
 
     async def _load_model_config(self) -> SysModel:
         async with async_session() as session:
@@ -491,7 +526,9 @@ class DoubaoWebSearchClient:
         elif value in {"onemonth", "one_month", "month", "30d"}:
             time_hint = "近 30 天"
         return (
+            f"当前日期为 {datetime.now():%Y-%m-%d}。多个监测对象按任意一个命中即可，不能要求同一篇文章同时包含所有对象。"
             f"请联网搜索“{query}”相关的公开资讯，优先选择{time_hint}内的信息。"
+            "返回具体报道或公告，不把官网产品目录、首页、长期专题页当成近期新闻；无法确认发布日期时留空，禁止使用今天或抓取日期代替。"
             "只保留与食品饮料、农产品加工、粮油、大豆/玉米加工、功能糖/糖浆、植物蛋白、"
             "客户/竞对动态、政策监管、技术专利、市场价格和风险舆情相关的内容。"
             f"最多返回 {max(1, count)} 条。"

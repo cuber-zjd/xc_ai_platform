@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Any
 
+import httpx
 from sqlalchemy import func, or_
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
@@ -1113,15 +1114,19 @@ class InsightMonitorExecutionService:
 
         async def search_one(batch, handler_code, freshness):
             current_semaphore = ai_semaphore if handler_code == "doubao_web_search" else semaphore
+            queued_at = monotonic()
             async with current_semaphore:
+                acquired_at = monotonic()
                 key = f"{datetime.now():%Y-%m-%d}|{handler_code}|{freshness}|{published_start}|{published_end}|{batch.query}"
-                return await checkpointed_search(
+                hits, meta = await checkpointed_search(
                     key,
                     lambda: self._search_grouped_channel_with_retry(
                         batch, handler_code, freshness_override=freshness,
                         retry_semaphore=ai_retry_semaphore,
                     ),
                 )
+                return hits, {**meta, "queue_seconds": round(acquired_at - queued_at, 2),
+                              "request_seconds": round(monotonic() - acquired_at, 2)}
 
         async def run_one(
             batch: GroupedDiscoveryBatch,
@@ -1224,6 +1229,8 @@ class InsightMonitorExecutionService:
                 "retry_errors": search_errors[:10],
                 "fulltext_summary": fulltext_summary,
                 "search_elapsed_seconds": round(search_finished - search_started, 2),
+                "queue_seconds": search_meta.get("queue_seconds"),
+                "request_seconds": search_meta.get("request_seconds"),
                 "ingest_elapsed_seconds": round(monotonic() - search_finished, 2),
             }
 
@@ -1320,9 +1327,9 @@ class InsightMonitorExecutionService:
         retry_semaphore: asyncio.Semaphore | None = None,
     ) -> tuple[list[InsightSearchHit], dict[str, Any]]:
         timeout = (
-            max(settings.INSIGHT_SCHEDULER_GROUPED_AI_TIMEOUT_SECONDS, 30)
+            max(settings.INSIGHT_DOUBAO_SEARCH_TOTAL_TIMEOUT_SECONDS, 30)
             if handler_code == "doubao_web_search"
-            else self.channel_timeout_seconds
+            else max(settings.INSIGHT_BOCHA_SEARCH_TOTAL_TIMEOUT_SECONDS, 5)
         )
         try:
             hits = await asyncio.wait_for(
@@ -1332,6 +1339,8 @@ class InsightMonitorExecutionService:
             return hits, {"retry_count": 0, "retry_errors": []}
         except Exception as exc:
             if handler_code != "doubao_web_search" or len(batch.rows) <= 1:
+                raise
+            if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in {400, 401, 403, 404, 429}:
                 raise
             logger.warning(
                 "Insight 豆包分组搜索首次失败，准备拆分重试: group_key={} rows={} error={}",

@@ -114,13 +114,12 @@ class InsightSchedulerService:
             warnings.append("INSIGHT_SCHEDULER_GROUPED_AI_BATCH_SIZE 必须大于 0。")
         elif settings.INSIGHT_SCHEDULER_GROUPED_AI_BATCH_SIZE > 8:
             recommendations.append("豆包联网搜索单组对象数大于 8，长查询可能增加漏检风险。")
-        if settings.INSIGHT_SCHEDULER_GROUPED_AI_TIMEOUT_SECONDS < 120:
+        if settings.INSIGHT_DOUBAO_SEARCH_TOTAL_TIMEOUT_SECONDS < 120:
             recommendations.append("豆包联网搜索总时限低于 120 秒，联网检索和流式整理可能无法完整返回。")
         if (
-            settings.INSIGHT_DOUBAO_SEARCH_READ_TIMEOUT_SECONDS
-            < settings.INSIGHT_SCHEDULER_GROUPED_AI_TIMEOUT_SECONDS
+            settings.INSIGHT_DOUBAO_SEARCH_READ_TIMEOUT_SECONDS <= 0
         ):
-            recommendations.append("豆包流式读取时限低于调度总时限，请求可能在调度器接管前提前中断。")
+            recommendations.append("豆包流式无数据等待时限必须大于零；它与整次请求总时限分别控制。")
         daily_adapter_codes = [
             item.strip()
             for item in settings.INSIGHT_SCHEDULER_DAILY_ADAPTER_CHANNEL_CODES.split(",")

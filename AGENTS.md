@@ -166,6 +166,8 @@ pnpm build
 
 ## 10. Insight 研发营销市场洞察平台约束
 
+- 博查、豆包单次查询分别使用 `INSIGHT_BOCHA_SEARCH_TOTAL_TIMEOUT_SECONDS` 和 `INSIGHT_DOUBAO_SEARCH_TOTAL_TIMEOUT_SECONDS`，同时覆盖调度与直接客户端入口。豆包发现默认关闭深度思考但保留 `web_search`，完成事件缺失必须记为失败；日志需区分排队、请求、正文处理耗时。
+
 - 分组搜索必须按博查、豆包独立预算限时，正文评审另计处理预算；成功搜索写入 `discovery_checkpoint` 任务，复跑相同日期/查询时复用结果。百度时间槽需从当日任务记录补齐遗漏对象，成功对象不重复、普通失败最多两次。相关性评分不得直接转换为情报重要性。
 
 - Insight 前端入口固定为 `/insight/*`，源码位于 `frontend/src/app/insight/`，保持独立 `InsightLayout` 和 `InsightThemeScope`。
