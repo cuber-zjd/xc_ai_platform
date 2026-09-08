@@ -302,6 +302,7 @@ class InsightSchedulerService:
                         + int(daily_discovery.get("grouped_failed_count") or 0)
                         + int(daily_discovery.get("grouped_partial_count") or 0)
                         + int(daily_discovery.get("daily_adapter_failed_count") or 0)
+                        + int(fulltext_retry.get("failed") or 0)
                     )
                     task.status = InsightTaskStatus.SUCCESS if total_failed_count == 0 else InsightTaskStatus.FAILED
                     task.progress = 100
@@ -322,6 +323,7 @@ class InsightSchedulerService:
                         else (
                             f"{result.failed_count} 个监测配置执行失败，"
                             f"{int(daily_discovery.get('grouped_failed_count') or 0)} 个发现分组失败，"
+                            f"{int(fulltext_retry.get('failed') or 0)} 条正文补偿失败，"
                             f"{report_result.failed_count} 个定时报告执行失败，"
                             f"{'，飞书同步失败：' + feishu_error if feishu_error else ''}"
                         )

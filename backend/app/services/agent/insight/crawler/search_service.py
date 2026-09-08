@@ -1016,7 +1016,7 @@ class InsightSearchDiscoveryService:
             .join(InsightTask, InsightTask.id == InsightCrawlResult.task_id)
             .where(InsightCrawlResult.is_deleted == 0,
                    InsightCrawlResult.create_time >= now - timedelta(days=7),
-                   InsightCrawlResult.markdown_content.is_(None))
+                   func.length(func.coalesce(InsightCrawlResult.markdown_content, "")) < 200)
             .order_by(InsightCrawlResult.create_time.desc()).limit(500))).all())
         counts = {"attempted": 0, "success": 0, "failed": 0, "candidates": 0}
         for result, task in rows:
@@ -1039,6 +1039,8 @@ class InsightSearchDiscoveryService:
             counts["attempted"] += 1
             try:
                 request = InsightSearchDiscoveryRequest.model_validate(task.input_payload or {})
+                if not request.published_end:
+                    request.published_end = task.create_time
                 # 滚动窗口恢复为原任务时点，不随补偿日期前移。
                 if not request.published_start:
                     cutoff = self._freshness_cutoff(request.freshness)

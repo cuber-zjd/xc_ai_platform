@@ -400,6 +400,8 @@ class DoubaoWebSearchClient:
                     except json.JSONDecodeError:
                         continue
                     event_type = str(event.get("type") or "")
+                    if event_type in {"error", "response.failed", "response.incomplete"}:
+                        raise RuntimeError(f"豆包联网流未正常完成：{event_type}")
                     if len(event_samples) < 40:
                         event_samples.append(self._event_excerpt(event))
                     if event_type == "response.output_text.delta":
@@ -415,6 +417,15 @@ class DoubaoWebSearchClient:
                         web_queries.append(query_text)
                     usage = event.get("usage")
                     response_payload = event.get("response")
+                    if isinstance(response_payload, dict) and event_type == "response.completed":
+                        final_parts = []
+                        for output in response_payload.get("output", []):
+                            for content in output.get("content", []):
+                                if content.get("type") == "output_text":
+                                    final_parts.append(content.get("text") or "")
+                                    annotations.extend(content.get("annotations") or [])
+                        if not text_parts:
+                            text_parts.extend(final_parts)
                     if not isinstance(usage, dict) and isinstance(response_payload, dict):
                         usage = response_payload.get("usage")
                     if isinstance(usage, dict):
@@ -422,6 +433,8 @@ class DoubaoWebSearchClient:
 
         answer_text = "".join(text_parts).strip()
         record_llm_usage_payload(model.model_code, response_usage)
+        if not answer_text and not annotations:
+            raise RuntimeError("豆包联网流未返回回答或引用，不能按成功零命中处理")
         raw_context = {
             "source_channel": "doubao_web_search",
             "model": model.model_code,
@@ -512,6 +525,13 @@ class DoubaoWebSearchClient:
         records = self._json_records(answer_text)
         if not records:
             records = self._markdown_records(answer_text)
+        # 引用只提供待核验 URL，不把整个模型回答当作各篇文章的正文或日期。
+        for annotation in raw_context.get("annotations", []):
+            if not isinstance(annotation, dict):
+                continue
+            citation = annotation.get("url_citation", annotation)
+            if isinstance(citation, dict) and citation.get("url"):
+                records.append({"title": citation.get("title"), "url": citation["url"]})
         hits: list[InsightSearchHit] = []
         seen: set[str] = set()
         for record in records:
