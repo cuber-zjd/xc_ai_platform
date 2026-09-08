@@ -9,9 +9,9 @@ def insight_company_business_context(company_name: str) -> str:
         return (
             "健源以玉米精深加工和淀粉糖为核心，重点关注果葡糖浆、麦芽糖浆、功能糖、"
             "糖醇、葡萄糖及其他玉米加工制成的糖类产品，以及这些产品在饮料、茶咖、乳品、"
-            "烘焙和食品加工中的具体应用。客户、竞对、政策、技术和市场材料必须能够落到上述"
-            "实际产品、配方应用、供需价格、产能或采购变化；只有泛食品、泛消费、门店扩张或"
-            "品牌经营信息，但未涉及健源实际产品及其应用的，不予采用。原料端若只有宽泛玉米"
+            "烘焙和食品加工中的具体应用。客户、竞对、政策、技术和市场材料应能支持销售、"
+            "研发或经营判断；茶饮、食品客户的新品、渠道扩张和经营变化可作为需求信号，"
+            "不要求原文必须提及糖浆，也不得编造采购关系。原料端若只有宽泛玉米"
             "行情、信息量过少或口径过于庞杂，无法说明与玉米制糖生产的关系，也不予采用。"
         )
     if "御馨" in company_name:
@@ -81,7 +81,7 @@ def insight_company_material_rejection_reason(
                 "销量", "采购", "配方", "供应链", "消费", "减糖", "监管", "客户",
             )
         )
-        if not has_own_business:
+        if not has_own_business and not downstream_or_market_value:
             return "健源材料未涉及果糖、淀粉糖或玉米加工糖类等实际产品及其应用"
         if headline_is_other_business and not downstream_or_market_value:
             return "跨产业公司材料：大豆或植物蛋白为主，且无健源核心业务直接关系"

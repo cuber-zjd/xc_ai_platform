@@ -1,5 +1,6 @@
 import asyncio
 import random
+from time import monotonic
 from collections import defaultdict
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
@@ -12,11 +13,12 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 from app.core.config import settings
 from app.core.logger import logger
 from app.db.session import async_session
-from app.models.agent.insight import InsightChannel, InsightCompany, InsightMonitorConfig
+from app.models.agent.insight import InsightChannel, InsightCompany, InsightMonitorConfig, InsightTask
 from app.schemas.agent.insight.crawl import InsightSearchDiscoveryRequest
 from app.schemas.agent.insight.data_source import InsightDataSourceScheduleExecution, InsightDataSourceScheduleRunResponse
 from app.services.agent.insight.crawler.channel_adapter_service import insight_channel_adapter_service
 from app.services.agent.insight.crawler import insight_search_discovery_service
+from app.services.agent.insight.crawler.discovery_checkpoint import checkpointed_search
 from app.services.agent.insight.crawler.search_client import (
     BaiduAntiBotError,
     BaiduCircuitOpenError,
@@ -344,7 +346,27 @@ class InsightMonitorExecutionService:
                 )
             ).all()
         )
-        slot_rows = self._rows_for_baidu_slot(rows, safe_slot_index, safe_slot_count)
+        day_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        previous_tasks = list((await db.exec(select(InsightTask).where(
+            InsightTask.task_type == "baidu_spread_tick",
+            InsightTask.started_at >= day_start,
+            InsightTask.started_at < day_start + timedelta(days=1),
+        ))).all())
+        completed: set[int] = set()
+        failures: dict[int, int] = defaultdict(int)
+        for task in previous_tasks:
+            for item in (task.output_payload or {}).get("executions", []):
+                row_id = item.get("monitor_config_id")
+                if item.get("status") == "success":
+                    completed.add(row_id)
+                elif item.get("status") == "failed":
+                    failures[row_id] += 1
+        # 过去错过的槽保留待办；成功对象不重复，普通失败当日最多两次。
+        due_rows = [row for row in rows if row.id is not None
+                    and row.id % safe_slot_count <= safe_slot_index
+                    and row.id not in completed and failures[row.id] < 2]
+        due_rows.sort(key=lambda row: (row.id % safe_slot_count, row.id))
+        slot_rows = due_rows[:max(1, settings.INSIGHT_SCHEDULER_BAIDU_SLOT_MAX_OBJECTS)]
         if not slot_rows:
             return {
                 "slot_index": safe_slot_index,
@@ -425,6 +447,7 @@ class InsightMonitorExecutionService:
             )
             + deferred_count,
             "deferred_count": deferred_count,
+            "backlog_count": max(len(due_rows) - len(slot_rows), 0),
             "hit_count": sum(int(item.get("hits") or 0) for item in executions),
             "candidate_count": sum(int(item.get("candidates") or 0) for item in executions),
             "executions": executions,
@@ -922,6 +945,9 @@ class InsightMonitorExecutionService:
                 "status": "success",
                 "hits": hit_count,
                 "candidates": candidate_count,
+                "yield_status": "candidates" if candidate_count else ("hits_only" if hit_count else "no_hits"),
+                "fulltext_summary": (response.task.output_payload or {}).get("fulltext_summary") or {},
+                "filter_summary": (response.task.output_payload or {}).get("filter_summary") or {},
                 "duration_ms": int(
                     (datetime.now() - started_at).total_seconds() * 1000
                 ),
@@ -1083,6 +1109,19 @@ class InsightMonitorExecutionService:
         ingest_semaphore = asyncio.Semaphore(
             max(settings.INSIGHT_SCHEDULER_GROUPED_INGEST_CONCURRENCY, 1)
         )
+        search_started = monotonic()
+
+        async def search_one(batch, handler_code, freshness):
+            current_semaphore = ai_semaphore if handler_code == "doubao_web_search" else semaphore
+            async with current_semaphore:
+                key = f"{datetime.now():%Y-%m-%d}|{handler_code}|{freshness}|{published_start}|{published_end}|{batch.query}"
+                return await checkpointed_search(
+                    key,
+                    lambda: self._search_grouped_channel_with_retry(
+                        batch, handler_code, freshness_override=freshness,
+                        retry_semaphore=ai_retry_semaphore,
+                    ),
+                )
 
         async def run_one(
             batch: GroupedDiscoveryBatch,
@@ -1090,25 +1129,29 @@ class InsightMonitorExecutionService:
             handler_code: str,
             freshness: str | None,
         ) -> dict[str, Any]:
-            current_semaphore = ai_semaphore if handler_code == "doubao_web_search" else semaphore
-            async with current_semaphore:
-                try:
-                    raw_hits, search_meta = await self._search_grouped_channel_with_retry(
-                        batch,
-                        handler_code,
-                        freshness_override=freshness,
-                        retry_semaphore=ai_retry_semaphore,
-                    )
-                except Exception as exc:
-                    return {
+            budget = (
+                settings.INSIGHT_SCHEDULER_GROUPED_AI_PHASE_TIMEOUT_SECONDS
+                if handler_code == "doubao_web_search"
+                else settings.INSIGHT_SCHEDULER_GROUPED_PHASE_TIMEOUT_SECONDS
+            )
+            try:
+                raw_hits, search_meta = await asyncio.wait_for(
+                    search_one(batch, handler_code, freshness),
+                    timeout=max(0.01, budget - (monotonic() - search_started)),
+                )
+            except Exception as exc:
+                return {
                         "group_key": batch.group_key,
                         "channel_code": channel.channel_code,
                         "query": batch.query,
                         "status": "failed",
                         "error": f"{exc.__class__.__name__}: {str(exc) or '渠道请求超时或未返回'}"[:500],
                         "retry_count": 1 if handler_code == "doubao_web_search" else 0,
-                    }
+                    "phase": "search",
+                    "elapsed_seconds": round(monotonic() - search_started, 2),
+                }
 
+            search_finished = monotonic()
             assigned = self._assign_grouped_hits(batch.rows, raw_hits)
             hit_count = 0
             candidate_count = 0
@@ -1180,6 +1223,8 @@ class InsightMonitorExecutionService:
                 "retry_count": int(search_meta.get("retry_count") or 0),
                 "retry_errors": search_errors[:10],
                 "fulltext_summary": fulltext_summary,
+                "search_elapsed_seconds": round(search_finished - search_started, 2),
+                "ingest_elapsed_seconds": round(monotonic() - search_finished, 2),
             }
 
         task_entries: list[
@@ -1207,10 +1252,11 @@ class InsightMonitorExecutionService:
             )
         if task_entries:
             tasks = [entry[0] for entry in task_entries]
+            # 搜索各自限时，正文和评审另留预算，避免把已返回的搜索误报为超时。
             phase_timeout = max(
                 settings.INSIGHT_SCHEDULER_GROUPED_PHASE_TIMEOUT_SECONDS,
-                60,
-            )
+                settings.INSIGHT_SCHEDULER_GROUPED_AI_PHASE_TIMEOUT_SECONDS,
+            ) + settings.INSIGHT_SCHEDULER_GROUPED_INGEST_TIMEOUT_SECONDS
             done, pending = await asyncio.wait(tasks, timeout=phase_timeout)
             for task in done:
                 try:
@@ -1241,7 +1287,8 @@ class InsightMonitorExecutionService:
                             "channel_code": channel.channel_code,
                             "query": batch.query,
                             "status": "failed",
-                            "error": f"分组搜索阶段超过总时限 {phase_timeout} 秒，已跳过并继续执行重点网站",
+                            "error": f"分组处理超过总时限 {phase_timeout} 秒，正文与评审可能尚未完成",
+                            "phase": "processing",
                             "phase_timeout": True,
                         }
                     )

@@ -7,6 +7,8 @@ from app.schemas.agent.insight.common import InsightBaseRead
 
 
 class InsightAiReviewDecision(BaseModel):
+    importance_level: str = Field(default="medium", pattern="^(low|medium|high)$")
+    importance_reason: str | None = None
     decision: str = Field(default="candidate", max_length=30)
     score: float = Field(default=0.0, ge=0, le=1)
     reason: str | None = None

@@ -153,6 +153,8 @@ uv sync
 
 ## 10. Insight 通用采集配置
 
+- 2026-09-08：`INSIGHT_SCHEDULER_GROUPED_AI_PHASE_TIMEOUT_SECONDS=1800` 为豆包独立搜索预算；博查沿用 `INSIGHT_SCHEDULER_GROUPED_PHASE_TIMEOUT_SECONDS`。`INSIGHT_SCHEDULER_GROUPED_INGEST_TIMEOUT_SECONDS=1800` 为追加正文/评审处理预算。百度 `INSIGHT_SCHEDULER_BAIDU_SLOT_MAX_OBJECTS=2` 限制每槽补偿量，仍遵守熔断和冷却。已返回搜索持久化到 `insight_task` 的 `discovery_checkpoint`，相同日期及查询复跑不重新支付搜索调用。
+
 - Insight 第一阶段通用网页抓取通过本地 Firecrawl 服务完成，接口由 `INSIGHT_FIRECRAWL_BASE_URL` 指定，例如 `http://127.0.0.1:3002`。
 - 如 Firecrawl 启用 API Key，使用 `INSIGHT_FIRECRAWL_API_KEY` 配置；未启用时留空。
 - 抓取超时由 `INSIGHT_FIRECRAWL_TIMEOUT_SECONDS` 控制，默认 30 秒。

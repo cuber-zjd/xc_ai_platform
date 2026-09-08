@@ -1009,6 +1009,53 @@ class InsightSearchDiscoveryService:
             statuses[status if status in statuses else "not_attempted"] += 1
         return {"total": len(results), **statuses}
 
+    async def retry_recent_fulltext(self, db: AsyncSession, *, user_id: int | None, limit: int = 20) -> dict[str, int]:
+        """从原采集记录续抓正文，保留原任务日期边界和权限归属。"""
+        now = datetime.now()
+        rows = list((await db.exec(select(InsightCrawlResult, InsightTask)
+            .join(InsightTask, InsightTask.id == InsightCrawlResult.task_id)
+            .where(InsightCrawlResult.is_deleted == 0,
+                   InsightCrawlResult.create_time >= now - timedelta(days=7),
+                   InsightCrawlResult.markdown_content.is_(None))
+            .order_by(InsightCrawlResult.create_time.desc()).limit(500))).all())
+        counts = {"attempted": 0, "success": 0, "failed": 0, "candidates": 0}
+        for result, task in rows:
+            metadata = dict(result.crawl_metadata or {})
+            fetch = metadata.get("fulltext_fetch") or {}
+            retry = metadata.get("fulltext_retry") or {}
+            if fetch.get("status") not in {"failed", "skipped"} or self._unsupported_fulltext_reason(result.source_url):
+                continue
+            if int(retry.get("attempts") or 0) >= 2:
+                continue
+            previous = retry.get("attempted_at") or fetch.get("attempted_at")
+            if previous and datetime.fromisoformat(previous) > now - timedelta(hours=6):
+                continue
+            if counts["attempted"] >= limit:
+                break
+            metadata["fulltext_retry"] = {"attempts": int(retry.get("attempts") or 0) + 1, "attempted_at": now.isoformat()}
+            result.crawl_metadata = metadata
+            db.add(result)
+            await db.commit()
+            counts["attempted"] += 1
+            try:
+                request = InsightSearchDiscoveryRequest.model_validate(task.input_payload or {})
+                # 滚动窗口恢复为原任务时点，不随补偿日期前移。
+                if not request.published_start:
+                    cutoff = self._freshness_cutoff(request.freshness)
+                    if cutoff:
+                        request.published_start = cutoff - (now - task.create_time)
+                await insight_crawl_service.enrich_discovered_result(db, result)
+                request.enrich_fulltext_before_review = False
+                candidates = await self._create_candidates_from_hits(db, [result], request, user_id)
+                counts["success"] += 1
+                counts["candidates"] += len(candidates)
+            except Exception as exc:
+                counts["failed"] += 1
+                await db.rollback()
+                await db.refresh(result)
+                await insight_crawl_service.mark_fulltext_failure(db, result, exc)
+        return counts
+
     async def _create_candidates_from_hits(
         self,
         db: AsyncSession,

@@ -53,7 +53,7 @@ export function ScheduledTasksPage() {
     const recentTotals = useMemo(
         () => ({
             successful: logs.filter((item) => item.status === "success").length,
-            failed: logs.filter((item) => item.status === "failed").length,
+            failed: logs.filter((item) => item.status === "failed" || item.status === "partial").length,
             tokens: logs.reduce((sum, item) => sum + item.total_tokens, 0),
         }),
         [logs],
@@ -210,7 +210,7 @@ function DateFilter({ label, value, onChange }: { label: string; value: string; 
 }
 
 function RunStatus({ status }: { status: string }) {
-    const config = status === "success" ? ["成功", "border-emerald-200 bg-emerald-50 text-emerald-700"] : status === "failed" ? ["失败", "border-red-200 bg-red-50 text-red-700"] : ["执行中", "border-blue-200 bg-blue-50 text-blue-700"];
+    const config = status === "success" ? ["成功", "border-emerald-200 bg-emerald-50 text-emerald-700"] : status === "partial" ? ["部分成功", "border-amber-200 bg-amber-50 text-amber-700"] : status === "failed" ? ["失败", "border-red-200 bg-red-50 text-red-700"] : ["执行中", "border-blue-200 bg-blue-50 text-blue-700"];
     return <Badge variant="outline" className={`rounded-lg ${config[1]}`}>{config[0]}</Badge>;
 }
 

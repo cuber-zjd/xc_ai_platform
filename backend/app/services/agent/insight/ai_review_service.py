@@ -136,7 +136,7 @@ class InsightAiReviewService:
                 InsightCandidatePromoteRequest(
                     review_comment=f"AI 自动评审通过：{decision.reason or '符合业务规则'}",
                     visibility_scope="assigned",
-                    importance_level=self._importance_from_score(decision.score),
+                    importance_level=decision.importance_level,
                     business_domain=decision.business_value,
                 ),
                 user_id,
@@ -316,6 +316,9 @@ class InsightAiReviewService:
                             "source.fulltext_available=false 时表示系统没有读到原文，只能保守保留候选；"
                             "只有 source.trusted_structured_source=true 的政府、交易所或权威结构化公告允许例外进入正式情报。"
                             "business_value 要写清楚这条信息对香驰控股在客户经营洞察、销售跟进、研发应用、竞对策略、供应链、质量风险或战略研判上的具体用途。"
+                            "另外返回 importance_level(low/medium/high) 和 importance_reason。"
+                            "score 是相关性与证据评分，不代表重要性。普通新品、例行经营动态默认为 medium；"
+                            "只有明确重大产能投资、重大监管或供应风险、关键技术突破等且有事实证明影响范围时才标 high，说明依据；轻微变化用 low。"
                             "formal 表示监测对象相关、公开证据清楚，且有明确业务价值；"
                             "正式情报不限于直接采购需求，新设公司、战略规划、风险投诉、专利技术、产品研发、渠道动作、合作融资、经营变化等只要与监测口径相关也应进入 formal。"
                             "candidate 仅用于来源较弱、事实不完整、业务价值不明确或需要持续观察的线索；"
@@ -345,6 +348,8 @@ class InsightAiReviewService:
         if not isinstance(parsed, dict):
             return self._fallback_decision(candidate)
         return InsightAiReviewDecision(
+            importance_level=parsed.get("importance_level") if parsed.get("importance_level") in {"low", "medium", "high"} and parsed.get("importance_reason") else "medium",
+            importance_reason=str(parsed.get("importance_reason") or "")[:1000] or None,
             decision=str(parsed.get("decision") or "candidate"),
             score=self._float_value(parsed.get("score"), candidate.confidence),
             reason=str(parsed.get("reason") or "")[:1000] or None,

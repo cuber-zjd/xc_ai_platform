@@ -166,6 +166,8 @@ pnpm build
 
 ## 10. Insight 研发营销市场洞察平台约束
 
+- 分组搜索必须按博查、豆包独立预算限时，正文评审另计处理预算；成功搜索写入 `discovery_checkpoint` 任务，复跑相同日期/查询时复用结果。百度时间槽需从当日任务记录补齐遗漏对象，成功对象不重复、普通失败最多两次。相关性评分不得直接转换为情报重要性。
+
 - Insight 前端入口固定为 `/insight/*`，源码位于 `frontend/src/app/insight/`，保持独立 `InsightLayout` 和 `InsightThemeScope`。
 - Insight 后端接口统一挂载到 `/ai-api/v1/insight`，入口位于 `backend/app/ai-api/v1/endpoints/agent/insight/`。
 - Insight 后端服务位于 `backend/app/services/agent/insight/`，按 `crawler`、`intelligence`、`visibility`、`report` 等子域拆分。

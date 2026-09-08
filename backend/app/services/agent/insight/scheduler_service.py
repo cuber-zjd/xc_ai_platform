@@ -257,6 +257,18 @@ class InsightSchedulerService:
                         user_id=settings.INSIGHT_SCHEDULER_USER_ID,
                         priority_row_ids=list(daily_discovery.get("signal_monitor_config_ids") or []),
                     )
+                    from app.services.agent.insight.crawler import insight_search_discovery_service
+
+                    try:
+                        async with async_session() as retry_db:
+                            fulltext_retry = await asyncio.wait_for(
+                                insight_search_discovery_service.retry_recent_fulltext(
+                                    retry_db, user_id=settings.INSIGHT_SCHEDULER_USER_ID,
+                                ), timeout=300,
+                            )
+                    except Exception as exc:
+                        fulltext_retry = {"failed": 1, "error": f"{type(exc).__name__}: {exc}"}
+                    daily_discovery["fulltext_retry"] = fulltext_retry
                     report_result = await insight_report_subscription_service.run_due_subscriptions(
                         db,
                         limit=settings.INSIGHT_SCHEDULER_BATCH_LIMIT,
@@ -287,11 +299,15 @@ class InsightSchedulerService:
                         result.failed_count
                         + report_result.failed_count
                         + (1 if feishu_error else 0)
+                        + int(daily_discovery.get("grouped_failed_count") or 0)
+                        + int(daily_discovery.get("grouped_partial_count") or 0)
+                        + int(daily_discovery.get("daily_adapter_failed_count") or 0)
                     )
                     task.status = InsightTaskStatus.SUCCESS if total_failed_count == 0 else InsightTaskStatus.FAILED
                     task.progress = 100
                     task.finished_at = self._now()
                     task.output_payload = {
+                        "execution_status": "partial" if total_failed_count else "success",
                         "daily_discovery": daily_discovery,
                         "monitor_configs": result.model_dump(mode="json"),
                         "report_subscriptions": report_result.model_dump(mode="json"),
@@ -305,6 +321,7 @@ class InsightSchedulerService:
                         if total_failed_count == 0
                         else (
                             f"{result.failed_count} 个监测配置执行失败，"
+                            f"{int(daily_discovery.get('grouped_failed_count') or 0)} 个发现分组失败，"
                             f"{report_result.failed_count} 个定时报告执行失败，"
                             f"{'，飞书同步失败：' + feishu_error if feishu_error else ''}"
                         )
@@ -408,7 +425,7 @@ class InsightSchedulerService:
         return InsightSchedulerRunLogRead(
             id=task.id or 0,
             task_uid=task.task_uid,
-            status=task.status.value if hasattr(task.status, "value") else str(task.status),
+            status=output_payload.get("execution_status") or (task.status.value if hasattr(task.status, "value") else str(task.status)),
             triggered_by=str(
                 input_payload.get("triggered_by")
                 or output_payload.get("triggered_by")

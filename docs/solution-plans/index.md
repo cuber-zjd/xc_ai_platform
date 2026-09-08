@@ -52,3 +52,6 @@ AI Platform 的平台级、子系统级、业务流程级方案统一沉淀在�
 - [泛微流程AI智审审批页 ecode 脚本](./泛微流程AI助手/ecode/泛微流程AI智审-审批页ecode脚本.js)
 - [泛微流程AI智审 Java Action](./泛微流程AI助手/java/WeaverAiReviewAction.java)
 - [泛微流程AI助手流程知识与历史样例能力方案](./泛微流程AI助手/流程知识与历史样例能力方案.md)
+# 采集修复记录
+
+- [市场洞察采集覆盖与评审修复](市场洞察/采集覆盖与评审修复记录.md)
