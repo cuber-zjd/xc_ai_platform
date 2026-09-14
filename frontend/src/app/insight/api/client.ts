@@ -2454,6 +2454,7 @@ export interface InsightFeishuBriefPlanRead {
     afternoon_recipients: InsightFeishuBriefRecipient[];
     afternoon_push_time: string;
     next_run_time?: string | null;
+    pending_occurrence?: InsightFeishuBriefOccurrenceRead | null;
     last_run_time?: string | null;
     last_run_id?: number | null;
     last_status?: string | null;

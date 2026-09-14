@@ -220,7 +220,7 @@ export function FeishuBriefPage() {
     const occurrenceMutation = useMutation({
         mutationFn: () => {
             if (!occurrencePlan) throw new Error("未选择计划");
-            const periodKey = occurrenceForm.generation_scheduled_at.slice(0, 10);
+            const periodKey = occurrenceForm.period_key || occurrenceForm.generation_scheduled_at.slice(0, 10);
             return insightApi.upsertFeishuBriefOccurrence(occurrencePlan.id, periodKey, { ...occurrenceForm, period_key: periodKey });
         },
         onSuccess: () => {
@@ -332,7 +332,7 @@ export function FeishuBriefPage() {
                                                 {" "}· 上午 {item.recipients.length} 人 · 下午 {item.afternoon_recipients.length} 人
                                             </div>
                                         </TableCell>
-                                        <TableCell className="text-xs font-semibold text-slate-600">{formatDateTime(item.next_run_time)}</TableCell>
+                                        <TableCell className="text-xs font-semibold text-slate-600">{formatDateTime(item.pending_occurrence?.generation_scheduled_at || item.next_run_time)}</TableCell>
                                         <TableCell>
                                             <Badge variant="outline" className={statusClass(item.last_status)}>{statusLabel(item.last_status)}</Badge>
                                         </TableCell>
@@ -1059,6 +1059,16 @@ function RuleChipGroup({
 }
 
 function defaultOccurrenceForm(plan?: InsightFeishuBriefPlanRead): InsightFeishuBriefOccurrenceOverride {
+    if (plan?.pending_occurrence) {
+        const occurrence = plan.pending_occurrence;
+        return {
+            period_key: occurrence.period_key,
+            generation_scheduled_at: occurrence.generation_scheduled_at,
+            review_scheduled_at: occurrence.review_scheduled_at,
+            release_scheduled_at: occurrence.release_scheduled_at,
+            material_scope: { ...occurrence.material_scope },
+        };
+    }
     const now = new Date();
     const weekday = plan?.weekday ?? 0;
     const daysAhead = (weekday - ((now.getDay() + 6) % 7) + 7) % 7;
@@ -1085,6 +1095,7 @@ function defaultOccurrenceForm(plan?: InsightFeishuBriefPlanRead): InsightFeishu
         return new Date(value.getTime() - offset).toISOString().slice(0, 16);
     };
     return {
+        period_key: localValue(generation).slice(0, 10),
         generation_scheduled_at: localValue(generation),
         review_scheduled_at: localValue(review),
         release_scheduled_at: localValue(release),

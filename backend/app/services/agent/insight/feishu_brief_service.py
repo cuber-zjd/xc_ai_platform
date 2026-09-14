@@ -277,6 +277,25 @@ class InsightFeishuBriefService:
                 ).all()
             )
         companies = await self._company_names(db, [row.sys_company_id for row in rows if row.sys_company_id])
+        pending_occurrences: dict[int, InsightFeishuBriefOccurrenceRead] = {}
+        if rows:
+            occurrences = (
+                await db.exec(
+                    select(InsightFeishuBriefOccurrence)
+                    .where(
+                        InsightFeishuBriefOccurrence.plan_id.in_([row.id for row in rows]),
+                        InsightFeishuBriefOccurrence.is_deleted == 0,
+                        InsightFeishuBriefOccurrence.status == "pending",
+                        InsightFeishuBriefOccurrence.run_id.is_(None),
+                    )
+                    .order_by(
+                        InsightFeishuBriefOccurrence.generation_scheduled_at.asc(),
+                        InsightFeishuBriefOccurrence.id.asc(),
+                    )
+                )
+            ).all()
+            for occurrence in occurrences:
+                pending_occurrences.setdefault(occurrence.plan_id, self._occurrence_read(occurrence))
         return Page.create(
             items=[
                 self._plan_read(
@@ -284,6 +303,7 @@ class InsightFeishuBriefService:
                     companies.get(row.sys_company_id),
                     can_edit=is_admin or row.owner_user_id == current_user_id or (row.id or 0) in managed_plan_ids,
                     can_manage_managers=is_admin or row.owner_user_id == current_user_id,
+                    pending_occurrence=pending_occurrences.get(row.id),
                 )
                 for row in rows
             ],
@@ -3614,6 +3634,7 @@ class InsightFeishuBriefService:
         *,
         can_edit: bool = False,
         can_manage_managers: bool = False,
+        pending_occurrence: InsightFeishuBriefOccurrenceRead | None = None,
     ) -> InsightFeishuBriefPlanRead:
         return InsightFeishuBriefPlanRead(
             id=row.id or 0,
@@ -3649,6 +3670,7 @@ class InsightFeishuBriefService:
             ],
             afternoon_push_time=row.afternoon_push_time,
             next_run_time=row.next_run_time,
+            pending_occurrence=pending_occurrence,
             last_run_time=row.last_run_time,
             last_run_id=row.last_run_id,
             last_status=row.last_status,

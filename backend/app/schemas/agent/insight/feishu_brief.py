@@ -178,6 +178,19 @@ class InsightFeishuBriefPlanUpdate(BaseModel):
         return self
 
 
+class InsightFeishuBriefOccurrenceRead(BaseModel):
+    id: int
+    plan_id: int
+    period_key: str
+    generation_scheduled_at: datetime
+    review_scheduled_at: datetime
+    release_scheduled_at: datetime
+    material_scope: InsightFeishuBriefMaterialScope
+    status: str
+    run_id: int | None
+    error_message: str | None
+
+
 class InsightFeishuBriefPlanRead(BaseModel):
     id: int
     plan_uid: str
@@ -209,6 +222,7 @@ class InsightFeishuBriefPlanRead(BaseModel):
     afternoon_recipients: list[InsightFeishuBriefRecipient]
     afternoon_push_time: str
     next_run_time: datetime | None
+    pending_occurrence: InsightFeishuBriefOccurrenceRead | None = None
     last_run_time: datetime | None
     last_run_id: int | None
     last_status: str | None
@@ -293,19 +307,6 @@ class InsightFeishuBriefOccurrenceOverride(BaseModel):
         if self.review_scheduled_at > self.release_scheduled_at:
             raise ValueError("审阅推送时间不能晚于正式推送时间")
         return self
-
-
-class InsightFeishuBriefOccurrenceRead(BaseModel):
-    id: int
-    plan_id: int
-    period_key: str
-    generation_scheduled_at: datetime
-    review_scheduled_at: datetime
-    release_scheduled_at: datetime
-    material_scope: InsightFeishuBriefMaterialScope
-    status: str
-    run_id: int | None
-    error_message: str | None
 
 
 class InsightFeishuBriefDebugRequest(BaseModel):
