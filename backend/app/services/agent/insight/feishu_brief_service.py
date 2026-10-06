@@ -2779,7 +2779,7 @@ class InsightFeishuBriefService:
                     button_text = "打开并审阅"
                 else:
                     message = (
-                        "**本月市场洞察报告已发布**\n"
+                        "**本期市场洞察报告已发布**\n"
                         "点击下方按钮查看报告全文及相关信息来源。"
                     )
                     button_text = "查看月度报告" if "月度报告" in title else "查看完整报告"
