@@ -497,8 +497,8 @@ function ComparisonTableCard({ table }: { table: WeaverReviewComparisonTable }) 
                   <th className="min-w-[250px] px-3 py-2.5 font-medium">发票商品（名称+规格）</th>
                   <th className="min-w-[110px] px-3 py-2.5 font-medium">单位</th>
                   <th className="min-w-[120px] px-3 py-2.5 font-medium">数量</th>
-                  <th className="w-28 px-3 py-2.5 text-right font-medium">对账未税金额</th>
-                  <th className="w-28 px-3 py-2.5 text-right font-medium">发票未税金额</th>
+                  <th className="w-28 px-3 py-2.5 text-right font-medium">对账核对金额</th>
+                  <th className="w-32 px-3 py-2.5 text-right font-medium">发票核对金额</th>
                   <th className="min-w-[120px] px-3 py-2.5 font-medium">税率</th>
                   <th className="w-24 px-3 py-2.5 font-medium">名称置信度</th>
                   <th className="w-20 px-3 py-2.5 font-medium">结果</th>
@@ -529,8 +529,17 @@ function ComparisonTableCard({ table }: { table: WeaverReviewComparisonTable }) 
                     <td className="px-3 py-3 align-top"><PairComparisonCell left={row.reconciliationUnit} right={row.invoiceUnit} status={row.unitStatus} /></td>
                     <td className="px-3 py-3 align-top"><PairComparisonCell left={row.reconciliationQuantity} right={row.invoiceQuantity} status={row.quantityStatus} numeric /></td>
                     <td className={comparisonMoneyClass(row.amountStatus)}>{formatMoney(row.reconciliationAmount)}</td>
-                    <td className={comparisonMoneyClass(row.amountStatus)}>{formatMoney(row.invoiceAmount)}</td>
-                    <td className="px-3 py-3 align-top"><PairComparisonCell left={formatRates(row.reconciliationTaxRates)} right={formatRates(row.invoiceTaxRates)} status={row.taxRateStatus} /></td>
+                    <td className={comparisonMoneyClass(row.amountStatus)}>
+                      <div>{formatMoney(row.invoiceAmount)}</div>
+                      {row.invoiceAmountBasis ? <div className="mt-1 text-[10px] font-normal text-[#8a97aa]">按{row.invoiceAmountBasis}</div> : null}
+                    </td>
+                    <td className="px-3 py-3 align-top">
+                      {row.taxRateComparisonSkipped ? (
+                        <div className="text-[11px] leading-5 text-[#71809a]">普通发票<br />不核对税率</div>
+                      ) : (
+                        <PairComparisonCell left={formatRates(row.reconciliationTaxRates)} right={formatRates(row.invoiceTaxRates)} status={row.taxRateStatus} />
+                      )}
+                    </td>
                     <td className="px-3 py-3 align-top tabular-nums text-[#52627c]">{formatSimilarity(row.similarity)}</td>
                     <td className="px-3 py-3 align-top">
                       <span className={`inline-flex rounded-full px-2 py-1 text-[11px] font-medium ${comparisonResultClass(row.status)}`}>
@@ -543,7 +552,7 @@ function ComparisonTableCard({ table }: { table: WeaverReviewComparisonTable }) 
             </table>
           </div>
           <div className="border-t border-[#edf1f6] bg-[#fbfcff] px-4 py-2.5 text-[11px] leading-5 text-[#7b899f]">
-            名称完全归一化且其余数据一致时标记为“一致”；名称匹配度不足100%时标记为“待核对”。单位、数量、金额或税率不一致，以及完全无法匹配时标记为“异常”。悬停明细行可查看匹配依据。
+            普通发票按价税合计核对金额且不比较税率，专用发票按未税金额并比较税率。名称完全归一化且其余数据一致时标记为“一致”；名称匹配度不足100%时标记为“待核对”。单位、数量、金额或适用税率不一致，以及完全无法匹配时标记为“异常”。悬停明细行可查看匹配依据。
           </div>
         </div>
       ) : null}

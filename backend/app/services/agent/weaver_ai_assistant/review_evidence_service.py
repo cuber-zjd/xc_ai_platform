@@ -390,7 +390,7 @@ class WeaverReviewEvidenceService:
         if not conditions:
             return []
         cursor.execute(
-            "SELECT id, invoiceNumber, invoiceCode, seller, purchaser, taxIncludedPrice, "
+            "SELECT id, invoiceNumber, invoiceCode, invoiceType, category, seller, purchaser, taxIncludedPrice, "
             "priceWithoutTax, tax, checkStatus, authenticity "
             f"FROM fnainvoiceledger WHERE {' OR '.join(conditions)} ORDER BY id",
             tuple(params),
@@ -541,8 +541,10 @@ class WeaverReviewEvidenceService:
                 "reconciliationQuantity": item["reconciliationQuantity"],
                 "invoiceAmount": item["invoiceAmount"],
                 "reconciliationAmount": item["reconciliationAmount"],
+                "invoiceAmountBasis": item["invoiceAmountBasis"],
                 "invoiceTaxRates": item["invoiceTaxRates"],
                 "reconciliationTaxRates": item["reconciliationTaxRates"],
+                "taxRateComparisonSkipped": item["taxRateComparisonSkipped"],
                 "nameStatus": "warning" if self._name_needs_review(item) else "pass",
                 # 规格可能已并入对账物料描述，只展示，不单独判定。
                 "specificationStatus": "unknown",
@@ -569,10 +571,12 @@ class WeaverReviewEvidenceService:
                 "reconciliationUnit": None,
                 "invoiceQuantity": self._format_decimal(item["quantity"]) if item["hasQuantity"] else None,
                 "reconciliationQuantity": None,
-                "invoiceAmount": str(item["untaxedAmount"]),
+                "invoiceAmount": str(item["comparisonAmount"]),
                 "reconciliationAmount": None,
+                "invoiceAmountBasis": self._format_text_values(item["amountBases"]),
                 "invoiceTaxRates": sorted(str(value) for value in item["taxRates"]),
                 "reconciliationTaxRates": [],
+                "taxRateComparisonSkipped": item["taxRateComparisonSkipped"],
                 "nameStatus": "fail",
                 "specificationStatus": "unknown",
                 "unitStatus": "unknown",
@@ -642,7 +646,7 @@ class WeaverReviewEvidenceService:
         labels = {
             "unitMatched": "单位",
             "quantityMatched": "数量",
-            "amountMatched": "未税金额",
+            "amountMatched": "核对金额",
             "taxRateMatched": "税率",
         }
         problems = [f"{label}不一致" for key, label in labels.items() if item.get(key) is False]
@@ -666,7 +670,10 @@ class WeaverReviewEvidenceService:
         if item.get("unitMatchMethod") == "ai_semantic":
             reason = self._text(item.get("unitMatchReason"))
             unit_detail = f"；单位经 AI 复核确认可换算{f'（{reason}）' if reason else ''}"
-        return f"{name_detail}{unit_detail}；单位、数量、未税金额和税率一致"
+        amount_basis = self._text(item.get("invoiceAmountBasis")) or "未税金额"
+        if item.get("taxRateComparisonSkipped"):
+            return f"{name_detail}{unit_detail}；单位、数量和核对金额一致；普通发票按{amount_basis}核对，税率不参与判定"
+        return f"{name_detail}{unit_detail}；单位、数量、{amount_basis}和税率一致"
 
     def _name_needs_review(self, item: dict[str, Any]) -> bool:
         try:
@@ -1024,6 +1031,7 @@ class WeaverReviewEvidenceService:
     def _aggregate_invoice_items(self, invoices: list[dict[str, Any]]) -> list[dict[str, Any]]:
         grouped: dict[str, dict[str, Any]] = {}
         for invoice in invoices:
+            amount_basis = self._invoice_amount_basis(invoice)
             for item in invoice.get("items") or []:
                 name = self._text(item.get("invoiceserviceyype"))
                 explicit_specification = self._text(item.get("specification"))
@@ -1039,7 +1047,10 @@ class WeaverReviewEvidenceService:
                         "combinedName": combined_name,
                         "normalized": normalized,
                         "untaxedAmount": Decimal("0"),
+                        "comparisonAmount": Decimal("0"),
+                        "amountBases": set(),
                         "taxRates": set(),
+                        "taxRateComparisonSkipped": False,
                         "specifications": set(),
                         "units": set(),
                         "quantity": Decimal("0"),
@@ -1058,10 +1069,24 @@ class WeaverReviewEvidenceService:
                     group["quantity"] += quantity
                     group["hasQuantity"] = True
                 group["untaxedAmount"] += self._decimal(item.get("pricewithouttax"))
+                if amount_basis == "价税合计":
+                    group["comparisonAmount"] += self._decimal(item.get("pricewithouttax")) + self._decimal(
+                        item.get("tax")
+                    )
+                    group["taxRateComparisonSkipped"] = True
+                else:
+                    group["comparisonAmount"] += self._decimal(item.get("pricewithouttax"))
+                group["amountBases"].add(amount_basis)
                 tax_rate = self._optional_decimal(item.get("taxrate"))
                 if tax_rate is not None:
                     group["taxRates"].add(tax_rate)
         return list(grouped.values())
+
+    def _invoice_amount_basis(self, invoice: dict[str, Any]) -> str:
+        category = self._text(invoice.get("category"))
+        if "普通发票" in category:
+            return "价税合计"
+        return "未税金额"
 
     async def _match_items_hybrid(
         self,
@@ -1376,8 +1401,9 @@ class WeaverReviewEvidenceService:
             "reconciliationQuantity": (
                 self._format_decimal(reconciliation["quantity"]) if reconciliation["hasQuantity"] else None
             ),
-            "invoiceAmount": str(invoice["untaxedAmount"]),
+            "invoiceAmount": str(invoice["comparisonAmount"]),
             "reconciliationAmount": str(reconciliation["untaxedAmount"]),
+            "invoiceAmountBasis": self._format_text_values(invoice["amountBases"]),
             "invoiceTaxRates": sorted(str(value) for value in invoice["taxRates"]),
             "reconciliationTaxRates": sorted(str(value) for value in reconciliation["taxRates"]),
             "similarity": round(score, 4),
@@ -1400,9 +1426,14 @@ class WeaverReviewEvidenceService:
                 reconciliation["units"],
             ),
             "amountMatched": (
-                abs(invoice["untaxedAmount"] - reconciliation["untaxedAmount"]) <= amount_tolerance
+                abs(invoice["comparisonAmount"] - reconciliation["untaxedAmount"]) <= amount_tolerance
             ),
-            "taxRateMatched": self._compare_sets(invoice["taxRates"], reconciliation["taxRates"]),
+            "taxRateComparisonSkipped": invoice["taxRateComparisonSkipped"],
+            "taxRateMatched": (
+                True
+                if invoice["taxRateComparisonSkipped"]
+                else self._compare_sets(invoice["taxRates"], reconciliation["taxRates"])
+            ),
         }
 
     def _item_similarity(self, left: str, right: str) -> float:

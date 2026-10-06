@@ -60,6 +60,108 @@ def test_item_matching_aggregates_rows_before_comparison() -> None:
     assert unmatched_reconciliation == []
 
 
+def test_ordinary_invoice_uses_tax_included_amount_and_skips_tax_rate() -> None:
+    service = WeaverReviewEvidenceService()
+    invoice_items = service._aggregate_invoice_items(
+        [
+            {
+                "category": "电子发票（普通发票）",
+                "items": [
+                    {
+                        "invoiceserviceyype": "测试商品",
+                        "unit": "块",
+                        "unitnumber": "60",
+                        "pricewithouttax": "1663.37",
+                        "tax": "16.63",
+                        "taxrate": "1",
+                    }
+                ],
+            }
+        ]
+    )
+    reconciliation_items = service._aggregate_reconciliation_items(
+        [
+            {
+                "materialdesc": "测试商品",
+                "dw": "个",
+                "voucherquantity": "60",
+                "totalnontaxamount": "1680.00",
+                "taxrate": "0",
+            }
+        ],
+        {
+            "description": "materialdesc",
+            "code": None,
+            "specification": None,
+            "unit": "dw",
+            "quantity": "voucherquantity",
+            "untaxedAmount": "totalnontaxamount",
+            "taxedAmount": None,
+            "taxRate": "taxrate",
+        },
+    )
+
+    matches, _, _ = service._match_items(
+        invoice_items,
+        reconciliation_items,
+        similarity_threshold=0.78,
+        amount_tolerance=Decimal("0.10"),
+    )
+
+    assert len(matches) == 1
+    assert matches[0]["invoiceAmount"] == "1680.00"
+    assert matches[0]["invoiceAmountBasis"] == "价税合计"
+    assert matches[0]["amountMatched"] is True
+    assert matches[0]["taxRateComparisonSkipped"] is True
+    assert matches[0]["taxRateMatched"] is True
+
+
+def test_special_invoice_keeps_untaxed_amount_and_compares_tax_rate() -> None:
+    service = WeaverReviewEvidenceService()
+    invoice_items = service._aggregate_invoice_items(
+        [
+            {
+                "category": "电子发票（增值税专用发票）",
+                "items": [
+                    {
+                        "invoiceserviceyype": "测试商品",
+                        "pricewithouttax": "1663.37",
+                        "tax": "216.24",
+                        "taxrate": "13",
+                    }
+                ],
+            }
+        ]
+    )
+    reconciliation_items = service._aggregate_reconciliation_items(
+        [{"materialdesc": "测试商品", "totalnontaxamount": "1663.37", "taxrate": "13"}],
+        {
+            "description": "materialdesc",
+            "code": None,
+            "specification": None,
+            "unit": None,
+            "quantity": None,
+            "untaxedAmount": "totalnontaxamount",
+            "taxedAmount": None,
+            "taxRate": "taxrate",
+        },
+    )
+
+    matches, _, _ = service._match_items(
+        invoice_items,
+        reconciliation_items,
+        similarity_threshold=0.78,
+        amount_tolerance=Decimal("0.10"),
+    )
+
+    assert len(matches) == 1
+    assert matches[0]["invoiceAmount"] == "1663.37"
+    assert matches[0]["invoiceAmountBasis"] == "未税金额"
+    assert matches[0]["amountMatched"] is True
+    assert matches[0]["taxRateComparisonSkipped"] is False
+    assert matches[0]["taxRateMatched"] is True
+
+
 def test_item_matching_rejects_conflicting_specification() -> None:
     service = WeaverReviewEvidenceService()
 

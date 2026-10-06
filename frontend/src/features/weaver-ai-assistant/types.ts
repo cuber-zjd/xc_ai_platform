@@ -213,8 +213,10 @@ export interface WeaverReviewComparisonRow {
   reconciliationQuantity?: string | null;
   invoiceAmount?: string | null;
   reconciliationAmount?: string | null;
+  invoiceAmountBasis?: string | null;
   invoiceTaxRates?: string[];
   reconciliationTaxRates?: string[];
+  taxRateComparisonSkipped?: boolean;
   nameStatus?: "pass" | "warning" | "fail" | "unknown";
   specificationStatus?: "pass" | "fail" | "unknown";
   unitStatus?: "pass" | "fail" | "unknown";
