@@ -1103,13 +1103,13 @@ class WeaverReviewEvidenceService:
             amount_tolerance,
             match_method="exact_normalized",
         )
-        if not unmatched_invoice or not unmatched_reconciliation:
+        if not unmatched_invoice:
             return exact_matches, unmatched_invoice, unmatched_reconciliation
 
         try:
             semantic_pairs = await self._semantic_match_items(
                 unmatched_invoice,
-                unmatched_reconciliation,
+                reconciliation_items,
                 confidence_threshold=semantic_confidence_threshold,
             )
         except Exception as exc:
@@ -1132,6 +1132,7 @@ class WeaverReviewEvidenceService:
 
         matched_invoice_indexes: set[int] = set()
         matched_reconciliation_indexes: set[int] = set()
+        grouped_pairs: dict[int, list[dict[str, Any]]] = {}
         semantic_matches: list[dict[str, Any]] = []
         for pair in sorted(
             semantic_pairs,
@@ -1140,21 +1141,32 @@ class WeaverReviewEvidenceService:
         ):
             invoice_index = pair["invoiceIndex"]
             reconciliation_index = pair["reconciliationIndex"]
-            if (
-                invoice_index in matched_invoice_indexes
-                or reconciliation_index in matched_reconciliation_indexes
-            ):
+            if invoice_index in matched_invoice_indexes:
                 continue
             matched_invoice_indexes.add(invoice_index)
             matched_reconciliation_indexes.add(reconciliation_index)
+            grouped_pairs.setdefault(reconciliation_index, []).append(pair)
+        for reconciliation_index, pairs in grouped_pairs.items():
+            reconciliation = reconciliation_items[reconciliation_index]
+            exact_invoice = next(
+                (item for item in invoice_items if item["normalized"] == reconciliation["normalized"]),
+                None,
+            )
+            parts = [unmatched_invoice[pair["invoiceIndex"]] for pair in pairs]
+            if exact_invoice is not None:
+                parts.insert(0, exact_invoice)
+                sequence = self._format_sequences(reconciliation["sequences"])
+                exact_matches = [item for item in exact_matches if item["reconciliationSequence"] != sequence]
+            invoice = self._merge_invoice_groups(parts)
             semantic_matches.append(
                 self._build_item_match(
-                    unmatched_invoice[invoice_index],
-                    unmatched_reconciliation[reconciliation_index],
-                    score=float(pair["confidence"]),
+                    invoice,
+                    reconciliation,
+                    score=min(float(pair["confidence"]) for pair in pairs),
                     amount_tolerance=amount_tolerance,
                     match_method="ai_semantic",
-                    match_reason=self._text(pair.get("reason")),
+                    match_reason="；".join(self._text(pair.get("reason")) for pair in pairs)
+                    + (f"；合并{len(parts)}组发票明细后核对数量和金额" if len(parts) > 1 else ""),
                 )
             )
 
@@ -1163,10 +1175,22 @@ class WeaverReviewEvidenceService:
         ]
         remaining_reconciliation = [
             item
-            for index, item in enumerate(unmatched_reconciliation)
+            for index, item in enumerate(reconciliation_items)
             if index not in matched_reconciliation_indexes
+            and item in unmatched_reconciliation
         ]
         return exact_matches + semantic_matches, remaining_invoice, remaining_reconciliation
+
+    def _merge_invoice_groups(self, items: list[dict[str, Any]]) -> dict[str, Any]:
+        merged = dict(items[0])
+        merged["name"] = " / ".join(dict.fromkeys(item["name"] for item in items))
+        for key in ("untaxedAmount", "comparisonAmount", "quantity"):
+            merged[key] = sum((item[key] for item in items), Decimal("0"))
+        for key in ("amountBases", "taxRates", "specifications", "units"):
+            merged[key] = set().union(*(item[key] for item in items))
+        merged["hasQuantity"] = all(item["hasQuantity"] for item in items)
+        merged["taxRateComparisonSkipped"] = all(item["taxRateComparisonSkipped"] for item in items)
+        return merged
 
     async def _semantic_match_items(
         self,
@@ -1246,7 +1270,6 @@ class WeaverReviewEvidenceService:
 
         accepted: list[dict[str, Any]] = []
         used_invoice: set[int] = set()
-        used_reconciliation: set[int] = set()
         for pair in sorted(
             proposed_pairs,
             key=lambda item: float(item["confidence"]),
@@ -1254,10 +1277,9 @@ class WeaverReviewEvidenceService:
         ):
             invoice_index = pair["invoiceIndex"]
             reconciliation_index = pair["reconciliationIndex"]
-            if invoice_index in used_invoice or reconciliation_index in used_reconciliation:
+            if invoice_index in used_invoice:
                 continue
             used_invoice.add(invoice_index)
-            used_reconciliation.add(reconciliation_index)
             accepted.append(pair)
         return accepted
 
@@ -1294,7 +1316,9 @@ class WeaverReviewEvidenceService:
                     "发票名称中的税收分类前缀可能比采购名称宽泛，发票规格也可能是采购物料描述的一部分。"
                     "数量、未税金额和税率只能帮助候选消歧，不能把明显不同的商品强行匹配。"
                     "请在 reconciliationCatalog 完整目录中为 invoiceItems 寻找同一商品。"
-                    "每个发票商品最多匹配一个对账物料，每个对账物料最多使用一次；不确定时不要输出该项。"
+                    "每个发票商品最多匹配一个对账物料；同一对账物料允许对应多组发票商品，"
+                    "例如分多张发票开具或名称存在笔误但语义和完整规格相同。后端会汇总数量和金额核验。"
+                    "必须核对完整规格，不能因合计金额相同就合并不同商品；不确定时不要输出该项。"
                     "只返回JSON：{\"matches\":[{\"invoiceId\":\"I0\",\"reconciliationId\":\"R1\","
                     "\"confidence\":0.92,\"reason\":\"简短业务理由\"}]}。"
                 )
@@ -1595,7 +1619,7 @@ class WeaverReviewEvidenceService:
 
     def _normalize_item_name(self, value: Any) -> str:
         text = self._text(value).lower()
-        text = re.sub(r"\*[^*]+\*", "", text)
+        text = re.sub(r"^\*[^*]+\*", "", text)
         text = text.replace("千克", "kg").replace("公斤", "kg").replace("升", "l")
         return re.sub(r"[\s_（）()【】\[\]，,。.;；:：/\\\-]+", "", text)
 

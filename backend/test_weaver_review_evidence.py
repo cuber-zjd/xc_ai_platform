@@ -13,6 +13,68 @@ def test_item_name_normalization_ignores_invoice_category_prefix() -> None:
     assert invoice_name == reconciliation_name
 
 
+def test_normalization_preserves_all_dimensions_between_asterisks() -> None:
+    service = WeaverReviewEvidenceService()
+    assert service._normalize_item_name("*农业机械*锤片 245*63*6") == "锤片245*63*6"
+    assert service._normalize_item_name("锤片245*63*6") != service._normalize_item_name("锤片245*64*6")
+
+
+def test_multiple_invoices_with_name_variants_match_one_reconciliation() -> None:
+    service = WeaverReviewEvidenceService()
+    invoices = service._aggregate_invoice_items([
+        {"category": "增值税专用发票", "items": [{
+            "invoiceserviceyype": "*农业机械*高合钨金锤片", "specification": "245*63*6",
+            "unit": "个", "unitnumber2": "250", "pricewithouttax": "13274.34", "taxrate": "13",
+        }]},
+        {"category": "增值税专用发票", "items": [{
+            "invoiceserviceyype": "*农业机械*高合乌金锤片", "specification": "245*63*6",
+            "unit": "个", "unitnumber2": "100", "pricewithouttax": "5309.73", "taxrate": "13",
+        }]},
+    ])
+    reconciliation = service._aggregate_reconciliation_items([
+        {"materialdesc": "高合钨金锤片_245*63*6", "qty": "250", "amount": "13274.34", "rate": "13", "dw": "个"},
+        {"materialdesc": "高合钨金锤片_245*63*6", "qty": "100", "amount": "5309.73", "rate": "13", "dw": "个"},
+    ], {"description": "materialdesc", "code": None, "quantity": "qty", "untaxedAmount": "amount", "taxedAmount": None, "taxRate": "rate", "unit": "dw"})
+
+    async def fake_model(_: dict) -> dict:
+        return {"matches": [{"invoiceId": "I0", "reconciliationId": "R0", "confidence": 0.95, "reason": "名称笔误，完整规格相同"}]}
+
+    service._invoke_semantic_match_model = fake_model
+    matches, remaining_invoice, remaining_reconciliation = asyncio.run(service._match_items_hybrid(
+        invoices, reconciliation, 0.78, Decimal("0.10"), 0.72,
+    ))
+    assert len(matches) == 1
+    assert remaining_invoice == remaining_reconciliation == []
+    assert matches[0]["invoiceQuantity"] == "350"
+    assert matches[0]["invoiceAmount"] == "18584.07"
+    assert matches[0]["quantityMatched"] is True
+    assert matches[0]["amountMatched"] is True
+    assert matches[0]["similarity"] == 0.95
+
+    reconciliation[0]["name"] = "硬质合金锤片_245*63*6"
+    reconciliation[0]["normalized"] = service._normalize_item_name(reconciliation[0]["name"])
+
+    async def both_semantic(_: dict) -> dict:
+        return {"matches": [
+            {"invoiceId": "I0", "reconciliationId": "R0", "confidence": 0.98, "reason": "完整规格相同"},
+            {"invoiceId": "I1", "reconciliationId": "R0", "confidence": 0.95, "reason": "同一物料名称笔误"},
+        ]}
+
+    service._invoke_semantic_match_model = both_semantic
+    matches, remaining_invoice, remaining_reconciliation = asyncio.run(service._match_items_hybrid(
+        invoices, reconciliation, 0.78, Decimal("0.10"), 0.72,
+    ))
+    assert len(matches) == 1 and not remaining_invoice and not remaining_reconciliation
+    assert matches[0]["invoiceQuantity"] == "350"
+    assert matches[0]["amountMatched"] is True
+
+    reconciliation[0]["quantity"] = Decimal("400")
+    matches, _, _ = asyncio.run(service._match_items_hybrid(
+        invoices, reconciliation, 0.78, Decimal("0.10"), 0.72,
+    ))
+    assert matches[0]["quantityMatched"] is False
+
+
 def test_item_matching_aggregates_rows_before_comparison() -> None:
     service = WeaverReviewEvidenceService()
     reconciliation_items = service._aggregate_reconciliation_items(
