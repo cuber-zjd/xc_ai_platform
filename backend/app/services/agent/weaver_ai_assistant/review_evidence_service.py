@@ -331,6 +331,7 @@ class WeaverReviewEvidenceService:
             "untaxedAmount": self._optional_field(fields, item_table, ["未税金额", "不含税金额"]),
             "taxedAmount": self._optional_field(fields, item_table, ["含税金额"]),
             "taxRate": self._optional_field(fields, item_table, ["税率"]),
+            "unitPrice": self._optional_field(fields, item_table, ["未税单价", "不含税单价"]),
         }
         freight_table = next(
             (self._identifier(field["detailtable"]) for field in fields
@@ -344,6 +345,7 @@ class WeaverReviewEvidenceService:
             "untaxedAmount": self._optional_field(fields, freight_table, ["运费不含税金额"]),
             "taxedAmount": self._optional_field(fields, freight_table, ["运费含税金额"]),
             "taxRate": self._optional_field(fields, freight_table, ["税率"]),
+            "unitPrice": self._optional_field(fields, freight_table, ["运费不含税单价"]),
         } if freight_table else {}
         return {
             "customName": custom_search.get("customname") or "建模查询",
@@ -483,6 +485,7 @@ class WeaverReviewEvidenceService:
         comparison_keys = [
             "unitMatched",
             "quantityMatched",
+            "unitPriceMatched",
             "amountMatched",
             "taxRateMatched",
         ]
@@ -517,7 +520,7 @@ class WeaverReviewEvidenceService:
             )
         if mismatch_matches:
             detail_parts.append(
-                "单位、数量、金额或税率不一致："
+                "单位、数量、单价、金额或税率不一致："
                 + self._format_numbered_items(
                     mismatch_matches,
                     lambda item: (
@@ -571,6 +574,9 @@ class WeaverReviewEvidenceService:
                 "reconciliationUnit": item["reconciliationUnit"],
                 "invoiceQuantity": item["invoiceQuantity"],
                 "reconciliationQuantity": item["reconciliationQuantity"],
+                "invoiceUnitPrices": item["invoiceUnitPrices"],
+                "reconciliationUnitPrices": item["reconciliationUnitPrices"],
+                "unitPriceStatus": self._comparison_status(item["unitPriceMatched"]),
                 "invoiceAmount": item["invoiceAmount"],
                 "reconciliationAmount": item["reconciliationAmount"],
                 "invoiceAmountBasis": item["invoiceAmountBasis"],
@@ -603,6 +609,9 @@ class WeaverReviewEvidenceService:
                 "reconciliationUnit": None,
                 "invoiceQuantity": self._format_decimal(item["quantity"]) if item["hasQuantity"] else None,
                 "reconciliationQuantity": None,
+                "invoiceUnitPrices": sorted(str(value) for value in item.get("unitPrices", set())),
+                "reconciliationUnitPrices": [],
+                "unitPriceStatus": "unknown",
                 "invoiceAmount": str(item["comparisonAmount"]),
                 "reconciliationAmount": None,
                 "invoiceAmountBasis": self._format_text_values(item["amountBases"]),
@@ -633,6 +642,9 @@ class WeaverReviewEvidenceService:
                 "invoiceUnit": None,
                 "reconciliationUnit": self._format_text_values(item["units"]),
                 "invoiceQuantity": None,
+                "invoiceUnitPrices": [],
+                "reconciliationUnitPrices": sorted(str(value) for value in item.get("unitPrices", set())),
+                "unitPriceStatus": "unknown",
                 "reconciliationQuantity": (
                     self._format_decimal(item["quantity"]) if item["hasQuantity"] else None
                 ),
@@ -678,11 +690,15 @@ class WeaverReviewEvidenceService:
         labels = {
             "unitMatched": "单位",
             "quantityMatched": "数量",
+            "unitPriceMatched": "未税单价",
             "amountMatched": "核对金额",
             "taxRateMatched": "税率",
         }
         problems = [f"{label}不一致" for key, label in labels.items() if item.get(key) is False]
-        pending = [f"{label}缺少一侧数据" for key, label in labels.items() if item.get(key) is None]
+        pending = [
+            "未税单价缺失、存在多个价格或单位换算未确认" if key == "unitPriceMatched" else f"{label}缺少一侧数据"
+            for key, label in labels.items() if item.get(key) is None
+        ]
         name_detail = ""
         if item.get("matchMethod") == "ai_semantic":
             name_detail = "AI语义确认同一商品"
@@ -704,8 +720,8 @@ class WeaverReviewEvidenceService:
             unit_detail = f"；单位经 AI 复核确认可换算{f'（{reason}）' if reason else ''}"
         amount_basis = self._text(item.get("invoiceAmountBasis")) or "未税金额"
         if item.get("taxRateComparisonSkipped"):
-            return f"{name_detail}{unit_detail}；单位、数量和核对金额一致；普通发票按{amount_basis}核对，税率不参与判定"
-        return f"{name_detail}{unit_detail}；单位、数量、{amount_basis}和税率一致"
+            return f"{name_detail}{unit_detail}；单位、数量、未税单价和核对金额一致；普通发票按{amount_basis}核对，税率不参与判定"
+        return f"{name_detail}{unit_detail}；单位、数量、未税单价、{amount_basis}和税率一致"
 
     def _name_needs_review(self, item: dict[str, Any]) -> bool:
         try:
@@ -921,6 +937,10 @@ class WeaverReviewEvidenceService:
             item["unitMatched"] = True
             item["unitMatchMethod"] = "ai_semantic"
             item["unitMatchReason"] = item["unitReviewReason"]
+            if not item.get("unitPriceIncomplete"):
+                item["unitPriceMatched"] = self._compare_unit_prices(
+                    item.get("invoiceUnitPrices") or [], item.get("reconciliationUnitPrices") or [], factor,
+                )
 
     async def _invoke_unit_equivalence_model(self, request_payload: dict[str, Any]) -> dict[str, Any]:
         messages = [
@@ -1054,9 +1074,16 @@ class WeaverReviewEvidenceService:
                     "units": set(),
                     "quantity": Decimal("0"),
                     "hasQuantity": False,
+                    "unitPrices": set(),
+                    "hasMissingUnitPrice": False,
                 },
             )
             group["sequences"].append(sequence)
+            unit_price = self._optional_decimal(item.get(fields.get("unitPrice") or ""))
+            if unit_price is not None:
+                group["unitPrices"].add(unit_price)
+            else:
+                group["hasMissingUnitPrice"] = True
             if specification:
                 group["specifications"].add(specification)
             if unit:
@@ -1084,9 +1111,12 @@ class WeaverReviewEvidenceService:
             unit = self._normalize_unit(item.get(fields.get("unit") or ""))
             quantity = self._optional_decimal(item.get(fields.get("quantity") or ""))
             conversion = self.UNIT_CONVERSIONS.get(unit)
+            unit_price = self._optional_decimal(item.get(fields.get("unitPrice") or ""))
             if conversion and conversion[0] == "mass" and quantity is not None:
                 unit = "kg"
                 quantity *= conversion[1]
+                if unit_price is not None:
+                    unit_price /= conversion[1]
             rate = self._text(item.get(fields.get("taxRate") or ""))
             buckets.setdefault((unit, rate), []).append((sequence, {
                 "description": "运输服务",
@@ -1096,12 +1126,14 @@ class WeaverReviewEvidenceService:
                 "taxed": item.get(fields.get("taxedAmount") or ""),
                 "rate": item.get(fields.get("taxRate") or ""),
                 "cargo": self._text(item.get(fields["description"])),
+                "unitPrice": unit_price,
             }))
         groups: list[dict[str, Any]] = []
         for rows in buckets.values():
             group = self._aggregate_reconciliation_items([row for _, row in rows], {
                 "description": "description", "unit": "unit", "quantity": "quantity",
                 "untaxedAmount": "untaxed", "taxedAmount": "taxed", "taxRate": "rate",
+                "unitPrice": "unitPrice",
             })[0]
             group["name"] = "运输服务（货物：" + "、".join(dict.fromkeys(row["cargo"] for _, row in rows)) + "）"
             group["sequences"] = [f"运费{sequence}" for sequence, _ in rows]
@@ -1137,10 +1169,21 @@ class WeaverReviewEvidenceService:
                         "units": set(),
                         "quantity": Decimal("0"),
                         "hasQuantity": False,
+                        "unitPrices": set(),
+                        "hasMissingUnitPrice": False,
                     },
                 )
                 if specification:
                     group["specifications"].add(specification)
+                unit_price = self._optional_decimal(item.get("unitprice"))
+                if unit_price is None:
+                    unit_price = self._optional_decimal(item.get("unitprice2"))
+                if unit_price is None:
+                    unit_price = self._optional_decimal(item.get("originalunitprice"))
+                if unit_price is not None:
+                    group["unitPrices"].add(unit_price)
+                else:
+                    group["hasMissingUnitPrice"] = True
                 unit = self._text(item.get("unit"))
                 if unit:
                     group["units"].add(unit)
@@ -1268,10 +1311,11 @@ class WeaverReviewEvidenceService:
         merged["name"] = " / ".join(dict.fromkeys(item["name"] for item in items))
         for key in ("untaxedAmount", "comparisonAmount", "quantity"):
             merged[key] = sum((item[key] for item in items), Decimal("0"))
-        for key in ("amountBases", "taxRates", "specifications", "units"):
+        for key in ("amountBases", "taxRates", "specifications", "units", "unitPrices"):
             merged[key] = set().union(*(item[key] for item in items))
         merged["hasQuantity"] = all(item["hasQuantity"] for item in items)
         merged["taxRateComparisonSkipped"] = all(item["taxRateComparisonSkipped"] for item in items)
+        merged["hasMissingUnitPrice"] = any(item.get("hasMissingUnitPrice", False) for item in items)
         return merged
 
     async def _semantic_match_items(
@@ -1501,6 +1545,18 @@ class WeaverReviewEvidenceService:
         match_method: str,
         match_reason: str = "",
     ) -> dict[str, Any]:
+        invoice_prices = sorted(str(value) for value in invoice.get("unitPrices", set()))
+        reconciliation_prices = sorted(str(value) for value in reconciliation.get("unitPrices", set()))
+        invoice_units = set().union(*(self._normalize_unit_candidates(value) for value in invoice["units"]))
+        reconciliation_units = set().union(*(self._normalize_unit_candidates(value) for value in reconciliation["units"]))
+        factor = None
+        if invoice_units and invoice_units == reconciliation_units:
+            factor = Decimal("1")
+        else:
+            left_conversion = self._unit_conversion(invoice_units)
+            right_conversion = self._unit_conversion(reconciliation_units)
+            if left_conversion and right_conversion and left_conversion[0] == right_conversion[0]:
+                factor = left_conversion[1] / right_conversion[1]
         return {
             "invoiceName": invoice["name"],
             "reconciliationName": reconciliation["name"],
@@ -1516,6 +1572,13 @@ class WeaverReviewEvidenceService:
             "invoiceAmount": str(invoice["comparisonAmount"]),
             "reconciliationAmount": str(reconciliation["untaxedAmount"]),
             "invoiceAmountBasis": self._format_text_values(invoice["amountBases"]),
+            "invoiceUnitPrices": invoice_prices,
+            "reconciliationUnitPrices": reconciliation_prices,
+            "unitPriceIncomplete": bool(invoice.get("hasMissingUnitPrice") or reconciliation.get("hasMissingUnitPrice")),
+            "unitPriceMatched": (
+                None if invoice.get("hasMissingUnitPrice") or reconciliation.get("hasMissingUnitPrice")
+                else self._compare_unit_prices(invoice_prices, reconciliation_prices, factor)
+            ),
             "invoiceTaxRates": sorted(str(value) for value in invoice["taxRates"]),
             "reconciliationTaxRates": sorted(str(value) for value in reconciliation["taxRates"]),
             "similarity": round(score, 4),
@@ -1547,6 +1610,18 @@ class WeaverReviewEvidenceService:
                 else self._compare_sets(invoice["taxRates"], reconciliation["taxRates"])
             ),
         }
+
+    def _compare_unit_prices(
+        self, invoice_prices: list[str], reconciliation_prices: list[str], factor: Decimal | None,
+    ) -> bool | None:
+        if len(invoice_prices) != 1 or len(reconciliation_prices) != 1 or factor is None or factor <= 0:
+            return None
+        invoice_price = Decimal(invoice_prices[0])
+        reconciliation_price = Decimal(reconciliation_prices[0])
+        invoice_rounding = Decimal("0.5") * Decimal("10") ** min(invoice_price.as_tuple().exponent, -2) / factor
+        reconciliation_rounding = Decimal("0.5") * Decimal("10") ** min(reconciliation_price.as_tuple().exponent, -2)
+        tolerance = max(Decimal("0.0001"), invoice_rounding + reconciliation_rounding)
+        return abs(invoice_price / factor - reconciliation_price) <= tolerance
 
     def _item_similarity(self, left: str, right: str) -> float:
         if left == right:

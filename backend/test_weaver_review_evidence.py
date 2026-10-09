@@ -19,6 +19,20 @@ def test_normalization_preserves_all_dimensions_between_asterisks() -> None:
     assert service._normalize_item_name("锤片245*63*6") != service._normalize_item_name("锤片245*64*6")
 
 
+def test_unit_price_conversion_and_rounding_do_not_hide_real_difference() -> None:
+    service = WeaverReviewEvidenceService()
+    assert service._compare_unit_prices(["20.5504587155963"], ["0.02"], Decimal("1000")) is True
+    assert service._compare_unit_prices(["1000.0000"], ["1.0000"], Decimal("1000")) is True
+    assert service._compare_unit_prices(["10.00"], ["11.00"], Decimal("1")) is False
+    assert service._compare_unit_prices(["10", "11"], ["10"], Decimal("1")) is None
+    assert service._compare_unit_prices([], ["10"], Decimal("1")) is None
+    assert service._compare_unit_prices(["10"], ["10"], None) is None
+    invoice = service._aggregate_invoice_items([{"items": [{
+        "invoiceserviceyype": "运输费", "originalunitprice": "20.5504587155963",
+    }]}])[0]
+    assert invoice["unitPrices"] == {Decimal("20.5504587155963")}
+
+
 def test_freight_aggregation_converts_weights_and_compares_transport_invoice() -> None:
     service = WeaverReviewEvidenceService()
     fields = {"description": "cargo", "unit": "unit", "quantity": "qty",

@@ -489,7 +489,7 @@ function ComparisonTableCard({ table }: { table: WeaverReviewComparisonTable }) 
           </div>
 
           <div className="max-h-[360px] overflow-auto">
-            <table className="min-w-[1390px] w-full border-collapse text-left text-xs">
+            <table className="min-w-[1540px] w-full border-collapse text-left text-xs">
               <thead className="sticky top-0 z-10 bg-[#f6f8fc] text-[#66758f] shadow-[0_1px_0_#e7ecf4]">
                 <tr>
                   <th className="w-16 px-3 py-2.5 font-medium">序号</th>
@@ -497,6 +497,7 @@ function ComparisonTableCard({ table }: { table: WeaverReviewComparisonTable }) 
                   <th className="min-w-[250px] px-3 py-2.5 font-medium">发票商品（名称+规格）</th>
                   <th className="min-w-[110px] px-3 py-2.5 font-medium">单位</th>
                   <th className="min-w-[120px] px-3 py-2.5 font-medium">数量</th>
+                  <th className="min-w-[150px] px-3 py-2.5 font-medium">未税单价</th>
                   <th className="w-28 px-3 py-2.5 text-right font-medium">对账核对金额</th>
                   <th className="w-32 px-3 py-2.5 text-right font-medium">发票核对金额</th>
                   <th className="min-w-[120px] px-3 py-2.5 font-medium">税率</th>
@@ -528,6 +529,10 @@ function ComparisonTableCard({ table }: { table: WeaverReviewComparisonTable }) 
                     </td>
                     <td className="px-3 py-3 align-top"><PairComparisonCell left={row.reconciliationUnit} right={row.invoiceUnit} status={row.unitStatus} /></td>
                     <td className="px-3 py-3 align-top"><PairComparisonCell left={row.reconciliationQuantity} right={row.invoiceQuantity} status={row.quantityStatus} numeric /></td>
+                    <td className="px-3 py-3 align-top">
+                      <PairComparisonCell left={row.reconciliationUnitPrices?.join("、")} right={row.invoiceUnitPrices?.join("、")} status={row.unitPriceStatus} numeric />
+                      {row.unitPriceStatus === "unknown" ? <div className="mt-1 text-[10px] text-amber-700">单价待核对</div> : null}
+                    </td>
                     <td className={comparisonMoneyClass(row.amountStatus)}>{formatMoney(row.reconciliationAmount)}</td>
                     <td className={comparisonMoneyClass(row.amountStatus)}>
                       <div>{formatMoney(row.invoiceAmount)}</div>

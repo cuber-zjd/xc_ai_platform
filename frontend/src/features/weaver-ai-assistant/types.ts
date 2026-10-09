@@ -211,6 +211,9 @@ export interface WeaverReviewComparisonRow {
   reconciliationUnit?: string | null;
   invoiceQuantity?: string | null;
   reconciliationQuantity?: string | null;
+  invoiceUnitPrices?: string[];
+  reconciliationUnitPrices?: string[];
+  unitPriceStatus?: "pass" | "fail" | "unknown";
   invoiceAmount?: string | null;
   reconciliationAmount?: string | null;
   invoiceAmountBasis?: string | null;
