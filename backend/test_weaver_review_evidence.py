@@ -19,6 +19,34 @@ def test_normalization_preserves_all_dimensions_between_asterisks() -> None:
     assert service._normalize_item_name("锤片245*63*6") != service._normalize_item_name("锤片245*64*6")
 
 
+def test_freight_aggregation_converts_weights_and_compares_transport_invoice() -> None:
+    service = WeaverReviewEvidenceService()
+    fields = {"description": "cargo", "unit": "unit", "quantity": "qty",
+              "untaxedAmount": "net", "taxedAmount": "gross", "taxRate": "rate"}
+    freight = service._aggregate_freight_items([
+        {"cargo": "液碱_32%", "unit": "KG", "qty": "32800", "net": "674.06", "gross": "734.72", "rate": "9"},
+        {"cargo": "液碱_32%", "unit": "吨", "qty": "1", "net": "20", "gross": "21.80", "rate": "9"},
+    ], fields)
+    assert len(freight) == 1
+    assert freight[0]["quantity"] == Decimal("33800")
+    assert service._format_sequences(freight[0]["sequences"]) == "运费1-2"
+    assert service._semantic_reconciliation_payload(0, freight[0])["sourceType"] == "freight"
+    invoice = service._aggregate_invoice_items([{"category": "增值税专用发票", "items": [{
+        "invoiceserviceyype": "*交通运输服务*运输费", "unit": "吨", "unitnumber2": "33.8",
+        "pricewithouttax": "694.06", "taxrate": "9",
+    }]}])[0]
+    match = service._build_item_match(invoice, freight[0], score=0.98,
+                                     amount_tolerance=Decimal("0.10"), match_method="ai_semantic")
+    assert match["unitMatched"] is True
+    assert match["quantityMatched"] is True
+    assert match["amountMatched"] is True
+    assert match["taxRateMatched"] is True
+    invoice["comparisonAmount"] += Decimal("1")
+    match = service._build_item_match(invoice, freight[0], score=0.98,
+                                     amount_tolerance=Decimal("0.10"), match_method="ai_semantic")
+    assert match["amountMatched"] is False
+
+
 def test_multiple_invoices_with_name_variants_match_one_reconciliation() -> None:
     service = WeaverReviewEvidenceService()
     invoices = service._aggregate_invoice_items([

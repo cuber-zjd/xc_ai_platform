@@ -332,6 +332,19 @@ class WeaverReviewEvidenceService:
             "taxedAmount": self._optional_field(fields, item_table, ["含税金额"]),
             "taxRate": self._optional_field(fields, item_table, ["税率"]),
         }
+        freight_table = next(
+            (self._identifier(field["detailtable"]) for field in fields
+             if field.get("detailtable") and self._normalize_label(field.get("labelname")) == "运费单号"),
+            None,
+        )
+        freight_fields = {
+            "description": self._optional_field(fields, freight_table, ["物料名称"]),
+            "unit": self._optional_field(fields, freight_table, ["单位"]),
+            "quantity": self._optional_field(fields, freight_table, ["凭证数量", "数量"]),
+            "untaxedAmount": self._optional_field(fields, freight_table, ["运费不含税金额"]),
+            "taxedAmount": self._optional_field(fields, freight_table, ["运费含税金额"]),
+            "taxRate": self._optional_field(fields, freight_table, ["税率"]),
+        } if freight_table else {}
         return {
             "customName": custom_search.get("customname") or "建模查询",
             "mainTable": main_table,
@@ -339,6 +352,8 @@ class WeaverReviewEvidenceService:
             "reconciliationField": self._identifier(reconciliation_field["fieldname"]),
             "itemTable": item_table,
             "itemFields": item_fields,
+            "freightTable": freight_table,
+            "freightFields": freight_fields,
         }
 
     def _fetch_reconciliation(
@@ -370,9 +385,23 @@ class WeaverReviewEvidenceService:
             f"WHERE `{metadata['detailKeyField']}` = %s ORDER BY id LIMIT 500",
             (header["id"],),
         )
+        items = [self._normalize_row(row) for row in cursor.fetchall()]
+        freight_items: list[dict[str, Any]] = []
+        if metadata.get("freightTable"):
+            freight_columns = ["id", metadata["detailKeyField"]] + [
+                value for value in metadata["freightFields"].values() if value
+            ]
+            select_freight = ", ".join(f"`{column}`" for column in dict.fromkeys(freight_columns))
+            cursor.execute(
+                f"SELECT {select_freight} FROM `{metadata['freightTable']}` "
+                f"WHERE `{metadata['detailKeyField']}` = %s ORDER BY id LIMIT 500",
+                (header["id"],),
+            )
+            freight_items = [self._normalize_row(row) for row in cursor.fetchall()]
         return {
             "header": header,
-            "items": [self._normalize_row(row) for row in cursor.fetchall()],
+            "items": items,
+            "freightItems": freight_items,
             "metadata": metadata,
         }
 
@@ -431,6 +460,9 @@ class WeaverReviewEvidenceService:
         metadata = reconciliation["metadata"]
         fields = metadata["itemFields"]
         reconciliation_groups = self._aggregate_reconciliation_items(reconciliation["items"], fields)
+        reconciliation_groups.extend(self._aggregate_freight_items(
+            reconciliation.get("freightItems") or [], metadata.get("freightFields") or {},
+        ))
         invoice_groups = self._aggregate_invoice_items(invoices)
         matches, unmatched_invoice, unmatched_reconciliation = await self._match_items_hybrid(
             invoice_groups,
@@ -975,7 +1007,19 @@ class WeaverReviewEvidenceService:
     def _format_decimal(self, value: Decimal) -> str:
         return format(value.normalize(), "f")
 
-    def _format_sequences(self, sequences: list[int]) -> str:
+    def _format_sequences(self, sequences: list[int] | list[str]) -> str:
+        if sequences and all(str(value).startswith("运费") for value in sequences):
+            numbers = sorted({int(str(value)[2:]) for value in sequences})
+            ranges: list[str] = []
+            start = end = numbers[0]
+            for number in numbers[1:]:
+                if number == end + 1:
+                    end = number
+                else:
+                    ranges.append(f"运费{start}" if start == end else f"运费{start}-{end}")
+                    start = end = number
+            ranges.append(f"运费{start}" if start == end else f"运费{start}-{end}")
+            return "、".join(ranges)
         return "、".join(str(value) for value in sorted(set(sequences)))
 
     def _comparison_row_sort_key(self, row: dict[str, Any]) -> tuple[int, int]:
@@ -1027,6 +1071,44 @@ class WeaverReviewEvidenceService:
             if tax_rate is not None:
                 group["taxRates"].add(tax_rate)
         return list(grouped.values())
+
+    def _aggregate_freight_items(
+        self, items: list[dict[str, Any]], fields: dict[str, str | None],
+    ) -> list[dict[str, Any]]:
+        if not items:
+            return []
+        if not fields.get("description") or not fields.get("untaxedAmount"):
+            raise ValueError("运费明细缺少物料名称或不含税金额字段，无法完成核验")
+        buckets: dict[tuple[str, str], list[tuple[int, dict[str, Any]]]] = {}
+        for sequence, item in enumerate(items, start=1):
+            unit = self._normalize_unit(item.get(fields.get("unit") or ""))
+            quantity = self._optional_decimal(item.get(fields.get("quantity") or ""))
+            conversion = self.UNIT_CONVERSIONS.get(unit)
+            if conversion and conversion[0] == "mass" and quantity is not None:
+                unit = "kg"
+                quantity *= conversion[1]
+            rate = self._text(item.get(fields.get("taxRate") or ""))
+            buckets.setdefault((unit, rate), []).append((sequence, {
+                "description": "运输服务",
+                "unit": unit,
+                "quantity": quantity,
+                "untaxed": item.get(fields["untaxedAmount"]),
+                "taxed": item.get(fields.get("taxedAmount") or ""),
+                "rate": item.get(fields.get("taxRate") or ""),
+                "cargo": self._text(item.get(fields["description"])),
+            }))
+        groups: list[dict[str, Any]] = []
+        for rows in buckets.values():
+            group = self._aggregate_reconciliation_items([row for _, row in rows], {
+                "description": "description", "unit": "unit", "quantity": "quantity",
+                "untaxedAmount": "untaxed", "taxedAmount": "taxed", "taxRate": "rate",
+            })[0]
+            group["name"] = "运输服务（货物：" + "、".join(dict.fromkeys(row["cargo"] for _, row in rows)) + "）"
+            group["sequences"] = [f"运费{sequence}" for sequence, _ in rows]
+            group["sourceType"] = "freight"
+            group["hasQuantity"] = all(row["quantity"] is not None for _, row in rows)
+            groups.append(group)
+        return groups
 
     def _aggregate_invoice_items(self, invoices: list[dict[str, Any]]) -> list[dict[str, Any]]:
         grouped: dict[str, dict[str, Any]] = {}
@@ -1299,6 +1381,8 @@ class WeaverReviewEvidenceService:
             "id": f"R{index}",
             "sequence": self._format_sequences(item["sequences"]),
             "purchaseMaterialDescription": item["name"],
+            "sourceType": item.get("sourceType", "goods"),
+            "unit": self._format_text_values(item["units"]),
             "quantity": self._format_decimal(item["quantity"]) if item["hasQuantity"] else None,
             "untaxedAmount": str(item["untaxedAmount"]),
             "taxRates": sorted(str(value) for value in item["taxRates"]),
@@ -1316,6 +1400,10 @@ class WeaverReviewEvidenceService:
                     "发票名称中的税收分类前缀可能比采购名称宽泛，发票规格也可能是采购物料描述的一部分。"
                     "数量、未税金额和税率只能帮助候选消歧，不能把明显不同的商品强行匹配。"
                     "请在 reconciliationCatalog 完整目录中为 invoiceItems 寻找同一商品。"
+                    "sourceType=freight 是运费明细：名称中的货物是被运输对象，核对的是运输服务，"
+                    "可与交通运输服务、运输费等发票项目匹配，不能与该货物的销售发票匹配。"
+                    "运费已按计量单位和税率汇总，结合服务性质、规格及运输数量选择对应项目；"
+                    "吨与千克等数量换算由后端核验，不能要求货物名称与运输服务名称相同。"
                     "每个发票商品最多匹配一个对账物料；同一对账物料允许对应多组发票商品，"
                     "例如分多张发票开具或名称存在笔误但语义和完整规格相同。后端会汇总数量和金额核验。"
                     "必须核对完整规格，不能因合计金额相同就合并不同商品；不确定时不要输出该项。"
