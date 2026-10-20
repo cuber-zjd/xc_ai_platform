@@ -283,4 +283,3 @@ def create_app(snapshot_path=DEFAULT_SNAPSHOT, db_path=None, external=False, pri
     app.state.mcp_server=mcp_server
     app.mount('/mcp',mcp_gate,name='readonly-mcp')
     return app
-

@@ -60,7 +60,7 @@ def receive():
     snapshot, process = payload['snapshot'], payload['process']
     url = urlparse(payload['public_url'])
     bind = ipaddress.ip_address(payload['bind_host'])
-    if url.scheme != 'https' or not url.netloc or url.username or url.password or url.path != '/business-insights' or url.query or url.fragment:
+    if url.scheme != 'https' or not re.fullmatch(r'[A-Za-z0-9.-]+(?::[0-9]{1,5})?',url.netloc) or url.username or url.password or url.path != '/business-insights' or url.query or url.fragment:
         raise ValueError('必须配置专用 HTTPS 子路径')
     if bind.is_loopback or bind.is_unspecified or not bind.is_private or bind.version != 4:
         raise ValueError('容器反代需要服务器内网 IPv4 地址')
@@ -139,7 +139,7 @@ WantedBy=default.target
     location ^~ /business-insights/ {{
       proxy_pass http://{bind}:8766/;
       proxy_http_version 1.1;
-      proxy_set_header Host $host;
+      proxy_set_header Host {url.netloc};
       proxy_set_header Authorization $http_authorization;
       proxy_set_header X-Forwarded-Proto $http_x_forwarded_proto;
       proxy_buffering off;
