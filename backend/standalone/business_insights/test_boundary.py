@@ -75,6 +75,29 @@ class Boundaries(unittest.TestCase):
         with self.assertRaises(ValueError):patch_nginx(b'server {}',block)
         with self.assertRaises(ValueError):patch_nginx(original+original,block)
 
+    def test_mcp_scenario_requires_three_plain_numeric_assumptions(self):
+        headers={**self.headers,'Accept':'application/json, text/event-stream'}
+        response=self.client.post('/mcp/',headers=headers,
+                                  json={'jsonrpc':'2.0','id':1,'method':'tools/list'})
+        self.assertEqual(response.status_code,200)
+        tools=response.json()['result']['tools']
+        self.assertEqual(len(tools),7)
+        scenario=next(t for t in tools if t['name']=='estimate_raw_material_scenario')
+        schema=scenario['inputSchema']
+        self.assertEqual(set(schema['required']),{'quantity','factor','delta'})
+        for value in schema['properties'].values():
+            self.assertEqual(value['type'],'number')
+            self.assertNotIn('anyOf',value)
+        def call(arguments):
+            return self.client.post('/mcp/',headers=headers,json={
+                'jsonrpc':'2.0','id':2,'method':'tools/call',
+                'params':{'name':'estimate_raw_material_scenario','arguments':arguments}}).json()['result']
+        result=call({'quantity':1000,'factor':1,'delta':-60})
+        self.assertFalse(result.get('isError',False))
+        self.assertEqual(result['structuredContent']['estimated_cost_change'],-60000)
+        self.assertTrue(call({'quantity':1000,'factor':1})['isError'])
+        self.assertTrue(call({'quantity':1000,'factor':1,'delta':None})['isError'])
+
 
 if __name__ == '__main__':
     unittest.main()

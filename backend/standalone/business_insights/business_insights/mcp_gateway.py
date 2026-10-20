@@ -88,9 +88,9 @@ def create_mcp(business_app,principals,allowed_hosts,allowed_origins):
     @server.tool(annotations=readonly,structured_output=True)
     async def estimate_raw_material_scenario(
         quantity:Annotated[float,Field(gt=0,le=1000000,allow_inf_nan=False)],
-        factor:Annotated[float,Field(gt=0,le=10,allow_inf_nan=False)],ctx:Context,
-        delta:Annotated[float|None,Field(ge=-10000,le=10000,allow_inf_nan=False)]=None)->dict[str,Any]:
-        """数量吨×显式原料耗用系数×价差元/吨。系数必须由调用方明确给出；结果非实际损益。"""
+        factor:Annotated[float,Field(gt=0,le=10,allow_inf_nan=False)],
+        delta:Annotated[float,Field(ge=-10000,le=10000,allow_inf_nan=False)],ctx:Context)->dict[str,Any]:
+        """数量吨×显式原料耗用系数×价差元/吨。三项假设必须明确；价差可取行情证据，不得编造。结果非实际损益。"""
         return await call('/api/scenario',ctx,{'quantity':quantity,'factor':factor,'delta':delta})
 
     @server.tool(annotations=readonly,structured_output=True)
