@@ -81,6 +81,8 @@ frontend/src/
 
 ## 6. 当前核心模块
 
+- 独立经营助手：`backend/standalone/business_insights/`，限定客户、行情和资讯只读 HTTP/MCP；独立环境与存储，经现有域名 `/business-insights/` 接入。
+
 - 系统管理：登录、用户、角色、部门、模型配置。
 - 智能体管理：Agent 分组、应用、角色和部门授权、用户工作台。
 - 合同审查：合同上传、MinIO 存储、后台 Agent 分析、审计日志、OnlyOffice 预览。

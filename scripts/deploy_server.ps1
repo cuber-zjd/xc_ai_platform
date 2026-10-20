@@ -9,7 +9,11 @@
     [string]$RemoteUvPath = "/home/xinxi/.local/bin/uv",
     [string]$RemoteNodeBin = "/home/xinxi/.nvm/nvm-0.40.2/versions/node/v22.18.0/bin",
     [switch]$BackendOnly,
-    [switch]$SkipDependencies
+    [switch]$SkipDependencies,
+    [switch]$BusinessInsightsOnly,
+    [string]$BusinessInsightsDataDirectory = "",
+    [string]$BusinessInsightsCredentialFile = "",
+    [string]$BusinessInsightsPublicUrl = "https://ai.xiangchi.com/business-insights"
 )
 
 $ErrorActionPreference = "Stop"
@@ -34,6 +38,12 @@ function Invoke-CheckedCommand {
 if (-not (Test-Path -LiteralPath $SshKey)) {
     throw "SSH 密钥不存在：$SshKey"
 }
+if ($BusinessInsightsOnly -and ($BackendOnly -or $SkipDependencies)) {
+    throw "BusinessInsightsOnly 是独立发布模式，不能与 BackendOnly/SkipDependencies 混用。"
+}
+if ($BusinessInsightsOnly -and (-not $BusinessInsightsDataDirectory -or -not $BusinessInsightsCredentialFile)) {
+    throw "经营助手发布必须显式提供快照目录和本机凭据保存路径。"
+}
 
 $gitExecutable = (Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 
@@ -53,6 +63,10 @@ try {
     }
 
     Invoke-CheckedCommand -FilePath $gitExecutable -Arguments @("fetch", $DeployRemoteUrl, $Branch)
+    $publishedCommit = (& $gitExecutable rev-parse FETCH_HEAD).Trim()
+    if ($publishedCommit -ne $ExpectedCommit) {
+        throw "发布仓库分支已变化，请核对期望提交后重试。"
+    }
     & $gitExecutable merge-base --is-ancestor $ExpectedCommit "FETCH_HEAD"
     if ($LASTEXITCODE -ne 0) {
         throw "提交 $ExpectedCommit 尚未推送到发布仓库 $DeployRemoteUrl 的 $Branch 分支，请先提交并推送。"
@@ -62,10 +76,11 @@ finally {
     Pop-Location
 }
 
-$installBackend = if ($SkipDependencies) { "false" } else { "true" }
-$installFrontend = if ($SkipDependencies -or $BackendOnly) { "false" } else { "true" }
-$buildFrontend = if ($BackendOnly) { "false" } else { "true" }
-$restartFrontend = if ($BackendOnly) { "false" } else { "true" }
+$installBackend = if ($SkipDependencies -or $BusinessInsightsOnly) { "false" } else { "true" }
+$installFrontend = if ($SkipDependencies -or $BackendOnly -or $BusinessInsightsOnly) { "false" } else { "true" }
+$buildFrontend = if ($BackendOnly -or $BusinessInsightsOnly) { "false" } else { "true" }
+$restartFrontend = if ($BackendOnly -or $BusinessInsightsOnly) { "false" } else { "true" }
+$businessOnly = if ($BusinessInsightsOnly) { "true" } else { "false" }
 $remoteScript = @"
 set -euo pipefail
 
@@ -96,12 +111,23 @@ fi
 old_commit="`$(git rev-parse HEAD)"
 git fetch '$DeployRemoteUrl' '$Branch'
 git merge-base --is-ancestor '$ExpectedCommit' FETCH_HEAD
+if [ "`$(git rev-parse FETCH_HEAD)" != '$ExpectedCommit' ]; then
+  echo '发布仓库分支已变化，已中止合并。' >&2
+  exit 23
+fi
 git merge --ff-only FETCH_HEAD
 
 new_commit="`$(git rev-parse HEAD)"
 if [ "`$new_commit" != '$ExpectedCommit' ]; then
   echo "服务器 HEAD (`$new_commit) 与期望提交 ($ExpectedCommit) 不一致，已中止重启。" >&2
   exit 23
+fi
+
+if $businessOnly; then
+  cd '$RemotePath/backend/standalone/business_insights'
+  '$RemoteUvPath' sync --frozen
+  echo "经营助手代码与独立运行环境已同步：`$old_commit -> `$new_commit"
+  exit 0
 fi
 
 if $installBackend; then
@@ -166,3 +192,12 @@ $sshArguments = @(
     "echo $encodedScript | base64 -d | bash"
 )
 Invoke-CheckedCommand -FilePath "ssh" -Arguments $sshArguments
+if ($BusinessInsightsOnly) {
+    $localUv = (Get-Command uv -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+    Invoke-CheckedCommand -FilePath $localUv -Arguments @(
+        "run", "--no-project", "python", "$PSScriptRoot/deploy_business_insights.py",
+        "--server", $Server, "--user", $User, "--remote-path", $RemotePath,
+        "--ssh-key", $SshKey, "--data-dir", $BusinessInsightsDataDirectory,
+        "--credential-file", $BusinessInsightsCredentialFile, "--public-url", $BusinessInsightsPublicUrl
+    )
+}

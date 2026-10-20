@@ -92,6 +92,8 @@ backend/app/mcp/servers/my_tool/
 
 ## 8. 后端验证命令
 
+独立经营助手位于 `backend/standalone/business_insights/`，使用独立 uv 锁定 MCP 2.3.0；其七个只读 Streamable HTTP 工具复用独立服务的 Bearer 客户范围，不挂载主后端 SSE 或复用 `MCP_API_KEY`。保留原工具 JSON Schema，不包装主平台 Result。服务端不注册演示登录或反馈写入；不具备数据库连接、飞书写入或消息发送能力。组件内运行 `uv run python -m unittest test_boundary -v` 验证边界。
+
 ```bash
 cd backend
 uv sync

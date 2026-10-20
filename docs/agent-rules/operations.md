@@ -203,6 +203,14 @@ uv sync
 - 要求未登录也能开机启动时，需要管理员执行 `loginctl enable-linger xinxi`；未启用 linger 时，用户级服务只在该用户的 systemd manager 存活期间运行。
 - 回滚优先使用部署前备份或 git 历史在 `/home/xinxi/ai_platform` 内恢复。操作前必须精确核验端口和进程归属，不得批量终止服务器上的其他应用。
  
+## 12. 独立经营助手发布
+
+- `backend/standalone/business_insights/` 是独立 uv 项目；统一发布脚本 `-BusinessInsightsOnly` 仍按 main 精确提交发布到原 Git 目录，但仅安装该组件，不重启主平台前后端。
+- 该模式必须传 `-BusinessInsightsDataDirectory` 和 `-BusinessInsightsCredentialFile`；聚合快照 JSON 通过 SSH stdin 送到受限接收器，代码仅由 Git 更新。凭据本机生成并限制文件权限，服务器仅保存摘要。
+- `ai-platform-business-insights.service` 监听内网 8766，现有 Dify 容器 Nginx 为 `/business-insights/` 转发；同时维护运行配置和重启模板，修改前备份，`nginx -t` 失败恢复。不修改宿主机 Nginx、443 证书和现有业务路由。
+- `storage/` 保存私有快照、环境文件、独立 SQLite 和备份（Git 忽略）；云端无业务库轮询，始终显示快照截止日。发布前后核对原服务、8766 归属及 HTTPS 与七工具调用。
+- 配置回退使用 `storage/backups/<时间>/` 对应配置及模板，先 nginx 校验再 reload；仅停止该经营助手服务。代码撤销仍经 Git 和统一发布脚本，禁止 reset 其他人提交。
+
 ## 泛微流程AI助手环境配置
 
 - `WEAVER_DEFAULT_ENV`：ecode 未传 `env` 时使用的默认泛微环境 key。

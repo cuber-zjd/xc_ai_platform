@@ -1,0 +1,6 @@
+[project]
+name = "jianyuan-business-insights"
+version = "0.1.0"
+description = "限定场景只读经营工具"
+requires-python = ">=3.11,<3.14"
+dependencies = ["fastapi>=0.116,<1", "httpx>=0.28,<1", "uvicorn>=0.35,<1", "mcp==2.3.0", "tzdata>=2025.1"]

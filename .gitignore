@@ -125,3 +125,4 @@ backend/storage/insight_bootstrap_logs/
 backend/storage/insight_exports/
 backend/storage/docx-render/
 backend/storage/pdfs/
+backend/standalone/business_insights/storage/
