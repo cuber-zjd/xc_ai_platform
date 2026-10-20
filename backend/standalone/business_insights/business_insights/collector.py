@@ -117,12 +117,20 @@ def collect(as_of: date, connection, approved_codes, output: Path) -> dict:
            OR TRY_CONVERT(int,month_val) NOT BETWEEN 1 AND 12) invalid_profit_period_rows''',
                           (as_of, as_of, as_of))[0]
         news=old.get('news',[])
+        news_status=old.get('news_status',{})
+        news_path=output.parent/'official_news.json'
+        if news_path.exists():
+            try:
+                from .news_feed import merge_news
+                news,news_status=merge_news(news,json.loads(news_path.read_text(encoding='utf-8')))
+            except (ValueError,KeyError,TypeError,OSError):
+                news_status={**news_status,'cache_error':True,'notice':'资讯缓存读取失败，保留上次内容'}
         snapshot = {'schema_version': 1, 'as_of': as_of.isoformat(),
                     'collected_at': datetime.now(ZoneInfo('Asia/Shanghai')).isoformat(),
                     'mode': 'live_readonly_snapshot', 'company': '健源',
                     'scope': f'发布时固定{len(codes)}家客户；近24个月；仅三类糖浆；不是全公司排名',
                     'customers': cohort, 'deliveries': deliveries, 'profits': profit,
-                    'corn': corn, 'syrup': syrup, 'news': news, 'freshness': freshness,
+                    'corn': corn, 'syrup': syrup, 'news': news, 'news_status':news_status,'freshness': freshness,
                     'provenance': provenance,
                     'caveats': ['销量为已入库发货记录，日历28日等长比较；不代表已核准需求或流失。',
                                 '未验收源系统同步完整性；缺失利润保留为空。',

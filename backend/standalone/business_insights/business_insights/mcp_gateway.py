@@ -104,7 +104,11 @@ def create_mcp(business_app,principals,allowed_hosts,allowed_origins):
     async def get_news_opportunities(ctx:Context)->dict[str,Any]:
         """查询官方资讯与有权查看客户的品牌关联；区分近期与历史，不证明采购需求或主体关系。"""
         rows=await call('/api/opportunities',ctx)
-        return {'opportunities':rows,'count':len(rows),'fresh_count':sum(r['fresh'] for r in rows)}
+        market=await call('/api/market',ctx)
+        return {'opportunities':rows,'count':len(rows),'fresh_count':sum(r['fresh'] for r in rows),
+                'official_market_signals':market.get('official_signals',[]),
+                'news_status':market.get('news_status',{}),
+                'notice':'原料官方报告与客户品牌线索分别展示；RSS仅标题候选，不等于正文核验或客户订单。'}
 
     transport=server.streamable_http_app(streamable_http_path='/',stateless_http=True,json_response=True,
                                           max_request_body_size=65536,

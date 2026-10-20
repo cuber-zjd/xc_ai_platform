@@ -16,6 +16,10 @@ HTTPS 前缀 `/business-insights`；MCP 为 `/business-insights/mcp/`，业务 H
 
 当前源库为 SQL Server 2012 SP1，需专用 `enable_legacy_tls_v1` 兼容；只在取数子进程临时 FreeTDS 配置中启用，仍强制加密并验证会话 `encrypt_option=TRUE`，拒绝明文，不改系统或公网 HTTPS。TLS 1.0 和源库证书未另行校验属于旧库限制，源库升级后应移除兼容，详见安全分册。
 
-验证：`uv run python -m unittest test_boundary test_refresh -q`。涵盖固定范围、截止日、失败保留、结果超限、未发送候选去重、任务状态及取消时子进程回收。
+官方资讯由同一刷新子进程检查，每6小时读取配置文件 `business_insights/news_sources.json` 的两个固定官方站点：农业农村部CASDE栏目和可口可乐投资者RSS；不按客户重复抓取，一轮最多3次HTTPS请求。CASDE核对元数据日期并提取玉米、食糖正文；RSS只形成标题候选，不能声明已核验正文。分红、人事和财报预告等不作为产品机会。失败保留该来源旧内容，1小时后才重试，不阻塞经营聚合读取；`official_news.json` 与快照中的 `news_status` 记录来源级成功、失败和时间。超过24小时未成功标记过期。资讯日期独立于昨日经营截止日；同一URL的人工正文核验样本优先于RSS候选。
+
+`get_market_brief` 返回 `official_signals`，`get_news_opportunities` 另返 `official_market_signals` 和 `news_status`，原七工具名称及输入Schema不变。宏观供需报告不复制到每个客户，也不作为已发生订单；客户品牌关联继续按可信范围过滤。网络仅允许配置的HTTPS域名和文章路径，拒绝内网DNS、重定向、超1MB响应及XML外部实体，不携带用户登录态。
+
+验证：`uv run --frozen python -m unittest test_boundary test_refresh test_news -q`。涵盖固定范围、截止日、失败保留、结果超限、未发送候选去重、任务状态、取消时子进程回收，以及资讯日期、过滤、去重、6小时缓存和网络边界。
 
 验收须包含 HTTPS 证书正常、未认证拒绝、演示登录关闭、写接口不存在、官方 MCP 客户端实际发现并调用七工具，以及原平台页面仍可访问。此验收不等同真实飞书智能体调用成功。

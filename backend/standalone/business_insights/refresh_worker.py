@@ -34,6 +34,13 @@ def refresh():
     from business_insights.scanner import scan
     from business_insights.source_connection import source_connection
     data=Path(os.environ['INSIGHTS_DATA_DIR'])
+    from business_insights.news_feed import refresh_news
+    news_error=None
+    try:
+        asyncio.run(refresh_news(data))
+    except Exception as exc:
+        # 资讯失败不阻塞经营聚合刷新；不记录外部响应或异常详情。
+        news_error=type(exc).__name__
     scope=json.loads((data/'collection_scope.json').read_text(encoding='utf-8'))
     cfg=asyncio.run(connection_config(scope['connection_name']))
     with source_connection(cfg,scope.get('enable_legacy_tls_v1',False)) as conn:
@@ -44,6 +51,8 @@ def refresh():
                 'customers':len(snapshot['customers']),'aggregate_rows':len(snapshot['deliveries']),
                 'query_count':len(snapshot['provenance']),'fixed_customer_scope':True,
                 'connection_encrypted':True,'legacy_tls_v1_compatibility':scope.get('enable_legacy_tls_v1',False),
+                'news_cache_error_type':news_error,
+                'news_sources':snapshot.get('news_status',{}).get('sources',[]),
                 'business_database_writes':0,'messages_sent':0,'feishu_writes':0,**candidates}
 
 

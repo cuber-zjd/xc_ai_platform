@@ -1,0 +1,23 @@
+{
+  "refresh_hours": 6,
+  "failure_retry_hours": 1,
+  "sources": [
+    {
+      "id": "moa-casde",
+      "name": "农业农村部市场预警专家委员会",
+      "kind": "casde",
+      "url": "https://scs.moa.gov.cn/jcyj/",
+      "host": "scs.moa.gov.cn",
+      "article_path": "^/jcyj/[0-9]{6}/t[0-9]{8}_[0-9]+\\.htm$"
+    },
+    {
+      "id": "coca-cola-ir",
+      "name": "The Coca-Cola Company 投资者官网",
+      "kind": "rss",
+      "url": "https://investors.coca-colacompany.com/news-events/press-releases/rss",
+      "host": "investors.coca-colacompany.com",
+      "article_path": "^/news-events/press-releases/detail/[0-9]+/[a-z0-9-]+$",
+      "entity_aliases": ["可口可乐"]
+    }
+  ]
+}

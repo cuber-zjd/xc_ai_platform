@@ -92,6 +92,8 @@ backend/app/mcp/servers/my_tool/
 
 ## 8. 后端验证命令
 
+独立经营助手官方资讯实现为组件内 `business_insights/news_feed.py`，固定来源清单在相邻 `news_sources.json`。现有刷新子进程每6小时检查两个官方来源，失败按来源保留并退避1小时；不在请求线程或每个客户上执行抓取。CASDE正文和RSS标题候选分别标识，原料宏观线索与客户品牌匹配分别输出，客户范围不变。`news_status` 日期独立于经营截止日；人工正文核验样本优先，不允许把RSS标题当正文证据。组件增加 `test_news` 验证来源与缓存边界。
+
 独立经营助手位于 `backend/standalone/business_insights/`，使用独立 uv 锁定 MCP 2.3.0；七个只读 Streamable HTTP 工具复用独立 Bearer 客户范围，不挂载主后端 SSE 或复用 `MCP_API_KEY`。成本情景工具的数量、耗用系数和价差均为必填number，数值Schema仅使用minimum/maximum和文字说明，兼容飞书受限Schema读取器；避免可空联合类型与数值exclusiveMinimum。数量与系数必须严格大于0，仍由Pydantic和业务接口执行校验；HTTP情景接口兼容原行为。接口进程不持有数据库凭据、不注册演示登录或反馈写入；后台子进程使用主平台已有环境解析唯一有效 XcTest 连接，仅执行固定客户聚合 SELECT，每900秒刷新、失败保留并扫描去重候选。没有飞书写入或消息发送能力。组件内运行 `uv run python -m unittest test_boundary test_refresh -q` 验证。
 
 ```bash

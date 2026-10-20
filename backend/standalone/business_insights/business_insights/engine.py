@@ -8,8 +8,9 @@ import math
 import re
 import statistics
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 DEFAULT_SNAPSHOT = Path(os.environ['INSIGHTS_DATA_DIR']) / 'snapshot.json'
 RULE_VERSION = 'JY-RADAR-1.0'
@@ -45,7 +46,31 @@ class Insights:
         self.customers = {str(c['code']): c for c in self.s['customers']}
 
     def meta(self):
-        return {k: self.s[k] for k in ['as_of','collected_at','company','mode','scope','freshness','caveats']}
+        return {**{k: self.s[k] for k in ['as_of','collected_at','company','mode','scope','freshness','caveats']},
+                'news_status':self.news_status()}
+
+    def news_status(self):
+        state=dict(self.s.get('news_status') or {'sources':[],'notice':'仅人工核验样本；未接入自动来源'})
+        now=datetime.now(ZoneInfo('Asia/Shanghai'))
+        sources=[]
+        for source in state.get('sources',[]):
+            success=source.get('last_success')
+            sources.append({**source,'stale':not success or (now-datetime.fromisoformat(success)).total_seconds()>86400})
+        state['sources']=sources
+        state['stale']=not sources or any(s['stale'] for s in sources)
+        state['refresh_failed']=bool(state.get('cache_error')) or any(s.get('status')=='failed' for s in sources)
+        return state
+
+    def official_market_signals(self):
+        cutoff=iso(self.s.get('news_status',{}).get('as_of',str(self.as_of)))
+        latest={}
+        for n in self.s.get('news',[]):
+            if n.get('category')!='raw_material' or iso(n['published'])>cutoff:
+                continue
+            topic=n['topic']
+            if topic not in latest or latest[topic]['published']<n['published']:
+                latest[topic]=n
+        return list(latest.values())
 
     def total(self, rows, start, end, key='qty'):
         return round(sum(num(r.get(key)) for r in rows if start <= iso(r['day']) <= end), 3)
@@ -195,6 +220,8 @@ class Insights:
                 'delta':round(latest['price']-base['price'],2) if latest and base else None,
                 'change':ratio(latest['price'],base['price']) if latest and base else None,
                 'quotes':quotes[:8],
+                'official_signals':self.official_market_signals(),
+                'news_status':self.news_status(),
                 'sources':['dbo.jy_corn_purchase_price：健源采购价','dbo.ncp_mysteel_fsy_price_summary：同地区、企业与规格现货报价'],
                 'caveats':['不将玉米与糖浆现货简单相减当作加工利润。','市场报价不等同本公司成交价。',
                            '原料冲击仅做显式参数的情景估算，未涵盖锁价、库存成本和副产品。']}
@@ -215,9 +242,12 @@ class Insights:
 
     def opportunities(self, allowed=None):
         results=[]
+        cutoff=iso(self.s.get('news_status',{}).get('as_of',str(self.as_of)))
         for n in self.s.get('news',[]):
+            if n.get('category')=='raw_material':
+                continue
             published=iso(n['published'])
-            if published>self.as_of:
+            if published>cutoff:
                 continue
             for code,c in self.customers.items():
                 if allowed is not None and code not in allowed:
@@ -227,8 +257,8 @@ class Insights:
                 if match:
                     results.append({'id':n['id']+'-'+code,'news':n,'code':code,'customer':c['name'],
                                     'owner':c['owner'],'matched_alias':match,'match_type':'品牌关键词匹配，法律主体待核实',
-                                    'age_days':(self.as_of-published).days,
-                                    'fresh':(self.as_of-published).days<=90,
+                                    'age_days':(cutoff-published).days,
+                                    'fresh':(cutoff-published).days<=90,
                                     'action':n['action'],'claim':'待核实机会；未证明配方适用、采购需求或订单。'})
         return results
 

@@ -194,6 +194,8 @@ uv sync
 
 ## 11. Insight Linux 发布方式
 
+独立经营助手 `refresh_worker.py` 同时检查官方资讯缓存：`business_insights/news_sources.json` 为随Git发布的两个固定站点配置，`storage/official_news.json` 为私有运行缓存。经营任务仍每900秒运行，资讯成功后6小时内不再请求，失败1小时后重试；一轮最多3个请求，不新增飞书工作流或系统定时任务。资讯失败不阻塞经营快照刷新，来源级状态见 `/api/meta.news_status`，真实子进程结果也包含来源时间和状态；不得将文件存在当抓取成功。
+
 - 192.168.14.44 服务器固定使用原 git 工作目录 `/home/xinxi/ai_platform` 部署和运行，不再创建 `ai_platform_releases` 或 `ai_platform_current` 发布目录。
 - 跨会话部署唯一入口为仓库根目录 `scripts/deploy_server.ps1`。会话必须先在本地 `main` 精确提交本次文件并推送到发布仓库 `http://192.168.14.111:9055/zhangjide/ai_platform.git` 的 `main`，再执行 `powershell -ExecutionPolicy Bypass -File scripts/deploy_server.ps1 -ExpectedCommit <commit>`；仅后端变更可追加 `-BackendOnly`。脚本通过 `DeployRemoteUrl` 显式使用内网发布仓库，不依赖本地 `origin` 的 GitHub fetch URL；禁止临时拼接 `scp`、复制工作区或在服务器另建目录部署。
 - 部署脚本会校验本地分支、远端提交和服务器受跟踪文件状态，在服务器原目录执行 `git pull --ff-only`；随后按需执行 `uv sync --frozen`、`pnpm install --frozen-lockfile`、`pnpm build`，重启用户级前后端服务并检查 `8000/5173`。服务器存在受跟踪的未提交改动、HEAD 与指定提交不一致或健康检查失败时立即中止并保留现场。
