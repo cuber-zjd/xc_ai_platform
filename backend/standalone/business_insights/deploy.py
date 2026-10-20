@@ -105,7 +105,9 @@ def receive():
                 raise ValueError('现有较新快照与发布范围不符')
             snapshot=previous
     for name, value in [('snapshot.json',snapshot),('feishu_process.json',process),('principals.json',principal),
-                        ('collection_scope.json',{'connection_name':'XcTest','customer_codes':sorted(codes)})]:
+                        # 已验证该源库为 SQL Server 2012 SP1；兼容只作用于专用加密取数进程。
+                        ('collection_scope.json',{'connection_name':'XcTest','customer_codes':sorted(codes),
+                                                  'enable_legacy_tls_v1':True})]:
         dest = DATA / name
         if dest.exists():
             atomic(backup / name, dest.read_bytes())

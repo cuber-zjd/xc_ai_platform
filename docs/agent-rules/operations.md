@@ -212,6 +212,7 @@ uv sync
 - `storage/` 保存私有快照、环境文件、独立 SQLite、白名单、扫描候选和备份（Git 忽略）。发布前后核对原服务、8766 归属、HTTPS 七工具及真实刷新成功周期。
 - `INSIGHTS_REFRESH_ENABLED=1`、`INSIGHTS_REFRESH_INTERVAL=900`、`INSIGHTS_COLLECTOR_PYTHON=<backend>/.venv/bin/python` 启用后台只读刷新；API 使用独立环境，取数子进程复用主平台现有环境，不安装或重启主后端。子进程最多180秒，取消或超时必须回收，失败保留快照。
 - `collection_scope.json` 固定20家客户及 XcTest 名称；子进程在只读事务中读取平台已有命名连接，不复制密码到新文件。数据库查询仅允许代码内七个固定 SELECT/WITH；白名单变更、缺失或重复连接时停止。成功后更新聚合快照并扫描 outbox，候选未发送。`/api/meta.monitor` 的存活、成功时间和错误反映实际任务；`collection_status.json` 只作证据。飞书过程缓存仍单独显式回读。
+- 当前旧库使用 `enable_legacy_tls_v1=true` 专用兼容配置，仅作用于取数子进程临时 FreeTDS 配置；仍强制源库会话加密并验证 `encrypt_option=TRUE`，不回退明文，不修改系统或公网 HTTPS 配置。限制与后续移除条件见安全分册。
 - 配置回退使用 `storage/backups/<时间>/` 对应配置及模板，先 nginx 校验再 reload；仅停止该经营助手服务。代码撤销仍经 Git 和统一发布脚本，禁止 reset 其他人提交。
 
 ## 泛微流程AI助手环境配置

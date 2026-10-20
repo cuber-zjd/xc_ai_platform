@@ -14,6 +14,8 @@ HTTPS 前缀 `/business-insights`；MCP 为 `/business-insights/mcp/`，业务 H
 
 接口进程不保存数据库凭据；子进程最长180秒，超时或停服时终止并回收。`/health.monitor_running` 和已认证 `/api/meta.monitor` 来自实际任务，记录成功时间、下次运行、错误类型及计数；状态文件仅为证据，不能当作任务存活。候选和本地过程状态独立于飞书回读。重发相同快照时保留服务器较新版本；客户范围变化需另审。
 
+当前源库为 SQL Server 2012 SP1，需专用 `enable_legacy_tls_v1` 兼容；只在取数子进程临时 FreeTDS 配置中启用，仍强制加密并验证会话 `encrypt_option=TRUE`，拒绝明文，不改系统或公网 HTTPS。TLS 1.0 和源库证书未另行校验属于旧库限制，源库升级后应移除兼容，详见安全分册。
+
 验证：`uv run python -m unittest test_boundary test_refresh -q`。涵盖固定范围、截止日、失败保留、结果超限、未发送候选去重、任务状态及取消时子进程回收。
 
 验收须包含 HTTPS 证书正常、未认证拒绝、演示登录关闭、写接口不存在、官方 MCP 客户端实际发现并调用七工具，以及原平台页面仍可访问。此验收不等同真实飞书智能体调用成功。

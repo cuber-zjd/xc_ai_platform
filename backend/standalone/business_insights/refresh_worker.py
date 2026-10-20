@@ -30,27 +30,21 @@ async def connection_config(name):
 
 
 def refresh():
-    import pymssql
     from business_insights.collector import collect
     from business_insights.scanner import scan
+    from business_insights.source_connection import source_connection
     data=Path(os.environ['INSIGHTS_DATA_DIR'])
     scope=json.loads((data/'collection_scope.json').read_text(encoding='utf-8'))
     cfg=asyncio.run(connection_config(scope['connection_name']))
-    conn=pymssql.connect(server=cfg['host'],port=int(cfg['port']),database=cfg['database'],
-                         user=cfg['username'],password=cfg['password'],charset='UTF-8',
-                         timeout=45,login_timeout=15,autocommit=False)
-    try:
+    with source_connection(cfg,scope.get('enable_legacy_tls_v1',False)) as conn:
         as_of=datetime.now(ZoneInfo('Asia/Shanghai')).date()-timedelta(days=1)
         snapshot=collect(as_of,conn,scope['customer_codes'],data/'snapshot.json')
         candidates=scan(data)
         return {'as_of':snapshot['as_of'],'collected_at':snapshot['collected_at'],
                 'customers':len(snapshot['customers']),'aggregate_rows':len(snapshot['deliveries']),
                 'query_count':len(snapshot['provenance']),'fixed_customer_scope':True,
+                'connection_encrypted':True,'legacy_tls_v1_compatibility':scope.get('enable_legacy_tls_v1',False),
                 'business_database_writes':0,'messages_sent':0,'feishu_writes':0,**candidates}
-    finally:
-        # 聚合器成功进入查询后会关闭连接；前置校验失败时由这里兜底。
-        try:conn.close()
-        except pymssql.InterfaceError:pass
 
 
 if __name__=='__main__':

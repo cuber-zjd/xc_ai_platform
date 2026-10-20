@@ -4,6 +4,9 @@ from datetime import date
 import json
 from pathlib import Path
 import tempfile
+import os
+import sys
+from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -11,6 +14,7 @@ from test_boundary import fixture
 from business_insights.collector import collect, validate_sql
 from business_insights.monitor import Monitor
 from business_insights.scanner import scan
+from business_insights.source_connection import source_connection
 
 
 class Cursor:
@@ -163,6 +167,44 @@ class MonitorTests(unittest.IsolatedAsyncioTestCase):
             task.cancel()
             with self.assertRaises(asyncio.CancelledError):await task
         self.assertTrue(child.killed and child.reaped)
+
+
+class SourceConnectionTests(unittest.TestCase):
+    def test_legacy_profile_is_private_temporary_and_requires_encryption(self):
+        cfg={'host':'192.168.1.2','port':1433,'database':'synthetic','username':'synthetic-user','password':'synthetic-secret'}
+        captured={}
+        class Cursor:
+            def execute(self,sql):captured['query']=sql
+            def fetchone(self):return (captured.get('encryption','TRUE'),)
+            def close(self):pass
+        class Conn:
+            def cursor(self):return Cursor()
+            def close(self):captured['closed']=True
+        def connect(**kwargs):
+            captured['kwargs']=kwargs
+            captured['profile_path']=Path(os.environ['FREETDSCONF'])
+            captured['profile']=captured['profile_path'].read_text(encoding='utf-8')
+            return Conn()
+        previous=os.environ.get('FREETDSCONF')
+        with patch.dict(sys.modules,{'pymssql':SimpleNamespace(connect=connect,InterfaceError=RuntimeError)}):
+            with source_connection(cfg,True):
+                self.assertTrue(captured['profile_path'].exists())
+                self.assertIn('enable tls v1 = yes',captured['profile'])
+                self.assertIn('encryption = require',captured['profile'])
+                self.assertNotIn(cfg['password'],captured['profile'])
+                self.assertNotIn(cfg['username'],captured['profile'])
+            self.assertTrue(captured['closed'])
+            self.assertFalse(captured['profile_path'].exists())
+            self.assertEqual(os.environ.get('FREETDSCONF'),previous)
+            self.assertEqual(captured['kwargs']['encryption'],'require')
+            captured['encryption']='FALSE'
+            with self.assertRaises(ValueError):
+                with source_connection(cfg,True):pass
+            self.assertFalse(captured['profile_path'].exists())
+            self.assertEqual(os.environ.get('FREETDSCONF'),previous)
+            cfg['host']='127.0.0.1'
+            with self.assertRaises(ValueError):
+                with source_connection(cfg,True):pass
 
 
 if __name__=='__main__':unittest.main()

@@ -39,6 +39,8 @@
 
 后台刷新进程复用主平台已有环境，以 PostgreSQL 只读事务解析唯一有效 XcTest 连接；密码仅在子进程内使用，不返回接口进程、不新增凭据文件。业务查询固定为七个 SELECT/WITH，禁止写入、多语句、过程调用和白名单外客户，不开放 SQL 工具或手动刷新端点。失败仅记录错误类型、保留成功快照，输出不含连接串或驱动异常详情；不改变既有数据库账号权限。候选扫描仅写独立 storage，不等同已发送通知。
 
+该源库已实查为 SQL Server 2012 SP1，默认 FreeTDS 连接失败。专用取数子进程通过临时 FreeTDS 配置启用 TLS 1.0 兼容，始终 `encryption=require`，并查询本会话 `encrypt_option` 确认 TRUE 后才采集；不回退明文、不改系统 TLS 配置，临时配置不含账号密码。TLS 1.0 为旧库兼容限制，不等同现代 TLS；源库证书默认未另行校验。新库不得沿用兼容开关，升级源库后应移除。公网 HTTPS 证书校验保持启用。配置依据：[FreeTDS 官方配置文档](https://www.freetds.org/userguide/freetdsconf.htm)。
+
 - 外部调用统一使用 `ai-sign` 请求头。
 - 可用密钥配置为 `EXTERNAL_API_KEYS`。
 - 外部接口依赖 `verify_external_ai_sign` 校验。
