@@ -88,6 +88,7 @@ class Boundaries(unittest.TestCase):
         for value in schema['properties'].values():
             self.assertEqual(value['type'],'number')
             self.assertNotIn('anyOf',value)
+            self.assertNotIn('exclusiveMinimum',value)
         def call(arguments):
             return self.client.post('/mcp/',headers=headers,json={
                 'jsonrpc':'2.0','id':2,'method':'tools/call',
@@ -97,6 +98,8 @@ class Boundaries(unittest.TestCase):
         self.assertEqual(result['structuredContent']['estimated_cost_change'],-60000)
         self.assertTrue(call({'quantity':1000,'factor':1})['isError'])
         self.assertTrue(call({'quantity':1000,'factor':1,'delta':None})['isError'])
+        self.assertTrue(call({'quantity':0,'factor':1,'delta':-60})['isError'])
+        self.assertTrue(call({'quantity':1000,'factor':0,'delta':-60})['isError'])
 
 
 if __name__ == '__main__':

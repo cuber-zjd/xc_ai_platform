@@ -38,6 +38,13 @@ class BearerGate:
         await self.app(scope,receive,send)
 
 
+def compatible_positive_number(schema):
+    """兼容只识别旧式数值边界的客户端；实际正值约束仍由Pydantic执行。"""
+    schema.pop('exclusiveMinimum',None)
+    schema['minimum']=0
+    schema['description']='必须为大于0的有限数值，服务端严格校验。'
+
+
 def create_mcp(business_app,principals,allowed_hosts,allowed_origins):
     server=MCPServer('jianyuan-business-insights',title='健源经营助手',version='0.2.0',
                      instructions=INSTRUCTIONS,log_level='ERROR')
@@ -87,8 +94,8 @@ def create_mcp(business_app,principals,allowed_hosts,allowed_origins):
 
     @server.tool(annotations=readonly,structured_output=True)
     async def estimate_raw_material_scenario(
-        quantity:Annotated[float,Field(gt=0,le=1000000,allow_inf_nan=False)],
-        factor:Annotated[float,Field(gt=0,le=10,allow_inf_nan=False)],
+        quantity:Annotated[float,Field(gt=0,le=1000000,allow_inf_nan=False,json_schema_extra=compatible_positive_number)],
+        factor:Annotated[float,Field(gt=0,le=10,allow_inf_nan=False,json_schema_extra=compatible_positive_number)],
         delta:Annotated[float,Field(ge=-10000,le=10000,allow_inf_nan=False)],ctx:Context)->dict[str,Any]:
         """数量吨×显式原料耗用系数×价差元/吨。三项假设必须明确；价差可取行情证据，不得编造。结果非实际损益。"""
         return await call('/api/scenario',ctx,{'quantity':quantity,'factor':factor,'delta':delta})
