@@ -209,7 +209,9 @@ uv sync
 - 该模式必须传 `-BusinessInsightsDataDirectory` 和 `-BusinessInsightsCredentialFile`；聚合快照 JSON 通过 SSH stdin 送到受限接收器，代码仅由 Git 更新。凭据本机生成并限制文件权限，服务器仅保存摘要。
 - `ai-platform-business-insights.service` 监听内网 8766，现有 Dify 容器 Nginx 为 `/business-insights/` 转发；同时维护运行配置和重启模板，修改前备份，`nginx -t` 失败恢复。不修改宿主机 Nginx、443 证书和现有业务路由。
 - HTTPS 网关可能重写上游 Host；该专用 location 必须显式转发配置的 HTTPS 公网主机名，不能沿用网关的内部 Host，否则 MCP 的主机白名单会拒绝请求。公网主机配置须通过域名和端口格式校验；不得为方便接入关闭 MCP Host/Origin 校验。
-- `storage/` 保存私有快照、环境文件、独立 SQLite 和备份（Git 忽略）；云端无业务库轮询，始终显示快照截止日。发布前后核对原服务、8766 归属及 HTTPS 与七工具调用。
+- `storage/` 保存私有快照、环境文件、独立 SQLite、白名单、扫描候选和备份（Git 忽略）。发布前后核对原服务、8766 归属、HTTPS 七工具及真实刷新成功周期。
+- `INSIGHTS_REFRESH_ENABLED=1`、`INSIGHTS_REFRESH_INTERVAL=900`、`INSIGHTS_COLLECTOR_PYTHON=<backend>/.venv/bin/python` 启用后台只读刷新；API 使用独立环境，取数子进程复用主平台现有环境，不安装或重启主后端。子进程最多180秒，取消或超时必须回收，失败保留快照。
+- `collection_scope.json` 固定20家客户及 XcTest 名称；子进程在只读事务中读取平台已有命名连接，不复制密码到新文件。数据库查询仅允许代码内七个固定 SELECT/WITH；白名单变更、缺失或重复连接时停止。成功后更新聚合快照并扫描 outbox，候选未发送。`/api/meta.monitor` 的存活、成功时间和错误反映实际任务；`collection_status.json` 只作证据。飞书过程缓存仍单独显式回读。
 - 配置回退使用 `storage/backups/<时间>/` 对应配置及模板，先 nginx 校验再 reload；仅停止该经营助手服务。代码撤销仍经 Git 和统一发布脚本，禁止 reset 其他人提交。
 
 ## 泛微流程AI助手环境配置

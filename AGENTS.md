@@ -34,7 +34,7 @@
 - 前端：React 19 + Vite + TypeScript + Tailwind CSS v4 + Shadcn/ui。
 - 基础设施：PostgreSQL、Redis、MinIO、Milvus、ClickHouse、LangFuse、OnlyOffice。
 - 后端入口：`backend/app/main.py`。
-- 经营助手只读试点：`backend/standalone/business_insights/`，独立 uv 环境与用户服务，不复用主平台密钥；经统一发布脚本 `-BusinessInsightsOnly` 发布到同一 Git 工作目录。
+- 经营助手只读试点：`backend/standalone/business_insights/`，独立接口环境与用户服务，不复用主平台接口密钥；取数子进程使用主平台既有环境和 XcTest 连接，仅刷新固定客户聚合。经统一发布脚本 `-BusinessInsightsOnly` 发布到同一 Git 工作目录。
 - 后端总路由：`backend/app/ai-api/v1/router.py`。
 - 前端入口：`frontend/src/main.tsx`。
 - 前端路由：`frontend/src/router/index.tsx`。

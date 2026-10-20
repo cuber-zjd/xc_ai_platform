@@ -48,7 +48,7 @@ class Feedback(BaseModel):
     version:int=Field(ge=1)
 
 
-def create_app(snapshot_path=DEFAULT_SNAPSHOT, db_path=None, external=False, principal_map=None,monitor_interval=None,feishu_process_path=None):
+def create_app(snapshot_path=DEFAULT_SNAPSHOT, db_path=None, external=False, principal_map=None,monitor_interval=None,feishu_process_path=None,refresh_monitor=None):
     snapshot_path=Path(snapshot_path)
     snapshot_stamp=snapshot_path.stat().st_mtime_ns
     engine=Insights(json.loads(snapshot_path.read_text(encoding='utf-8')))
@@ -59,9 +59,7 @@ def create_app(snapshot_path=DEFAULT_SNAPSHOT, db_path=None, external=False, pri
     refresh_failed=False
     if not external or monitor_interval is not None:
         raise ValueError('服务器组件只支持外部只读快照模式')
-    monitor=None
-    if monitor is not None and snapshot_path.resolve()!=DEFAULT_SNAPSHOT.resolve():
-        raise ValueError('只读监测仅刷新默认健源快照；自定义或测试快照不得自动读取真实源库')
+    monitor=refresh_monitor
     @asynccontextmanager
     async def lifespan(_app):
         async with mcp_transport.router.lifespan_context(mcp_transport):
@@ -195,7 +193,9 @@ def create_app(snapshot_path=DEFAULT_SNAPSHOT, db_path=None, external=False, pri
                 'scoped_feishu_event_count':len(followup['events']),
                 'monitor':monitor.status() if monitor else {'running':False,'phase':'未启用'},
                 'feishu_base':os.environ.get('INSIGHTS_FEISHU_BASE_URL',''),
-                'integration':{'live_readonly_data':False,'data_mode':'已验证聚合快照；云端不直连业务库','feishu_base_read_verified':True,
+                'integration':{'live_readonly_data':bool(monitor and monitor.status()['cycles']>0),
+                               'data_mode':'固定客户聚合快照；云端已启用只读刷新' if monitor else '已验证聚合快照；未启用刷新',
+                               'feishu_base_read_verified':True,
                                'readonly_mcp_available':True,
                                'native_agent_connected':False,'scheduled_refresh':monitor.status()['running'] if monitor else False,
                                'notifications_enabled':False,'external_network_verified':False}}

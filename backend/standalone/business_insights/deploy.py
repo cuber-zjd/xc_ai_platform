@@ -82,9 +82,30 @@ def receive():
     principal = {key: {'id': 'pilot-connector', 'name': '经营助手试点接入', 'role': 'ops'}}
     DATA.mkdir(exist_ok=True, mode=0o700)
     DATA.chmod(0o700)
+    scope_path=DATA/'collection_scope.json'
+    if scope_path.exists():
+        previous_scope=json.loads(scope_path.read_text(encoding='utf-8'))
+        if set(previous_scope['customer_codes'])!=codes:
+            raise ValueError('固定客户范围发生变化，需先审阅范围变更')
+    backend=ROOT.parents[1]
+    collector_python=backend/'.venv/bin/python'
+    if not collector_python.is_file():
+        raise ValueError('主平台既有取数运行环境不可用')
+    unit_path = Path.home() / '.config/systemd/user' / UNIT
+    if unit_path.exists():
+        # 防止旧刷新进程在切换快照和身份配置期间继续写入。
+        run(['systemctl','--user','stop',UNIT])
     backup = DATA / 'backups' / datetime.now().strftime('%Y%m%d-%H%M%S-%f')
     backup.mkdir(parents=True, mode=0o700)
-    for name, value in [('snapshot.json',snapshot),('feishu_process.json',process),('principals.json',principal)]:
+    existing_snapshot=DATA/'snapshot.json'
+    if existing_snapshot.exists():
+        previous=json.loads(existing_snapshot.read_text(encoding='utf-8'))
+        if (previous['as_of'],previous['collected_at'])>(snapshot['as_of'],snapshot['collected_at']):
+            if {str(c['code']) for c in previous['customers']}!=codes:
+                raise ValueError('现有较新快照与发布范围不符')
+            snapshot=previous
+    for name, value in [('snapshot.json',snapshot),('feishu_process.json',process),('principals.json',principal),
+                        ('collection_scope.json',{'connection_name':'XcTest','customer_codes':sorted(codes)})]:
         dest = DATA / name
         if dest.exists():
             atomic(backup / name, dest.read_bytes())
@@ -93,6 +114,8 @@ def receive():
         'INSIGHTS_DATA_DIR': str(DATA), 'INSIGHTS_PUBLIC_URL': payload['public_url'],
         'INSIGHTS_FEISHU_BASE_URL': payload['feishu_base_url'],
         'INSIGHTS_FEISHU_BASE_TOKEN': process['base_token'], 'INSIGHTS_FEISHU_TABLE': process['table_id'],
+        'INSIGHTS_REFRESH_ENABLED':'1','INSIGHTS_REFRESH_INTERVAL':'900',
+        'INSIGHTS_COLLECTOR_PYTHON':str(collector_python),
     }
     # 配置值不允许换行或引号，防止注入 systemd 环境文件。
     if any(any(c in str(v) for c in '\n\r"') for v in env.values()):
@@ -117,7 +140,6 @@ ReadWritePaths={DATA}
 [Install]
 WantedBy=default.target
 '''
-    unit_path = Path.home() / '.config/systemd/user' / UNIT
     if unit_path.exists():
         atomic(backup / UNIT, unit_path.read_bytes())
     atomic(unit_path, unit.encode())
@@ -167,7 +189,7 @@ WantedBy=default.target
         raise
     summary = {'ok': True, 'as_of': snapshot['as_of'], 'customers': len(codes),
                'process_events': len(process['events']), 'service': UNIT,
-               'public_url': payload['public_url'], 'data_refresh': '显式发布快照，无云端业务库轮询',
+               'public_url': payload['public_url'], 'data_refresh': '已配置每900秒只读聚合刷新；以实际monitor周期验收为准',
                'messages_sent': 0, 'feishu_writes': 0, 'backup': str(backup)}
     atomic(DATA / 'deployment.json', json.dumps(summary,ensure_ascii=False,indent=2).encode())
     sys.stdout.write(json.dumps(summary,ensure_ascii=False)+'\n')
