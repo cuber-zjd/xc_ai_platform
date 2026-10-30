@@ -468,7 +468,7 @@ class InsightFeishuBriefService:
             plan.time_of_day,
             plan.weekday,
             plan.day_of_month,
-            base=payload.generation_scheduled_at,
+            base=max(payload.generation_scheduled_at, payload.release_scheduled_at),
         )
         plan.update_by = str(user_id)
         db.add(plan)
@@ -969,7 +969,7 @@ class InsightFeishuBriefService:
                 persisted_plan.time_of_day,
                 persisted_plan.weekday,
                 persisted_plan.day_of_month,
-                base=execution_started_at,
+                base=max(execution_started_at, occurrence.release_scheduled_at) if occurrence else execution_started_at,
             )
             db.add(persisted_plan)
         await db.commit()
@@ -1222,7 +1222,7 @@ class InsightFeishuBriefService:
                     persisted_plan.time_of_day,
                     persisted_plan.weekday,
                     persisted_plan.day_of_month,
-                    base=finished,
+                    base=max(finished, occurrence.release_scheduled_at) if occurrence else finished,
                 )
                 db.add(persisted_plan)
             await db.commit()
@@ -1268,6 +1268,7 @@ class InsightFeishuBriefService:
                     failed_plan.time_of_day,
                     failed_plan.weekday,
                     failed_plan.day_of_month,
+                    base=max(datetime.now(), occurrence.release_scheduled_at) if occurrence else None,
                 )
                 db.add(failed_plan)
             await db.commit()
@@ -3372,9 +3373,9 @@ class InsightFeishuBriefService:
             candidate = candidate.replace(day=target_day)
             if candidate <= now:
                 if candidate.month == 12:
-                    candidate = candidate.replace(year=candidate.year + 1, month=1)
+                    candidate = candidate.replace(year=candidate.year + 1, month=1, day=1)
                 else:
-                    candidate = candidate.replace(month=candidate.month + 1)
+                    candidate = candidate.replace(month=candidate.month + 1, day=1)
                 target_day = min(
                     configured_day,
                     calendar.monthrange(candidate.year, candidate.month)[1],
