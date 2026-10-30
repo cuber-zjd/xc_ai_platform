@@ -1395,7 +1395,8 @@ class InsightFeishuBriefService:
         for occurrence in occurrence_rows:
             try:
                 plan = await self._require_plan(db, occurrence.plan_id)
-                effective = plan.model_copy(deep=True)
+                # 仅复制字段，不能复制 SQLAlchemy 的实例状态和弱引用。
+                effective = InsightFeishuBriefPlan.model_validate(plan.model_dump())
                 effective.material_scope_json = occurrence.material_scope_json or plan.material_scope_json
                 effective.recipients_json = occurrence.recipients_json
                 effective.afternoon_recipients_json = occurrence.release_recipients_json
@@ -3557,7 +3558,7 @@ class InsightFeishuBriefService:
         persisted: InsightFeishuBriefPlan,
         payload: InsightFeishuBriefPlanCreate,
     ) -> InsightFeishuBriefPlan:
-        draft = persisted.model_copy(deep=True)
+        draft = InsightFeishuBriefPlan.model_validate(persisted.model_dump())
         draft.plan_name = payload.plan_name.strip()
         draft.sys_company_id = payload.sys_company_id
         draft.schedule_frequency = payload.schedule_frequency
