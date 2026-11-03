@@ -8,6 +8,7 @@ from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.config import settings
+from app.services.agent.insight.crawler.content_cleaner import insight_content_cleaner
 from app.core.llm_factory import LLMFactory
 from app.core.logger import logger
 from app.models.agent.insight import (
@@ -424,8 +425,7 @@ class InsightAiReviewService:
         return bool(crawl_result.published_at and isinstance(publication, dict) and publication.get("verified"))
 
     def _has_sufficient_fulltext(self, crawl_result: InsightCrawlResult) -> bool:
-        content = re.sub(r"\s+", "", str(crawl_result.markdown_content or ""))
-        return len(content) >= 200 and "页面需要安全验证" not in content
+        return insight_content_cleaner.fulltext_error(crawl_result.markdown_content) is None
 
     def _allows_without_fulltext(self, crawl_result: InsightCrawlResult) -> bool:
         host = (urlparse(crawl_result.source_url or "").hostname or "").lower()

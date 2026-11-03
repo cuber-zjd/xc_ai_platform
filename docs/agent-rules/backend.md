@@ -14,6 +14,8 @@
 
 ## 2. 分层约定
 
+Insight 选材与写作的证据摘要共用 `backend/app/services/agent/insight/report_evidence.py`：全量候选分批审批，显式区分通过、排除和待处理；不得把超时或漏回ID统计成排除。月报不再做前200条截断和固定名额压缩。正文输入包含原文偏移和完整性标识，序列化材料上下文计入字符预算，无法容纳全部索引及最小证据时明确失败，不删除末尾材料。成功输出保留角色配置快照和事件到章节的链接覆盖；失败审批审计写入既有运行记录。这些记录尚不等同可恢复的逐批检查点或独立事实核验。
+
 - API 路由放在 `backend/app/ai-api/v1/endpoints/`。
 - 业务逻辑放在 `backend/app/services/`。
 - 数据模型放在 `backend/app/models/`。

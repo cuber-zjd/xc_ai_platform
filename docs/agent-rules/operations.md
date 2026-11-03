@@ -44,6 +44,15 @@ pnpm dev
 
 ## 3. 环境变量
 
+Insight 模型与证据链配置（2026-11-03）：
+
+- `INSIGHT_REPORT_WRITER_MODELS`、`INSIGHT_REPORT_REVIEWER_MODELS`、`INSIGHT_REPORT_APPROVAL_MODELS` 为逗号分隔的 `sys_model.model_name` 优先列表，分别供主笔、独立审阅和选材使用。连接、密钥和实际代码仍来自模型表，保留既有 LLMFactory 回退，实际使用模型见运行轨迹。
+- `INSIGHT_REPORT_APPROVAL_CONCURRENCY=3` 控制25条选材批次的并发；`INSIGHT_REPORT_CONTEXT_CHAR_BUDGET=240000` 控制材料上下文序列化字符数（最小10000），不是Token数，也不含系统提示及草稿。超预算明确报错，不删除候选。
+- `INSIGHT_SCHEDULER_GROUPED_GAP_QUERY_LIMIT=1` 为每组每渠道无命中对象的补查上限，代码限制0至3；0关闭。补查按日轮换，复用查询检查点和同渠道阶段预算，不保证每个零命中对象当天都补查。
+- `INSIGHT_DOUBAO_SEARCH_MODEL` 按实际已开通模型代码配置，默认保留 `doubao-seed-2-1-turbo-260628`。`INSIGHT_DOUBAO_SEARCH_SOURCE=default` 保留既有联网协议；显式 `doubao` 使用 sources 和 reasoning.effort 协议，受 `INSIGHT_DOUBAO_SEARCH_MAX_TOOL_CALLS=3` 控制。此自定义来源分支尚未做账户活网验收，不默认开启。
+- 在 backend 目录执行 `uv run python scripts/insight_probe_model.py --source-id <已有连接模型ID> --code <实际供应商模型代码>` 只做一个小型JSON调用；加 `--apply` 才在验证成功后新增模型，不覆盖旧模型和计划。执行前核对数据库环境，本地可能连接服务器共享库；该脚本不生成报告、不发送消息。不可把少量探针通过视为长文、工具调用或负载验收。
+- 新模型注册与代码部署分开：本批已做共享库增量注册，但代码尚未发布。后续发布仍走根目录 `scripts/deploy_server.ps1 -BackendOnly -ExpectedCommit <commit>`，不得用临时复制代替。现有已运行进程不会因本地改文件自动使用新版逻辑。
+
 - 飞书简报提前生成时使用单期实例分别指定生成、审阅和正式推送时间；常规计划的下一次生成必须排在该实例正式推送之后，成功、失败和执行占用均遵循此规则，防止月底重复生成。验证时同时检查单期时间与计划 `next_run_time`，不触发真实消息测试。
 
 后端配置入口：

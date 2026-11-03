@@ -10,6 +10,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from app.core.config import settings
+from app.services.agent.insight.crawler.content_cleaner import insight_content_cleaner
 
 
 class FirecrawlClient:
@@ -59,8 +60,11 @@ class FirecrawlClient:
                 pass
         try:
             firecrawl_data = await self.scrape_url(url)
+            if firecrawl_data.get("html"):
+                page_metadata = self._extract_page_metadata(BeautifulSoup(firecrawl_data["html"], "lxml"), url)
+                firecrawl_data["metadata"] = dict(firecrawl_data.get("metadata") or {}) | page_metadata
             content = str(firecrawl_data.get("markdown") or firecrawl_data.get("content") or "")
-            if len(content.strip()) >= 200:
+            if not insight_content_cleaner.fulltext_error(content):
                 return firecrawl_data
             raise ValueError("Firecrawl 未返回足够正文")
         except Exception as firecrawl_error:
@@ -86,43 +90,20 @@ class FirecrawlClient:
         }
         timeout = min(max(self.timeout_seconds, 10), 30)
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, headers=headers) as client:
-            current_url = url
-            response = None
-            for _ in range(6):
-                await self._ensure_public_url(current_url)
-                response = await client.get(current_url)
-                if response.is_redirect:
-                    location = response.headers.get("location")
-                    if not location:
-                        break
-                    current_url = urljoin(current_url, location)
-                    continue
-                break
-            if response is None or response.is_redirect:
-                raise ValueError("网页重定向次数过多")
-            response.raise_for_status()
-            if len(response.content) > 5 * 1024 * 1024:
-                raise ValueError("网页内容超过 5MB，停止直接抽取")
-            content_type = response.headers.get("content-type", "").lower()
-            if content_type and not any(
-                value in content_type
-                for value in ("text/html", "text/plain", "application/xhtml+xml")
-            ):
-                raise ValueError(f"直接 HTTP 抽取不支持该内容类型：{content_type[:100]}")
+            response = await self._get_public_page(client, url)
         response_text = self._decode_response_text(response)
         soup = BeautifulSoup(response_text, "lxml")
         metadata = self._extract_page_metadata(soup, str(response.url))
         metadata_url = self._metadata_fallback_url(str(response.url))
-        if not metadata.get("publishedTime") and metadata_url:
+        if not metadata.get("publishedTime") and not metadata.get("publication_conflict") and metadata_url:
             try:
                 await self._ensure_public_url(metadata_url)
                 async with httpx.AsyncClient(
                     timeout=timeout,
-                    follow_redirects=True,
+                    follow_redirects=False,
                     headers=headers,
                 ) as metadata_client:
-                    metadata_response = await metadata_client.get(metadata_url)
-                    metadata_response.raise_for_status()
+                    metadata_response = await self._get_public_page(metadata_client, metadata_url)
                 desktop_metadata = self._extract_page_metadata(
                     BeautifulSoup(self._decode_response_text(metadata_response), "lxml"),
                     str(metadata_response.url),
@@ -135,11 +116,40 @@ class FirecrawlClient:
         root = soup.find("article") or soup.find("main") or soup.body or soup
         lines = [line.strip() for line in root.get_text("\n").splitlines() if line.strip()]
         content = "\n".join(dict.fromkeys(lines))
-        if len(content) < 200:
-            raise ValueError("直接 HTTP 抽取未获得足够正文")
+        if error := insight_content_cleaner.fulltext_error(content):
+            raise ValueError(error)
         title = soup.title.get_text(" ", strip=True) if soup.title else None
         metadata["title"] = metadata.get("title") or title
         return {"markdown": content, "html": response_text, "metadata": metadata}
+
+    async def _get_public_page(self, client: httpx.AsyncClient, url: str) -> httpx.Response:
+        """正文和元数据补抓共用逐跳地址校验及流式大小限制。"""
+        current_url = url
+        limit = 5 * 1024 * 1024
+        for _ in range(6):
+            await self._ensure_public_url(current_url)
+            async with client.stream("GET", current_url, follow_redirects=False) as response:
+                if response.is_redirect:
+                    location = response.headers.get("location")
+                    if not location:
+                        raise ValueError("网页重定向缺少目标地址")
+                    current_url = urljoin(current_url, location)
+                    continue
+                response.raise_for_status()
+                content_type = response.headers.get("content-type", "").lower()
+                if content_type and not any(value in content_type for value in ("text/html", "text/plain", "application/xhtml+xml")):
+                    raise ValueError(f"直接 HTTP 抽取不支持该内容类型：{content_type[:100]}")
+                chunks = []
+                total = 0
+                async for chunk in response.aiter_bytes():
+                    total += len(chunk)
+                    if total > limit:
+                        raise ValueError("网页内容超过 5MB，停止直接抽取")
+                    chunks.append(chunk)
+                # 数据已经解压，重建响应时不能再次应用原 Content-Encoding。
+                headers = {key: value for key, value in response.headers.items() if key.lower() not in {"content-encoding", "content-length"}}
+                return httpx.Response(response.status_code, headers=headers, content=b"".join(chunks), request=response.request)
+        raise ValueError("网页重定向次数过多")
 
     @staticmethod
     def _decode_response_text(response: httpx.Response) -> str:
@@ -179,76 +189,80 @@ class FirecrawlClient:
 
     def _extract_page_metadata(self, soup: BeautifulSoup, source_url: str) -> dict[str, Any]:
         metadata: dict[str, Any] = {"source_url": source_url}
-        title = soup.title.get_text(" ", strip=True) if soup.title else None
-        if title:
-            metadata["title"] = title
-
-        # 部分媒体的动态 SEO 标签会写成页面刷新时间，优先读取文章头部的可见发布时间。
-        for selector in (
-            ".article-title-icon .item-time",
-            ".article-info .info-s",
-            ".article-info",
-            "time[datetime]",
-            "[itemprop='datePublished']",
-        ):
+        if soup.title:
+            metadata["title"] = soup.title.get_text(" ", strip=True)
+        evidence: list[dict[str, str]] = []
+        selectors = (
+            ".article-title-icon .item-time", ".article-info .info-s",
+            ".article-info", "article time[datetime]", "[itemprop='datePublished']",
+            ".publish-time", ".publish_time", ".pub-time", ".article-time",
+        )
+        for selector in selectors:
             node = soup.select_one(selector)
-            if not node:
-                continue
-            value = str(node.get("datetime") or node.get("content") or node.get_text(" ", strip=True)).strip()
-            if value:
-                metadata["publishedTime"] = value
-                return metadata
-
-        date_keys = {
-            "article:published_time",
-            "og:published_time",
-            "publishdate",
-            "pubdate",
-            "date",
-            "datepublished",
-            "publish_time",
-            "publishtime",
-            "sailthru.date",
-        }
+            if node:
+                value = str(node.get("datetime") or node.get("content") or node.get_text(" ", strip=True)).strip()
+                if value:
+                    evidence.append({"kind": "header", "location": selector, "raw": value})
+        host = (urlparse(source_url).hostname or "").lower()
+        if host == "news.foodmate.net" and urlparse(source_url).path.startswith("/wap/"):
+            node = soup.select_one("div.info")
+            value = node.get_text(" ", strip=True) if node else ""
+            visible = re.match(r"日期\s*[:：]\s*(20\d{2}-\d{1,2}-\d{1,2})", value)
+            if visible:
+                evidence.insert(0, {"kind": "header", "location": "foodmate wap div.info 日期", "raw": visible.group(1)})
+        if host in {"www.roquette.com", "roquette.com"}:
+            # 仅取文章头部明确的 Published 字段，不能从相关文章日期补值。
+            root = soup.find("article") or soup.find("main")
+            head = root.get_text(" ", strip=True)[:1200] if root else ""
+            visible = re.search(r"Published\s*(?:on|:)?\s*((?:January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},?\s+20\d{2})", head)
+            if visible:
+                evidence.insert(0, {"kind": "header", "location": "article Published", "raw": visible.group(1)})
+        date_keys = {"article:published_time", "og:published_time", "publishdate",
+                     "pubdate", "datepublished", "publish_time", "publishtime", "sailthru.date"}
         for node in soup.find_all("meta"):
             key = str(node.get("property") or node.get("name") or node.get("itemprop") or "").lower()
-            content = str(node.get("content") or "").strip()
-            if key in date_keys and content:
-                metadata["publishedTime"] = content
-                return metadata
-
+            value = str(node.get("content") or "").strip()
+            if key in date_keys and value:
+                evidence.append({"kind": "metadata", "location": key, "raw": value})
         for node in soup.find_all("script", attrs={"type": "application/ld+json"}):
             try:
                 payload = json.loads(node.string or node.get_text() or "")
             except (TypeError, ValueError):
                 continue
-            published = self._find_json_date(payload)
-            if published:
-                metadata["publishedTime"] = published
-                return metadata
-
-        for selector in (
-            ".publish-time",
-            ".publish_time",
-            ".pub-time",
-            ".article-time",
-        ):
-            node = soup.select_one(selector)
-            if not node:
+            if value := self._find_json_date(payload):
+                evidence.append({"kind": "jsonld", "location": "datePublished", "raw": value})
+        valid = []
+        for item in evidence:
+            # 只有带年份的绝对日期可成为发布证据，不能把刷新/相对时间当成今天。
+            if not re.search(r"\b20\d{2}\b|20\d{2}年", item["raw"]):
                 continue
-            value = str(node.get("datetime") or node.get("content") or node.get_text(" ", strip=True)).strip()
-            if value:
-                metadata["publishedTime"] = value
-                return metadata
+            parsed, _ = insight_content_cleaner.parse_publish_time_with_source({"publishedTime": item["raw"]})
+            if parsed:
+                item["value"] = parsed.isoformat()
+                valid.append(item)
+        metadata["publication_evidence"] = valid
+        if not valid:
+            return metadata
+        dates = {item["value"][:10] for item in valid}
+        # 已有回归证实36氪SEO时间会随页面刷新；仅该站保留可见头部优先规则。
+        known_dynamic_seo = host in {"36kr.com", "www.36kr.com"} and valid[0]["kind"] == "header"
+        if len(dates) > 1 and not known_dynamic_seo:
+            metadata["publication_conflict"] = True
+        else:
+            metadata["publishedTime"] = valid[0]["raw"]
+            if len(dates) > 1:
+                metadata["publication_resolution"] = "36kr_visible_header_over_dynamic_seo"
         return metadata
 
     def _find_json_date(self, value: Any) -> str | None:
         if isinstance(value, dict):
-            for key in ("datePublished", "dateCreated", "publishTime", "publishedAt"):
+            for key in ("datePublished", "publishTime", "publishedAt"):
                 candidate = value.get(key)
                 if isinstance(candidate, str) and candidate.strip():
                     return candidate.strip()
-            for child in value.values():
+            for key, child in value.items():
+                if key not in {"@graph", "mainEntity", "mainEntityOfPage"}:
+                    continue
                 found = self._find_json_date(child)
                 if found:
                     return found

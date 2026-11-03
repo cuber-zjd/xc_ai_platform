@@ -13,6 +13,15 @@ from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.llm_factory import LLMFactory
+from app.core.config import settings
+from app.services.agent.insight.report_evidence import (
+    MaterialApprovalIncomplete,
+    citation_coverage,
+    evidence_excerpt,
+    report_model_names,
+    report_material_context,
+    report_policy_snapshot,
+)
 from app.models.system.sys_model import SysModel
 from app.services.agent.insight.company_context import (
     insight_company_business_context,
@@ -53,6 +62,9 @@ MONTHLY_TEMPLATE_PROMPT = """
 
 写作要求：
 - 只使用给定的已审批资料，不使用模型记忆补数字、日期、企业动作或链接。
+- 原文摘录才是事实证据；摘要仅用于导航，业务启示和兴趣标签不是事实，不证明目标公司生产某产品。
+- 每个重要事实保留主体、动作、时间及条件；关注品类、在产产品、研发方向和客户关系分开表述。
+- 全部审批事件都要评估章节归属。不要为控制篇数丢弃有价值事件，同主题可合并叙述。
 - 相同事件合并，多来源只用于交叉印证，不重复计算。
 - 链接挂在自然的“主体+动作”事件短语上，不显示裸网址，不复制冗长新闻标题，
   禁止使用“原文、来源、详情、点击查看”等无语义链接文字。
@@ -110,6 +122,8 @@ class InsightFeishuMonthlyReportService:
             model_names=model_pool,
             stage_trace=stage_trace,
         )
+        if approval.get("pending_count"):
+            raise MaterialApprovalIncomplete(approval)
         if len(approved) < 10:
             raise ValueError(f"月报资料审批后仅剩 {len(approved)} 条，无法支撑深度月报")
 
@@ -275,7 +289,9 @@ class InsightFeishuMonthlyReportService:
             stage_trace=stage_trace,
         )
         output_payload = {
-            "pipeline_version": "monthly_multi_strategy_v1",
+            "pipeline_version": "monthly_evidence_v2",
+            "evidence_policy": report_policy_snapshot(),
+            "citation_coverage": citation_coverage(final_markdown, approved),
             "generation_strategy": generation_strategy,
             "model_pool": model_pool,
             "material_approval": approval,
@@ -312,6 +328,7 @@ class InsightFeishuMonthlyReportService:
                         SysModel.model_type == "chat",
                         SysModel.is_enabled == True,  # noqa: E712
                         SysModel.status == 1,
+                        SysModel.is_deleted == 0,
                     )
                     .order_by(SysModel.model_level.asc(), SysModel.priority.asc())
                 )
@@ -320,7 +337,9 @@ class InsightFeishuMonthlyReportService:
         complex_models = [row.model_name for row in rows if row.capability == "complex-reasoning"]
         general_models = [row.model_name for row in rows if row.capability == "general"]
         pool: list[str] = []
-        for name in complex_models[:4] + general_models[:2]:
+        enabled_names = {row.model_name for row in rows}
+        configured = [name for role in ("writer", "reviewer", "approval") for name in report_model_names(role) if name in enabled_names]
+        for name in configured + complex_models[:4] + general_models[:2]:
             if name not in pool:
                 pool.append(name)
         if not pool:
@@ -356,7 +375,7 @@ class InsightFeishuMonthlyReportService:
         ]
         batches = [
             eligible_materials[index : index + 25]
-            for index in range(0, min(len(eligible_materials), 200), 25)
+            for index in range(0, len(eligible_materials), 25)
         ]
 
         async def approve_batch(batch_index: int, batch: list[dict[str, Any]]) -> tuple[dict[str, Any], str]:
@@ -399,15 +418,25 @@ class InsightFeishuMonthlyReportService:
                 stage=f"material_approval_batch_{batch_index + 1}",
                 system="你是严格的资料审批员，只依据输入资料输出合法 JSON。",
                 prompt=prompt,
-                preferred_model=model_names[batch_index % len(model_names)],
+                preferred_model=next((name for name in report_model_names("approval") if name in model_names), model_names[batch_index % len(model_names)]),
                 stage_trace=stage_trace,
                 enable_reasoning=False,
                 invocation_timeout_seconds=120,
             )
 
+        semaphore = asyncio.Semaphore(max(1, settings.INSIGHT_REPORT_APPROVAL_CONCURRENCY))
+
+        async def bounded_approval(index: int, batch: list[dict[str, Any]]) -> tuple[dict[str, Any], str]:
+            async with semaphore:
+                try:
+                    return await approve_batch(index, batch)
+                except Exception as exc:
+                    logger.warning("月报素材批次 {} 审批失败：{}", index + 1, type(exc).__name__)
+                    return {"approved": [], "rejected": [], "error_type": type(exc).__name__}, ""
+
         batch_results = await asyncio.gather(
             *[
-                approve_batch(batch_index, batch)
+                bounded_approval(batch_index, batch)
                 for batch_index, batch in enumerate(batches)
             ]
         )
@@ -418,7 +447,8 @@ class InsightFeishuMonthlyReportService:
         }
         approved_meta: list[dict[str, Any]] = []
         approved_ids: list[int] = []
-        for payload, _used_model in batch_results:
+        for batch, (payload, _used_model) in zip(batches, batch_results, strict=True):
+            batch_ids = {int(item["id"]) for item in batch}
             for row in payload.get("approved") or []:
                 if not isinstance(row, dict):
                     continue
@@ -427,7 +457,7 @@ class InsightFeishuMonthlyReportService:
                     score = int(row.get("score") or 0)
                 except (TypeError, ValueError):
                     continue
-                if item_id in by_id and score >= 72 and item_id not in approved_ids:
+                if item_id in batch_ids and 72 <= score <= 100 and item_id not in approved_ids:
                     approved_ids.append(item_id)
                     approved_meta.append(
                         {
@@ -450,88 +480,7 @@ class InsightFeishuMonthlyReportService:
             "candidate_count": len(approved_ids),
             "selected_count": len(approved_ids),
         }
-        if len(approved_ids) > 60:
-            global_candidates = [
-                {
-                    "id": row["id"],
-                    "score": row["score"],
-                    "role": row["role"],
-                    "subject": row["subject"],
-                    "title": str(by_id[row["id"]].get("title") or "")[:180],
-                    "fact_digest": row["fact_digest"][:360],
-                    "reason": row["reason"][:180],
-                }
-                for row in approved_meta
-            ]
-            selection_payload, selection_model = await self._invoke_json(
-                stage="material_global_selection",
-                system="你是月报全局选材总编，只输出合法 JSON，不写报告。",
-                prompt=f"""
-对 {company_name} 的月报初筛材料做第二轮全局横向比较。
-目标公司真实业务边界：{insight_company_business_context(company_name)}
-周期：{self._period_text(period_start, period_end)}
-
-要求：
-1. 从全部初筛项中保留 30-50 条最有管理价值的材料，绝不因为某条在局部批次通过就继续保留；
-2. 优先覆盖政策、竞对、客户、技术、原料五个维度，但不得用弱相关材料补齐分类；
-3. 健源不得把大豆蛋白、蛋白粉、豆粕当作核心业务，御馨不得把淀粉糖、果葡糖浆、糖醇当作核心业务；
-4. 相同事件只留事实最完整、来源最可靠的一条，其他来源作为交叉印证但不单独占名额；
-5. 优先保留有明确主体、动作、时间、数字、经营影响或监管变化的材料；
-6. 不要求材料直接出现核心产品名称；下游客户、潜在客户、消费趋势和泛食品行业变化，只要能为
-   销售、市场、研发、采购、供应链或经营判断形成清晰价值即可保留。其他产业公司的材料只有在
-   完全无法形成上述价值、且明显属于另一产业公司自身业务时才排除。
-
-只返回 JSON：
-{{
-  "selected_ids": [1, 2],
-  "rejected": [{{"id": 3, "reason": "跨产业公司/重复/弱相关"}}],
-  "coverage": {{"政策": 0, "竞对": 0, "客户": 0, "技术": 0, "原料": 0}},
-  "coverage_gaps": ["仍然缺少的高价值信息"]
-}}
-
-初筛材料：
-{json.dumps(global_candidates, ensure_ascii=False, default=str)}
-""",
-                preferred_model=model_names[0],
-                stage_trace=stage_trace,
-                enable_reasoning=False,
-                invocation_timeout_seconds=180,
-            )
-            selected_ids: list[int] = []
-            for value in selection_payload.get("selected_ids") or []:
-                try:
-                    item_id = int(value)
-                except (TypeError, ValueError):
-                    continue
-                if item_id in approved_ids and item_id not in selected_ids:
-                    selected_ids.append(item_id)
-            if len(selected_ids) >= 10:
-                selected_ids = selected_ids[:60]
-                approved_by_id = {row["id"]: row for row in approved_meta}
-                approved_ids = selected_ids
-                approved_meta = [approved_by_id[item_id] for item_id in approved_ids]
-                global_selection = {
-                    "mode": "ai_global_editor",
-                    "model": selection_model,
-                    "candidate_count": len(global_candidates),
-                    "selected_count": len(approved_ids),
-                    "coverage": selection_payload.get("coverage") or {},
-                    "coverage_gaps": selection_payload.get("coverage_gaps") or [],
-                    "rejected": selection_payload.get("rejected") or [],
-                }
-            else:
-                global_selection = {
-                    "mode": "invalid_model_result_kept_batch_approval",
-                    "model": selection_model,
-                    "candidate_count": len(global_candidates),
-                    "selected_count": len(approved_ids),
-                    "warning": f"全局总编仅返回 {len(selected_ids)} 条，未采用该结果",
-                }
-        if len(approved_ids) < 6:
-            raise ValueError(
-                f"月报资料审批仅通过 {len(approved_ids)} 条，未达到 6 条最低证据要求；"
-                "系统不会用未通过审批的材料凑数"
-            )
+        # 不再以固定名额二次淘汰；由主笔合并同主题，并在终稿对账引用覆盖。
         approved_by_id = {row["id"]: row for row in approved_meta}
         approved = []
         for item_id in approved_ids:
@@ -540,21 +489,29 @@ class InsightFeishuMonthlyReportService:
             approved.append(item)
         rejected = deterministic_rejected + [
             {"id": row.get("id"), "reason": str(row.get("reason") or "")[:300]}
-            for payload, _used_model in batch_results
+            for batch, (payload, _used_model) in zip(batches, batch_results, strict=True)
             for row in (payload.get("rejected") or [])
-            if isinstance(row, dict)
+            if isinstance(row, dict) and str(row.get("id")).isdigit()
+            and int(row["id"]) in {int(item["id"]) for item in batch}
+            and int(row["id"]) not in approved_ids
         ]
+        rejected = list({int(row["id"]): row for row in rejected}.values())
+        decided_ids = set(approved_ids) | {int(row["id"]) for row in rejected}
+        pending = [{"id": item["id"], "reason": "审批未返回有效结论，不能按不相关排除"} for item in materials if int(item["id"]) not in decided_ids]
         coverage_gaps = [
             str(value)[:300]
             for payload, _used_model in batch_results
             for value in (payload.get("coverage_gaps") or [])[:6]
         ]
         return approved, {
-            "models": list(dict.fromkeys(used_model for _payload, used_model in batch_results)),
+            "models": list(dict.fromkeys(used_model for _payload, used_model in batch_results if used_model)),
             "batch_count": len(batch_results),
             "candidate_count": len(materials),
             "approved_count": len(approved),
-            "rejected_count": max(len(materials) - len(approved), 0),
+            "rejected_count": len(rejected),
+            "pending_count": len(pending),
+            "pending": pending,
+            "reviewed_count": len(approved) + len(rejected),
             "approved": approved_meta,
             "rejected": rejected,
             "coverage_gaps": list(dict.fromkeys(coverage_gaps))[:12],
@@ -745,7 +702,7 @@ class InsightFeishuMonthlyReportService:
 目标公司真实业务边界：{insight_company_business_context(company_name)}
 输出 JSON：research_questions、company_clusters、cross_month_signals、section_outline、
 evidence_requirements、known_gaps。不得写正式报告。
-资料：{json.dumps([self._compact_material(item, include_approval=True) for item in materials], ensure_ascii=False, default=str)}
+资料：{json.dumps(report_material_context(materials), ensure_ascii=False, default=str)}
 """,
             preferred_model=model_names[1 % len(model_names)],
             stage_trace=stage_trace,
@@ -772,7 +729,7 @@ evidence_requirements、known_gaps。不得写正式报告。
 只返回 JSON：blocking_issues、important_omissions、depth_improvements、structure_fixes、
 facts_to_recheck、strengths。
 草稿：{draft}
-资料：{json.dumps([self._compact_material(item, include_approval=True) for item in materials], ensure_ascii=False, default=str)}
+资料：{json.dumps(report_material_context(materials), ensure_ascii=False, default=str)}
 """,
             preferred_model=model_names[3 % len(model_names)],
             stage_trace=stage_trace,
@@ -787,7 +744,7 @@ facts_to_recheck、strengths。
 目标公司真实业务边界：{insight_company_business_context(company_name)}
 审稿意见：{json.dumps(critique, ensure_ascii=False)}
 原稿：{draft}
-资料：{json.dumps([self._compact_material(item, include_approval=True) for item in materials], ensure_ascii=False, default=str)}
+资料：{json.dumps(report_material_context(materials), ensure_ascii=False, default=str)}
 返回完整 Markdown。
 """,
             preferred_model=model_names[0],
@@ -848,7 +805,9 @@ facts_to_recheck、strengths。
         stage_trace: list[dict[str, Any]],
         stage_prefix: str,
     ) -> list[dict[str, Any]]:
-        compact = [self._compact_material(item, include_approval=True) for item in materials]
+        compact = report_material_context(materials)
+        reviewer_names = [name for name in report_model_names("reviewer") if name in model_names] or model_names
+        coverage = citation_coverage(markdown, materials)
         roles = [
             (
                 "事实与幻觉核验员",
@@ -880,6 +839,9 @@ facts_to_recheck、strengths。
 - 已审批资料是本次审核的事实基准，即使其日期晚于模型训练知识截止时间，也不得因此判为未来、虚构或不可核实。
 - 不调用模型记忆或外部常识否定资料中的事件，只核对报告是否忠实表达给定资料。
 - 只有报告出现资料中不存在、与资料冲突或把计划写成既成结果的内容，才属于事实/幻觉问题。
+- 摘录标记 complete=false 时，不得声称已读完原文。摘要与模型业务分析不能单独证明关键数字。
+- 逐项检查未引用的高价值事件：若已在同主题合并，给出章节；确无价值则说明原因；
+  明显遗漏关键事件列入 blocking_issues，要求局部补入，不能只提高总分。
 
 目标公司：{company_name}
 报告周期：{self._period_text(period_start, period_end)}
@@ -899,11 +861,13 @@ facts_to_recheck、strengths。
   "important_issues": ["需要改进的问题"],
   "strengths": ["优点"],
   "revision_advice": ["可执行修订要求"]
+  ,"unused_material_reasons": [{{"id": 1, "reason": "合并章节/不宜采用的具体原因/需要补入"}}]
 }}
 报告：{markdown}
+确定性引用对账（链接存在不等于事实核验通过）：{json.dumps(coverage, ensure_ascii=False)}
 已审批资料：{json.dumps(compact, ensure_ascii=False, default=str)}
 """,
-                preferred_model=model_names[index % len(model_names)],
+                preferred_model=reviewer_names[index % len(reviewer_names)],
                 stage_trace=stage_trace,
                 enable_reasoning=False,
                 invocation_timeout_seconds=120,
@@ -970,7 +934,7 @@ facts_to_recheck、strengths。
 评选意见：{json.dumps(judgment, ensure_ascii=False)}
 主稿：{selected.markdown}
 参考稿：{supporting.markdown if supporting else "无"}
-已审批资料：{json.dumps([self._compact_material(item, include_approval=True) for item in materials], ensure_ascii=False, default=str)}
+已审批资料：{json.dumps(report_material_context(materials), ensure_ascii=False, default=str)}
 返回完整 Markdown。不得输出评选过程、模型名称或评分。
 """,
             preferred_model=model_names[0],
@@ -1007,7 +971,7 @@ facts_to_recheck、strengths。
 目标公司真实业务边界：{insight_company_business_context(company_name)}
 终审意见：{json.dumps(reviews, ensure_ascii=False)}
 原稿：{markdown}
-已审批资料：{json.dumps([self._compact_material(item, include_approval=True) for item in materials], ensure_ascii=False, default=str)}
+已审批资料：{json.dumps(report_material_context(materials), ensure_ascii=False, default=str)}
 返回完整 Markdown。
 """,
             preferred_model=model_name,
@@ -1033,10 +997,11 @@ facts_to_recheck、strengths。
         invocation_timeout_seconds: float = 180,
     ) -> tuple[dict[str, Any], str]:
         started = datetime.now()
+        role = "approval" if stage.startswith("material_approval") else "reviewer"
         response = await LLMFactory.safe_invoke(
             [SystemMessage(content=system), HumanMessage(content=prompt)],
             capability="complex-reasoning",
-            preferred_model_names=[preferred_model],
+            preferred_model_names=list(dict.fromkeys([preferred_model, *report_model_names(role)])),
             temperature=0,
             json_mode=True,
             enable_reasoning=enable_reasoning,
@@ -1051,6 +1016,7 @@ facts_to_recheck、strengths。
             {
                 "stage": stage,
                 "model": used_model,
+                "usage": getattr(response, "usage_metadata", None),
                 "status": "success",
                 "duration_ms": int((datetime.now() - started).total_seconds() * 1000),
             }
@@ -1071,7 +1037,7 @@ facts_to_recheck、strengths。
         response = await LLMFactory.safe_invoke(
             [SystemMessage(content=system), HumanMessage(content=prompt)],
             capability="complex-reasoning",
-            preferred_model_names=[preferred_model],
+            preferred_model_names=list(dict.fromkeys([preferred_model, *report_model_names("writer")])),
             temperature=0.12,
             enable_reasoning=True,
             max_retries=3,
@@ -1086,6 +1052,7 @@ facts_to_recheck、strengths。
             {
                 "stage": stage,
                 "model": used_model,
+                "usage": getattr(response, "usage_metadata", None),
                 "status": "success",
                 "duration_ms": int((datetime.now() - started).total_seconds() * 1000),
             }
@@ -1118,7 +1085,7 @@ facts_to_recheck、strengths。
 第二章必须包含政策、竞对、客户、技术、原料五个二级标题，并在每个维度写趋势判断、核心佐证、
 业务影响。第三章只选 1-3 条关键事件，每条写事件本质、传导逻辑、业务启示。引用必须使用语义链接。
 已审批资料：
-{json.dumps([self._compact_material(item, include_approval=True) for item in materials], ensure_ascii=False, default=str)}
+{json.dumps(report_material_context(materials), ensure_ascii=False, default=str)}
 """
 
     def _header(
@@ -1339,17 +1306,19 @@ facts_to_recheck、strengths。
         if "健源" in company_name:
             own_terms = ("果葡糖浆", "麦芽糖浆", "淀粉糖", "功能糖", "糖醇", "玉米")
             mixed_terms = ("大豆蛋白", "植物蛋白", "豆粕", "豆油", "大豆油")
-            if sum(normalized.count(term) for term in own_terms) < 3:
+            if not any(term in normalized for term in own_terms):
                 return ["健源月报未充分围绕玉米深加工和糖类业务"]
-            if any(term in normalized for term in mixed_terms):
+            if any(any(term in sentence for term in mixed_terms) and not any(term in sentence for term in own_terms) for sentence in re.split(r"[。；\n]", normalized)):
                 return ["健源月报混入御馨大豆或植物蛋白业务主线"]
         if "御馨" in company_name:
-            own_terms = ("大豆", "植物蛋白", "大豆蛋白", "豆粕", "豆油")
+            own_terms = ("大豆蛋白", "植物蛋白", "蛋白应用", "非转基因大豆")
             mixed_terms = ("果葡糖浆", "麦芽糖浆", "淀粉糖", "糖醇", "赤藓糖醇")
-            if sum(normalized.count(term) for term in own_terms) < 3:
+            if not any(term in normalized for term in own_terms):
                 return ["御馨月报未充分围绕大豆和植物蛋白业务"]
-            if any(term in normalized for term in mixed_terms):
+            if any(any(term in sentence for term in mixed_terms) and not any(term in sentence for term in own_terms) for sentence in re.split(r"[。；\n]", normalized)):
                 return ["御馨月报混入健源糖浆或糖醇业务主线"]
+            if any(term in normalized for term in ("植物油", "豆油", "食用油", "油脂加工")):
+                return ["御馨月报混入植物油业务"]
         return []
 
     def _section_body(self, markdown: str, section: str) -> str:
@@ -1490,7 +1459,7 @@ facts_to_recheck、strengths。
             "id": item.get("id"),
             "title": item.get("title"),
             "summary": str(item.get("summary") or "")[:1200],
-            "content_excerpt": str(item.get("content") or "")[:1200],
+            "content_excerpt": evidence_excerpt(str(item.get("content") or ""), query=str(item.get("title") or "")),
             "publish_time": item.get("publish_time"),
             "subject_name": item.get("subject_name"),
             "category": item.get("category"),

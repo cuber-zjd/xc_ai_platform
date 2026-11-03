@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from hashlib import sha256
 from re import Match, finditer, search, sub
 from typing import Any
@@ -114,12 +115,26 @@ class InsightContentCleaner:
         published_at, _ = self.parse_publish_time_with_source(metadata, *texts)
         return published_at
 
+    def fulltext_error(self, value: str | None) -> str | None:
+        text = self.clean_readable_excerpt(value) or ""
+        if len(text) < 200:
+            return "正文不足200字"
+        lower = text.lower()
+        if any(marker in lower for marker in ("页面需要安全验证", "access denied", "verify you are human", "请完成安全验证")):
+            return "网页为安全验证或拒绝访问页"
+        if len(text) < 1200 and any(marker in lower for marker in ("正在加载", "加载中", "loading...", "enable javascript")):
+            return "网页仅加载占位或导航，未获得文章正文"
+        return None
+
     def parse_publish_time_with_source(
         self,
         metadata: dict[str, Any],
         *texts: Any,
     ) -> tuple[datetime | None, str | None]:
         """解析发布时间，并区分页面证据与正文中的弱日期线索。"""
+
+        if metadata.get("publication_conflict"):
+            return None, "conflict"
 
         keys = (
             "publishedTime",
@@ -176,13 +191,23 @@ class InsightContentCleaner:
         except ValueError:
             return None
         if parsed.tzinfo:
-            return parsed.astimezone().replace(tzinfo=None)
+            return parsed.astimezone(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
         return parsed
 
     def _parse_datetime_from_text(self, value: Any) -> datetime | None:
         if not isinstance(value, str) or not value.strip():
             return None
         text = value.strip()
+
+        # 英文媒体头部的绝对日期；不将网页正文中的月份推断为本期发布时间。
+        english_date = search(r"\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2},?\s+20\d{2}\b", text)
+        if english_date:
+            normalized = english_date.group().replace(",", "")
+            for fmt in ("%b %d %Y", "%B %d %Y"):
+                try:
+                    return datetime.strptime(normalized, fmt)
+                except ValueError:
+                    continue
 
         leading_relative = self._parse_leading_relative_datetime(text)
         if leading_relative:

@@ -45,14 +45,12 @@ def test_yuxin_still_excludes_vegetable_oil():
     assert insight_company_material_rejection_reason("御馨", {"title": "豆油品牌新增食用油产线"})
 
 
-def test_doubao_citations_are_recovered_without_fabricating_dates():
-    hits = DoubaoWebSearchClient()._parse_answer("资料见引用", {"annotations": [
-        {"url": "https://example.com/a", "title": "食品客户动态"},
-        {"url": "https://example.com/a", "title": "重复引用"},
-    ]}, 10)
-    assert len(hits) == 1
-    assert hits[0].published_at is None
-    assert hits[0].snippet is None
+def test_doubao_unselected_citations_are_not_news_hits():
+    with pytest.raises(ValueError, match="格式无效"):
+        DoubaoWebSearchClient()._parse_answer("资料见引用", {"annotations": [
+            {"url": "https://example.com/a", "title": "食品客户动态"},
+            {"url": "https://example.com/a", "title": "重复引用"},
+        ]}, 10)
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,7 @@
 import asyncio
 import random
+import re
+import unicodedata
 from time import monotonic
 from collections import defaultdict
 from dataclasses import dataclass, replace
@@ -1075,6 +1077,26 @@ class InsightMonitorExecutionService:
         if not rows:
             return {"by_monitor_config_id": {}, "batches": []}
 
+        company_ids = [row.object_id for row in rows if row.object_type == "company" and row.object_id]
+        companies = list((await db.exec(select(InsightCompany).where(
+            InsightCompany.id.in_(company_ids), InsightCompany.is_deleted == 0,
+        ))).all()) if company_ids else []
+        company_by_id = {company.id: company for company in companies}
+        enriched_rows = []
+        for row in rows:
+            company = company_by_id.get(row.object_id) if row.object_type == "company" else None
+            config = dict(row.config_json or {})
+            configured_aliases = config.get("aliases") or []
+            aliases = [alias for alias in configured_aliases if isinstance(alias, str)] if isinstance(configured_aliases, list) else []
+            if company and company.short_name:
+                aliases.append(company.short_name)
+            profile_aliases = (company.profile_json or {}).get("aliases") if company else None
+            if isinstance(profile_aliases, list):
+                aliases.extend(str(alias) for alias in profile_aliases if isinstance(alias, str))
+            # 仅在本次搜索上下文使用企业简称，不改监测配置或权限。
+            enriched_rows.append(row.model_copy(update={"config_json": config | {"aliases": aliases}}))
+        rows = enriched_rows
+
         channels = {channel.channel_code: channel for channel in await self._active_channels(db)}
         enabled_grouped_channels = channel_codes or {"bocha_search", "doubao_web_search"}
         bocha_channel = channels.get("bocha_search") if "bocha_search" in enabled_grouped_channels else None
@@ -1113,11 +1135,13 @@ class InsightMonitorExecutionService:
         search_started = monotonic()
 
         async def search_one(batch, handler_code, freshness):
+            freshness = freshness or settings.INSIGHT_SCHEDULER_DAILY_DISCOVERY_FRESHNESS
             current_semaphore = ai_semaphore if handler_code == "doubao_web_search" else semaphore
             queued_at = monotonic()
             async with current_semaphore:
                 acquired_at = monotonic()
-                key = f"{datetime.now():%Y-%m-%d}|{handler_code}|{freshness}|{published_start}|{published_end}|{batch.query}"
+                model_signature = f"{settings.INSIGHT_DOUBAO_SEARCH_MODEL}:{settings.INSIGHT_DOUBAO_SEARCH_SOURCE}" if handler_code == "doubao_web_search" else "structured"
+                key = f"{datetime.now():%Y-%m-%d}|{handler_code}|{model_signature}|{freshness}|{published_start}|{published_end}|{batch.query}"
                 hits, meta = await checkpointed_search(
                     key,
                     lambda: self._search_grouped_channel_with_retry(
@@ -1158,6 +1182,36 @@ class InsightMonitorExecutionService:
 
             search_finished = monotonic()
             assigned = self._assign_grouped_hits(batch.rows, raw_hits)
+            gap_searches: list[dict[str, Any]] = []
+            missing = [row for row in batch.rows if row.id not in assigned]
+            # 无命中不等于所有对象已覆盖；每天轮换少量短查询，仍受同一渠道阶段预算限制。
+            if missing:
+                offset = datetime.now().toordinal() % len(missing)
+                missing = missing[offset:] + missing[:offset]
+            for row in missing[:max(0, min(settings.INSIGHT_SCHEDULER_GROUPED_GAP_QUERY_LIMIT, 3))]:
+                aliases = (row.config_json or {}).get("aliases") or []
+                name = str(aliases[0] if aliases else row.object_name or row.config_name).strip()
+                topic = str((row.enabled_modules or [""])[0])
+                gap_batch = replace(batch, rows=[row], query=f"{name} {topic}".strip(), group_key=f"{batch.group_key}:gap:{row.id}")
+                remaining = budget - (monotonic() - search_started)
+                if remaining <= 0:
+                    break
+                try:
+                    extra, extra_meta = await asyncio.wait_for(search_one(gap_batch, handler_code, freshness), timeout=remaining)
+                    known_urls = {hit.url for hit in raw_hits}
+                    for hit in extra:
+                        if hit.url not in known_urls:
+                            raw_hits.append(hit)
+                            known_urls.add(hit.url)
+                    gap_searches.append({"monitor_config_id": row.id, "query": gap_batch.query, "status": "success", "hits": len(extra), **extra_meta})
+                except Exception as exc:
+                    gap_searches.append({"monitor_config_id": row.id, "query": gap_batch.query, "status": "failed", "error_type": type(exc).__name__})
+                    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in {401, 403, 429}:
+                        break
+            assigned = self._assign_grouped_hits(batch.rows, raw_hits)
+            search_finished = monotonic()
+            assigned_urls = {hit.url for _, hits in assigned.values() for hit in hits}
+            unassigned_hits = [{"title": hit.title, "url": hit.url, "reason": "无可靠对象匹配，保留检查点待补证"} for hit in raw_hits if hit.url not in assigned_urls]
             hit_count = 0
             candidate_count = 0
             ingest_errors: list[dict[str, Any]] = []
@@ -1219,9 +1273,12 @@ class InsightMonitorExecutionService:
                 "group_name": batch.group_name,
                 "channel_code": channel.channel_code,
                 "query": batch.query,
-                "status": "partial" if ingest_errors or search_errors else "success",
+                "status": "partial" if ingest_errors or search_errors or any(item["status"] == "failed" for item in gap_searches) else "success",
                 "raw_hits": len(raw_hits),
                 "assigned_monitor_count": len(assigned),
+                "unmatched_monitor_ids": [row.id for row in batch.rows if row.id not in assigned],
+                "unassigned_hits": unassigned_hits,
+                "gap_searches": gap_searches,
                 "hits": hit_count,
                 "candidates": candidate_count,
                 "ingest_errors": ingest_errors[:20],
@@ -1418,7 +1475,7 @@ class InsightMonitorExecutionService:
         freshness_override: str | None = None,
     ) -> list[InsightSearchHit]:
         count = min(30, max(12, len(batch.rows) * 4))
-        freshness = freshness_override or "1d"
+        freshness = freshness_override or settings.INSIGHT_SCHEDULER_DAILY_DISCOVERY_FRESHNESS
         if handler_code == "bocha":
             hits = await bocha_search_client.search(batch.query, count, freshness)
         elif handler_code == "doubao_web_search":
@@ -1540,17 +1597,14 @@ class InsightMonitorExecutionService:
         hits: list[InsightSearchHit],
     ) -> dict[int, tuple[InsightMonitorConfig, list[InsightSearchHit]]]:
         assigned: dict[int, tuple[InsightMonitorConfig, list[InsightSearchHit]]] = {}
-        topic_rows = [row for row in rows if row.object_type != "company"]
         for hit in hits:
-            text = f"{hit.title}\n{hit.snippet or ''}\n{hit.url}".lower()
+            text = self._normalize_match_text(f"{hit.title}\n{hit.snippet or ''}\n{hit.url}")
             matched_rows: list[InsightMonitorConfig] = []
             for row in rows:
                 terms = self._monitor_match_terms(row)
-                if terms and any(term.lower() in text for term in terms):
+                if terms and any(self._term_matches(term, text) for term in terms):
                     matched_rows.append(row)
-            if not matched_rows and topic_rows:
-                matched_rows = topic_rows[:3]
-            for row in matched_rows[:4]:
+            for row in matched_rows:
                 if not row.id:
                     continue
                 if row.id not in assigned:
@@ -1563,10 +1617,24 @@ class InsightMonitorExecutionService:
             str(row.object_name or "").strip(),
             str(row.config_name or "").strip(),
             *(str(item).strip() for item in row.keywords or []),
+            *(str(item).strip() for item in (row.config_json or {}).get("aliases", [])),
         ]
         if row.object_type != "company":
             terms.extend(str(item).strip() for item in row.enabled_modules or [])
-        return [item for item in self._unique_items(terms) if len(item) >= 2][:12]
+        return [item for item in self._unique_items(terms) if len(item) >= 2]
+
+    @staticmethod
+    def _normalize_match_text(value: str) -> str:
+        value = "".join(char for char in unicodedata.normalize("NFKD", value.casefold()) if not unicodedata.combining(char))
+        return re.sub(r"[^\w\u4e00-\u9fff]+", " ", value).strip()
+
+    def _term_matches(self, term: str, text: str) -> bool:
+        normalized = self._normalize_match_text(term)
+        if not normalized:
+            return False
+        if re.fullmatch(r"[a-z0-9 ]+", normalized):
+            return bool(re.search(r"(?<![a-z0-9])" + re.escape(normalized) + r"(?![a-z0-9])", text))
+        return normalized in text
 
     def _unique_items(self, values: list[str]) -> list[str]:
         result: list[str] = []

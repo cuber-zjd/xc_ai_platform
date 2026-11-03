@@ -493,7 +493,7 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
         jianyuan = insight_company_business_context("山东香驰健源生物科技有限公司")
         yuxin = insight_company_business_context("山东御馨生物科技股份有限公司")
         self.assertIn("果葡糖浆、麦芽糖浆", jianyuan)
-        self.assertIn("未涉及健源实际产品及其应用的，不予采用", jianyuan)
+        self.assertIn("不得编造采购关系", jianyuan)
         self.assertIn("只聚焦蛋白板块", yuxin)
         self.assertIn("植物油", yuxin)
         self.assertIn("非转基因大豆", yuxin)
@@ -549,7 +549,7 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
             "title": "茶饮品牌新增一百家门店",
             "summary": "门店扩张但未披露糖类产品、配方或采购变化。",
         }
-        self.assertIsNotNone(
+        self.assertIsNone(
             self.service._cross_company_material_reason(
                 "山东香驰健源生物科技有限公司",
                 generic_tea_customer,
@@ -560,7 +560,8 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
             "summary": "该设备用于提升生产线清洗效率。",
             "tags": "技术 专利",
         }
-        self.assertIsNotNone(
+        # 确定性规则只拦截明确串公司的内容，通用专利的质量由后续审批判断。
+        self.assertIsNone(
             self.service._cross_company_material_reason(
                 "山东香驰健源生物科技有限公司",
                 generic_patent,
@@ -571,7 +572,7 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
             "summary": "新规调整食品添加剂申报与标签管理要求。",
             "tags": "食品监管",
         }
-        self.assertIsNotNone(
+        self.assertIsNone(
             self.service._cross_company_material_reason(
                 "山东香驰健源生物科技有限公司",
                 yuxin_policy,
@@ -642,7 +643,7 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
             )
         )
 
-    def test_material_approval_uses_global_editor_above_sixty_items(self) -> None:
+    def test_material_approval_processes_all_batches_without_quota(self) -> None:
         materials = [
             {
                 "id": index,
@@ -650,7 +651,7 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
                 "summary": f"植物蛋白与豆粕业务直接相关的事实 {index}",
                 "source_url": f"https://example.com/{index}",
             }
-            for index in range(1, 71)
+            for index in range(1, 261)
         ]
 
         async def invoke_json(**kwargs):
@@ -695,9 +696,11 @@ class InsightMonthlyReportServiceTest(unittest.TestCase):
                     stage_trace=[],
                 )
             )
-        self.assertEqual(len(approved), 35)
-        self.assertEqual(audit["global_selection"]["mode"], "ai_global_editor")
-        self.assertEqual(audit["global_selection"]["model"], "global-editor")
+        self.assertEqual(len(approved), 260)
+        self.assertEqual(audit["batch_count"], 11)
+        self.assertEqual(audit["pending_count"], 0)
+        self.assertEqual(audit["rejected_count"], 0)
+        self.assertEqual(audit["global_selection"]["mode"], "not_required")
 
     def test_section_order_accepts_bold_h2_headings(self) -> None:
         body = ["管理层月度市场信息报告｜2026年7月1日至26日｜生成时间：2026年7月26日"]

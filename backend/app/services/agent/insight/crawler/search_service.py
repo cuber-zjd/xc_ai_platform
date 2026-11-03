@@ -978,8 +978,7 @@ class InsightSearchDiscoveryService:
         return None
 
     def _has_fulltext(self, result: InsightCrawlResult) -> bool:
-        content = insight_content_cleaner.clean_readable_excerpt(result.markdown_content) or ""
-        return len(content) >= 200 and "页面需要安全验证" not in content
+        return insight_content_cleaner.fulltext_error(result.markdown_content) is None
 
     def _content_from_hit_raw(self, raw: dict[str, Any] | None) -> str | None:
         if not isinstance(raw, dict):
@@ -992,8 +991,7 @@ class InsightSearchDiscoveryService:
             if not isinstance(value, str):
                 continue
             content = insight_content_cleaner.clean_text(value)
-            readable = insight_content_cleaner.clean_readable_excerpt(content) or ""
-            if len(readable) >= 200:
+            if insight_content_cleaner.fulltext_error(content) is None:
                 return content
         return None
 

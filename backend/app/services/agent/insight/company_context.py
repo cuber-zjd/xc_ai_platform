@@ -13,6 +13,8 @@ def insight_company_business_context(company_name: str) -> str:
             "研发或经营判断；茶饮、食品客户的新品、渠道扩张和经营变化可作为需求信号，"
             "不要求原文必须提及糖浆，也不得编造采购关系。原料端若只有宽泛玉米"
             "行情、信息量过少或口径过于庞杂，无法说明与玉米制糖生产的关系，也不予采用。"
+            "上述为关注范围，不是已核实的在产产品清单；无公司证据不得写成健源已生产赤藓糖醇等产品。"
+            "甜蛋白、甜味蛋白等可作为替代甜味剂竞争观察，不等于健源经营蛋白业务。"
         )
     if "御馨" in company_name:
         return (
@@ -39,7 +41,7 @@ def insight_company_material_rejection_reason(
         (
             _stringify_material_value(item.get("title")),
             _stringify_material_value(item.get("summary")),
-            _stringify_material_value(item.get("content"))[:1500],
+            _stringify_material_value(item.get("content")),
             _stringify_material_value(item.get("tags")),
             _stringify_material_value(item.get("subject_name")),
             _stringify_material_value(item.get("category")),
@@ -58,6 +60,9 @@ def insight_company_material_rejection_reason(
             "功能糖",
             "糖醇",
             "赤藓糖醇",
+            "甜蛋白",
+            "甜味蛋白",
+            "甜味剂",
         )
         other_business = (
             "大豆蛋白",
@@ -83,7 +88,7 @@ def insight_company_material_rejection_reason(
         )
         if not has_own_business and not downstream_or_market_value:
             return "健源材料未涉及果糖、淀粉糖或玉米加工糖类等实际产品及其应用"
-        if headline_is_other_business and not downstream_or_market_value:
+        if headline_is_other_business and not has_own_business:
             return "跨产业公司材料：大豆或植物蛋白为主，且无健源核心业务直接关系"
 
     if "御馨" in company_name:
@@ -97,7 +102,6 @@ def insight_company_material_rejection_reason(
             "植物基饮料",
             "豆乳",
             "豆奶",
-            "豆粕",
             "分离蛋白",
             "浓缩蛋白",
             "组织蛋白",

@@ -168,6 +168,8 @@ pnpm build
 
 ## 10. Insight 研发营销市场洞察平台约束
 
+- 飞书简报证据链使用 `report_evidence.py`：月报不得只审批前200条或按30至50条配额二次淘汰；周/月报选材按25条分批、受控并发，审批缺失和失败计为待处理并阻断成稿，不可降级成无筛选放行。正文摘录保留原文位置与是否完整，摘要仅用于导航；引用对账不等于事实已经核实。模型角色通过 `INSIGHT_REPORT_WRITER_MODELS`、`INSIGHT_REPORT_REVIEWER_MODELS`、`INSIGHT_REPORT_APPROVAL_MODELS` 独立配置，不能顺带修改全平台模型优先级。实施范围与未完成项见 `docs/solution-plans/市场洞察/模型升级与证据链首批修复实施记录-20261103.md`。
+
 - 飞书简报单期提前生成后，下一次常规生成须晚于该期正式推送时间，避免提前月报在月底重复生成；单期审阅与正式推送使用同一云文档。
 
 - 博查、豆包单次查询分别使用 `INSIGHT_BOCHA_SEARCH_TOTAL_TIMEOUT_SECONDS` 和 `INSIGHT_DOUBAO_SEARCH_TOTAL_TIMEOUT_SECONDS`，同时覆盖调度与直接客户端入口。豆包发现默认关闭深度思考但保留 `web_search`，完成事件缺失必须记为失败；日志需区分排队、请求、正文处理耗时。

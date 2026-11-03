@@ -357,7 +357,9 @@ class DoubaoWebSearchClient:
     因此这里要求模型把可入库线索整理为 JSON，再保留原始搜索动作和引用，作为审计信息。
     """
 
-    preferred_model_code = "doubao-seed-2-1-turbo-260628"
+    @property
+    def preferred_model_code(self) -> str:
+        return settings.INSIGHT_DOUBAO_SEARCH_MODEL
 
     async def search(self, query: str, count: int, freshness: str | None) -> list[InsightSearchHit]:
         async with asyncio.timeout(max(settings.INSIGHT_DOUBAO_SEARCH_TOTAL_TIMEOUT_SECONDS, 30)):
@@ -379,6 +381,13 @@ class DoubaoWebSearchClient:
                 }
             ],
         }
+        if settings.INSIGHT_DOUBAO_SEARCH_SOURCE == "doubao":
+            payload["tools"] = [{"type": "web_search", "sources": ["doubao"]}]
+            payload["max_tool_calls"] = max(1, settings.INSIGHT_DOUBAO_SEARCH_MAX_TOOL_CALLS)
+            payload.pop("thinking", None)
+            payload["reasoning"] = {"effort": "medium" if settings.INSIGHT_DOUBAO_SEARCH_THINKING_ENABLED else "minimal"}
+        elif settings.INSIGHT_DOUBAO_SEARCH_SOURCE != "default":
+            raise ValueError("豆包联网来源仅支持 default 或 doubao")
         headers = {
             "Authorization": f"Bearer {model.api_key}",
             "Content-Type": "application/json",
@@ -473,6 +482,7 @@ class DoubaoWebSearchClient:
                 "first_text_seconds": first_text_seconds,
                 "total_seconds": round(monotonic() - started, 2),
                 "thinking_enabled": settings.INSIGHT_DOUBAO_SEARCH_THINKING_ENABLED,
+                "search_source": settings.INSIGHT_DOUBAO_SEARCH_SOURCE,
             },
         }
         hits = self._parse_answer(answer_text, raw_context, count)
@@ -487,7 +497,9 @@ class DoubaoWebSearchClient:
                     select(SysModel).where(
                         SysModel.is_deleted == 0,
                         SysModel.is_enabled,
+                        SysModel.status == 1,
                         SysModel.model_type == "chat",
+                        SysModel.provider == "volcengine",
                         or_(
                             SysModel.model_code == self.preferred_model_code,
                             SysModel.model_name == self.preferred_model_code,
@@ -497,12 +509,15 @@ class DoubaoWebSearchClient:
             ).first()
             if exact:
                 return exact
+            if self.preferred_model_code:
+                raise ValueError("配置的豆包联网模型未启用或不是火山方舟模型，请检查 INSIGHT_DOUBAO_SEARCH_MODEL")
             volc = (
                 await session.exec(
                     select(SysModel)
                     .where(
                         SysModel.is_deleted == 0,
                         SysModel.is_enabled,
+                        SysModel.status == 1,
                         SysModel.model_type == "chat",
                         SysModel.provider == "volcengine",
                     )
@@ -525,6 +540,8 @@ class DoubaoWebSearchClient:
             time_hint = "近 24 小时"
         elif value in {"onemonth", "one_month", "month", "30d"}:
             time_hint = "近 30 天"
+        elif value in {"nolimit", "no_limit"}:
+            time_hint = "不限时间（必须标明真实发布日期）"
         return (
             f"当前日期为 {datetime.now():%Y-%m-%d}。多个监测对象按任意一个命中即可，不能要求同一篇文章同时包含所有对象。"
             f"请联网搜索“{query}”相关的公开资讯，优先选择{time_hint}内的信息。"
@@ -560,15 +577,11 @@ class DoubaoWebSearchClient:
 
     def _parse_answer(self, answer_text: str, raw_context: dict[str, Any], count: int) -> list[InsightSearchHit]:
         records = self._json_records(answer_text)
-        if not records:
+        if records is None:
             records = self._markdown_records(answer_text)
-        # 引用只提供待核验 URL，不把整个模型回答当作各篇文章的正文或日期。
-        for annotation in raw_context.get("annotations", []):
-            if not isinstance(annotation, dict):
-                continue
-            citation = annotation.get("url_citation", annotation)
-            if isinstance(citation, dict) and citation.get("url"):
-                records.append({"title": citation.get("title"), "url": citation["url"]})
+            if not records:
+                raise ValueError("豆包联网回答格式无效，不能记为成功零命中")
+        # 引用列表留在审计上下文；未被回答选中的引用不是合格新闻命中。
         hits: list[InsightSearchHit] = []
         seen: set[str] = set()
         for record in records:
@@ -594,6 +607,8 @@ class DoubaoWebSearchClient:
             )
             if len(hits) >= count:
                 break
+        if records and not hits:
+            raise ValueError("豆包联网回答没有有效新闻链接，不能记为成功零命中")
         return hits
 
     def _clean_result_url(self, value: str | None) -> str | None:
@@ -608,7 +623,7 @@ class DoubaoWebSearchClient:
             return None
         return url
 
-    def _json_records(self, text: str) -> list[dict[str, Any]]:
+    def _json_records(self, text: str) -> list[dict[str, Any]] | None:
         value = text.strip()
         if value.startswith("```"):
             value = re.sub(r"^```(?:json)?", "", value, flags=re.IGNORECASE).strip()
@@ -616,12 +631,12 @@ class DoubaoWebSearchClient:
         try:
             data = json.loads(value)
         except json.JSONDecodeError:
-            return []
+            return None
         if isinstance(data, dict) and isinstance(data.get("items"), list):
-            return [item for item in data["items"] if isinstance(item, dict)]
-        if isinstance(data, list):
-            return [item for item in data if isinstance(item, dict)]
-        return []
+            data = data["items"]
+        if isinstance(data, list) and all(isinstance(item, dict) for item in data):
+            return data
+        return None
 
     def _markdown_records(self, text: str) -> list[dict[str, Any]]:
         records: list[dict[str, Any]] = []

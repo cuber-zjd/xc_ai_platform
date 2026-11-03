@@ -56,8 +56,8 @@ class InsightCrawlService:
             firecrawl_data.get("markdown") or firecrawl_data.get("content")
         )
         readable = insight_content_cleaner.clean_readable_excerpt(markdown) or ""
-        if len(readable) < 200 or "页面需要安全验证" in readable:
-            raise ValueError("未提取到足够的网页正文")
+        if error := insight_content_cleaner.fulltext_error(markdown):
+            raise ValueError(error)
 
         original_snippet = crawl_result.snippet
         extracted_title = insight_content_cleaner.clean_title(
@@ -93,7 +93,7 @@ class InsightCrawlService:
         }
         crawl_metadata["fulltext_fetch"] = {
             "status": "success",
-            "provider": "firecrawl",
+            "provider": metadata.get("extractor") or "firecrawl",
             "fetched_at": datetime.now().isoformat(),
             "markdown_length": len(markdown),
             "readable_length": len(readable),
@@ -133,7 +133,7 @@ class InsightCrawlService:
             return None
         markdown = insight_content_cleaner.clean_text(existing.markdown_content)
         readable = insight_content_cleaner.clean_readable_excerpt(markdown) or ""
-        if len(readable) < 200 or "页面需要安全验证" in readable:
+        if insight_content_cleaner.fulltext_error(markdown):
             return None
         crawl_result.source_title = insight_content_cleaner.clean_title(
             existing.source_title,
