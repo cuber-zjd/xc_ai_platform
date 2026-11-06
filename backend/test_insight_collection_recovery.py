@@ -38,6 +38,34 @@ def test_checkpoint_legacy_key_keeps_original_window():
     assert checkpoint_parts("invalid") is None
 
 
+@pytest.mark.asyncio
+async def test_recovery_audit_reads_alias_baseline_without_orm_copy(monkeypatch):
+    from scripts import insight_verify_collection_recovery as script
+    company = InsightCompany(id=89, company_code="c89", name="测试集团", profile_json={"aliases": ["金龙鱼"]})
+    row = InsightMonitorConfig(id=97, config_code="m97", config_name="测试监测", object_type="company",
+                               object_id=89, object_name=company.name)
+    query = InsightMonitorExecutionService()._build_group_query([row])
+    checkpoint = InsightTask(id=10, create_time=datetime.now(),
+        input_payload={"key": f"2026-11-06|bocha|3d|None|None|{query}"},
+        output_payload={"hits": [{"channel": "bocha", "title": "金龙鱼业务进展", "url": "https://example.com/1"}]})
+    db = AsyncMock()
+    db.expunge = Mock()
+    db.exec.side_effect = [SimpleNamespace(all=lambda value=value: value)
+                          for value in ([company], [row], [checkpoint], [], [])]
+    db.get.return_value = InsightTask(task_type="collection_alias_repair",
+                                     output_payload={"changes": [{"company_id": 89, "before": []}]})
+    context = AsyncMock()
+    context.__aenter__.return_value = db
+    monkeypatch.setattr(script, "async_session", lambda: context)
+    emit = Mock()
+    monkeypatch.setattr(script, "emit", emit)
+    await script.run(SimpleNamespace(days=7, baseline_alias_task=1, company_alias=[], apply_aliases=False,
+                                    replay_limit=0, retry_fulltext_limit=0, sync=False))
+    assert emit.call_args.args[0]["newly_matched_unique_urls"] == 1
+    assert company.profile_json["aliases"] == ["金龙鱼"]
+    db.commit.assert_not_awaited()
+
+
 def intelligence(number, created, updated=None):
     return SimpleNamespace(id=number, create_time=created, update_time=updated,
                            publish_time=datetime(2025, 1, 1))

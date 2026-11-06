@@ -46,7 +46,8 @@ async def run(args):
             InsightMonitorConfig.is_deleted == 0, InsightMonitorConfig.status == "active",
         ).order_by(InsightMonitorConfig.id))).all())
         company_by_id = {row.id: row for row in companies}
-        baseline_companies = {key: value.model_copy(deep=True) for key, value in company_by_id.items()}
+        # 不能深拷贝 ORM 内部状态；重建纯字段实例，避免历史基线赋值引用已释放对象。
+        baseline_companies = {key: InsightCompany.model_validate(value.model_dump()) for key, value in company_by_id.items()}
         if args.baseline_alias_task:
             baseline_task = await db.get(InsightTask, args.baseline_alias_task)
             if not baseline_task or baseline_task.task_type != "collection_alias_repair":
