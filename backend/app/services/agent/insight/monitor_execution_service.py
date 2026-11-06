@@ -1634,7 +1634,7 @@ class InsightMonitorExecutionService:
             if isinstance(values, list):
                 aliases.extend(value for value in values if isinstance(value, str))
         if company:
-            aliases.extend(value for value in (company.name, company.short_name) if value)
+            aliases.extend(value for value in (company.short_name, company.name) if value)
         # 仅扩展匹配上下文，不修改监测对象、授权或公司归属。
         return row.model_copy(update={"config_json": config | {"aliases": aliases}})
 

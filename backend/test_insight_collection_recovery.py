@@ -18,6 +18,7 @@ def test_company_declared_abbreviation_and_aliases():
     row = InsightMonitorConfig(id=1, object_type="company", object_name="Archer-Daniels-Midland Company")
     company = InsightCompany(name=row.object_name, short_name="Archer Daniels Midland (ADM)— 美国")
     enriched = service._with_company_aliases(row, company)
+    assert enriched.config_json["aliases"][0] == company.short_name
     hit = SimpleNamespace(title="ADM财报及食品配料业务进展", snippet="", url="https://example.com/1")
     assert 1 in service._assign_grouped_hits([enriched], [hit])
     assert "美国" not in service._monitor_match_terms(enriched)
@@ -27,6 +28,14 @@ def test_company_declared_abbreviation_and_aliases():
     hit.title = "金龙鱼研发投入进展"
     assert 1 in service._assign_grouped_hits([service._with_company_aliases(row, company)], [hit])
     assert row.config_json is None
+
+
+def test_checkpoint_legacy_key_keeps_original_window():
+    from scripts.insight_verify_collection_recovery import checkpoint_parts
+    old = "2026-11-01|bocha_search|3d|None|None|(ADM) 企业新闻"
+    new = "2026-11-01|bocha_search|structured|3d|None|None|(ADM) 企业新闻"
+    assert checkpoint_parts(old)[3:] == checkpoint_parts(new)[3:]
+    assert checkpoint_parts("invalid") is None
 
 
 def intelligence(number, created, updated=None):

@@ -29,6 +29,13 @@ def emit(value):
     sys.stdout.flush()
 
 
+def checkpoint_parts(key):
+    parts = key.split("|", 6)
+    if len(parts) == 6:
+        parts.insert(2, "legacy")
+    return parts if len(parts) == 7 else None
+
+
 async def run(args):
     service = InsightMonitorExecutionService()
     cutoff = datetime.now() - timedelta(days=args.days)
@@ -39,7 +46,16 @@ async def run(args):
             InsightMonitorConfig.is_deleted == 0, InsightMonitorConfig.status == "active",
         ).order_by(InsightMonitorConfig.id))).all())
         company_by_id = {row.id: row for row in companies}
-        before = {row.id: service._with_company_aliases(row, company_by_id.get(row.object_id)
+        baseline_companies = {key: value.model_copy(deep=True) for key, value in company_by_id.items()}
+        if args.baseline_alias_task:
+            baseline_task = await db.get(InsightTask, args.baseline_alias_task)
+            if not baseline_task or baseline_task.task_type != "collection_alias_repair":
+                raise ValueError("别名基线必须指定真实的别名修复审计任务")
+            for change in (baseline_task.output_payload or {}).get("changes", []):
+                company = baseline_companies.get(change["company_id"])
+                if company:
+                    company.profile_json = dict(company.profile_json or {}) | {"aliases": change["before"]}
+        before = {row.id: service._with_company_aliases(row, baseline_companies.get(row.object_id)
                   if row.object_type == "company" else None) for row in rows}
         if not args.apply_aliases:
             for company in companies:
@@ -75,6 +91,17 @@ async def run(args):
         for size in {max(2, settings.INSIGHT_SCHEDULER_GROUPED_BATCH_SIZE),
                      max(1, settings.INSIGHT_SCHEDULER_GROUPED_AI_BATCH_SIZE)}:
             batches.update({batch.query: batch.rows for batch in service._build_grouped_discovery_batches(enriched, batch_size=size)})
+        for row in enriched:
+            previous = before[row.id]
+            topic = str((row.enabled_modules or [""])[0])
+            names = [(candidate.config_json or {}).get("aliases", [None])[0]
+                     if (candidate.config_json or {}).get("aliases") else candidate.object_name or candidate.config_name
+                     for candidate in (previous, row)]
+            for name in names:
+                query = f"{name} {topic}".strip()
+                group = batches.setdefault(query, [])
+                if all(item.id != row.id for item in group):
+                    group.append(row)
         checkpoints = list((await db.exec(select(InsightTask).where(
             InsightTask.task_type == "discovery_checkpoint", InsightTask.status == InsightTaskStatus.SUCCESS,
             InsightTask.create_time >= cutoff,
@@ -84,8 +111,8 @@ async def run(args):
         recovered = {}
         scanned = unmatched_queries = 0
         for task in checkpoints:
-            parts = str((task.input_payload or {}).get("key") or "").split("|", 6)
-            if len(parts) != 7 or parts[6] not in batches:
+            parts = checkpoint_parts(str((task.input_payload or {}).get("key") or ""))
+            if not parts or parts[6] not in batches:
                 unmatched_queries += 1
                 continue
             group = batches[parts[6]]
@@ -122,7 +149,7 @@ async def run(args):
             raise ValueError("补录前需显式应用已核实别名；当前仅展示模拟结果")
         pending = [value for url, value in recovered.items() if url not in captured][:args.replay_limit]
     for row, hit, parts, created_at, checkpoint_id in pending:
-        channel = channels[parts[1]]
+        channel = channels["bocha_search" if parts[1] == "bocha" else parts[1]]
         period_end = datetime.fromisoformat(parts[5]) if parts[5] != "None" else created_at
         days = {"oneDay": 1, "oneWeek": 7, "oneMonth": 30, "3d": 3}.get(parts[3])
         period_start = datetime.fromisoformat(parts[4]) if parts[4] != "None" else (period_end-timedelta(days=days) if days else None)
@@ -157,6 +184,7 @@ if __name__ == "__main__":
     parser.add_argument("--days", type=int, choices=range(1, 32), default=7)
     parser.add_argument("--company-alias", action="append", default=[])
     parser.add_argument("--apply-aliases", action="store_true")
+    parser.add_argument("--baseline-alias-task", type=int)
     parser.add_argument("--replay-limit", type=int, choices=range(0, 51), default=0)
     parser.add_argument("--retry-fulltext-limit", type=int, choices=range(0, 21), default=0)
     parser.add_argument("--sync", action="store_true")
