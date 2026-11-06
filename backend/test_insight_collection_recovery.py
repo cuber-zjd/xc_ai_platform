@@ -38,6 +38,14 @@ def test_checkpoint_legacy_key_keeps_original_window():
     assert checkpoint_parts("invalid") is None
 
 
+def test_replay_chooses_checkpoint_where_publication_was_in_window():
+    from scripts.insight_verify_collection_recovery import checkpoint_parts, hit_in_window
+    parts = checkpoint_parts("2026-11-06|bocha|structured|3d|None|None|金龙鱼")
+    hit = SimpleNamespace(published_at=datetime(2026, 11, 2, 11))
+    assert not hit_in_window(hit, parts, datetime(2026, 11, 6, 1))
+    assert hit_in_window(hit, parts, datetime(2026, 11, 4, 1))
+
+
 @pytest.mark.asyncio
 async def test_recovery_audit_reads_alias_baseline_without_orm_copy(monkeypatch):
     from scripts import insight_verify_collection_recovery as script

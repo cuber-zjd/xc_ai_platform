@@ -36,6 +36,21 @@ def checkpoint_parts(key):
     return parts if len(parts) == 7 else None
 
 
+def replay_window(parts, created_at):
+    end = datetime.fromisoformat(parts[5]) if parts[5] != "None" else created_at
+    now = datetime.now()
+    cutoff = search._freshness_cutoff(parts[3])
+    start = datetime.fromisoformat(parts[4]) if parts[4] != "None" else (
+        created_at - (now-cutoff) if cutoff else None
+    )
+    return start, end
+
+
+def hit_in_window(hit, parts, created_at):
+    start, end = replay_window(parts, created_at)
+    return bool(hit.published_at and start and start <= hit.published_at <= end)
+
+
 async def run(args):
     service = InsightMonitorExecutionService()
     cutoff = datetime.now() - timedelta(days=args.days)
@@ -135,7 +150,11 @@ async def run(args):
                 if old_match:
                     continue
                 assigned = service._assign_grouped_hits(group, [hit])
-                if assigned and hit.url not in recovered:
+                previous_hit = recovered.get(hit.url)
+                if assigned and (previous_hit is None or (
+                    hit_in_window(hit, parts, task.create_time)
+                    and not hit_in_window(previous_hit[1], previous_hit[2], previous_hit[3])
+                )):
                     row, _ = next(iter(assigned.values()))
                     recovered[hit.url] = (row, hit, parts, task.create_time, task.id)
         emit({"alias_changes": changes, "aliases_applied": args.apply_aliases,
@@ -151,9 +170,7 @@ async def run(args):
         pending = [value for url, value in recovered.items() if url not in captured][:args.replay_limit]
     for row, hit, parts, created_at, checkpoint_id in pending:
         channel = channels["bocha_search" if parts[1] == "bocha" else parts[1]]
-        period_end = datetime.fromisoformat(parts[5]) if parts[5] != "None" else created_at
-        days = {"oneDay": 1, "oneWeek": 7, "oneMonth": 30, "3d": 3}.get(parts[3])
-        period_start = datetime.fromisoformat(parts[4]) if parts[4] != "None" else (period_end-timedelta(days=days) if days else None)
+        period_start, period_end = replay_window(parts, created_at)
         if period_start is None:
             emit({"skipped_checkpoint": checkpoint_id, "reason": "无法精确恢复原时间窗，未补录"})
             continue
