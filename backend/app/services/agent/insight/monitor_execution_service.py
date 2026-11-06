@@ -1085,16 +1085,7 @@ class InsightMonitorExecutionService:
         enriched_rows = []
         for row in rows:
             company = company_by_id.get(row.object_id) if row.object_type == "company" else None
-            config = dict(row.config_json or {})
-            configured_aliases = config.get("aliases") or []
-            aliases = [alias for alias in configured_aliases if isinstance(alias, str)] if isinstance(configured_aliases, list) else []
-            if company and company.short_name:
-                aliases.append(company.short_name)
-            profile_aliases = (company.profile_json or {}).get("aliases") if company else None
-            if isinstance(profile_aliases, list):
-                aliases.extend(str(alias) for alias in profile_aliases if isinstance(alias, str))
-            # 仅在本次搜索上下文使用企业简称，不改监测配置或权限。
-            enriched_rows.append(row.model_copy(update={"config_json": config | {"aliases": aliases}}))
+            enriched_rows.append(self._with_company_aliases(row, company))
         rows = enriched_rows
 
         channels = {channel.channel_code: channel for channel in await self._active_channels(db)}
@@ -1613,15 +1604,39 @@ class InsightMonitorExecutionService:
         return assigned
 
     def _monitor_match_terms(self, row: InsightMonitorConfig) -> list[str]:
+        configured_aliases = (row.config_json or {}).get("aliases") or []
+        if isinstance(configured_aliases, str):
+            configured_aliases = [configured_aliases]
         terms = [
             str(row.object_name or "").strip(),
             str(row.config_name or "").strip(),
             *(str(item).strip() for item in row.keywords or []),
-            *(str(item).strip() for item in (row.config_json or {}).get("aliases", [])),
+            *(str(item).strip() for item in configured_aliases if isinstance(item, str)),
         ]
+        if row.object_type == "company":
+            # 只拆出档案明确写出的缩写，不猜测品牌关系，也不把国家/行业备注当别名。
+            terms.extend(
+                alias
+                for term in list(terms)
+                for alias in re.findall(r"[（(]\s*([A-Z][A-Z0-9&.-]{1,11})\s*[）)]", term)
+            )
         if row.object_type != "company":
             terms.extend(str(item).strip() for item in row.enabled_modules or [])
         return [item for item in self._unique_items(terms) if len(item) >= 2]
+
+    @staticmethod
+    def _with_company_aliases(row: InsightMonitorConfig, company: InsightCompany | None) -> InsightMonitorConfig:
+        config = dict(row.config_json or {})
+        aliases = []
+        for values in (config.get("aliases"), (company.profile_json or {}).get("aliases") if company else None):
+            if isinstance(values, str):
+                values = [values]
+            if isinstance(values, list):
+                aliases.extend(value for value in values if isinstance(value, str))
+        if company:
+            aliases.extend(value for value in (company.name, company.short_name) if value)
+        # 仅扩展匹配上下文，不修改监测对象、授权或公司归属。
+        return row.model_copy(update={"config_json": config | {"aliases": aliases}})
 
     @staticmethod
     def _normalize_match_text(value: str) -> str:

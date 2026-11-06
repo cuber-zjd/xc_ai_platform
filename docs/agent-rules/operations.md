@@ -205,6 +205,8 @@ uv sync
 
 ## 11. Insight Linux 发布方式
 
+- 采集恢复验证入口：在 `backend` 执行 `uv run python scripts/insight_verify_collection_recovery.py --days 7`，默认只回放已保存搜索检查点，无额外联网搜索。经核实的企业别名可用 `--company-alias '企业全称=简称'` 模拟，`--apply-aliases` 才保存并审计；`--replay-limit 10` 通过原过滤/正文/评审链路补录未采集匹配项；`--retry-fulltext-limit 5` 有限重试正文；`--sync` 调用与每日定时任务相同的飞书增量对账。该入口不运行报告订阅或简报推送。生产发布仍必须先经下述统一发布脚本。
+
 独立经营助手 `refresh_worker.py` 同时检查官方资讯缓存：`business_insights/news_sources.json` 为随Git发布的两个固定站点配置，`storage/official_news.json` 为私有运行缓存。经营任务仍每900秒运行，资讯成功后6小时内不再请求，失败1小时后重试；一轮最多3个请求，不新增飞书工作流或系统定时任务。资讯失败不阻塞经营快照刷新，来源级状态见 `/api/meta.news_status`，真实子进程结果也包含来源时间和状态；不得将文件存在当抓取成功。
 
 - 192.168.14.44 服务器固定使用原 git 工作目录 `/home/xinxi/ai_platform` 部署和运行，不再创建 `ai_platform_releases` 或 `ai_platform_current` 发布目录。

@@ -14,7 +14,6 @@ from app.core.logger import logger
 from app.db.session import async_session
 from app.models.agent.insight import InsightTask, InsightTaskStatus
 from app.schemas.agent.insight.data_source import InsightDataSourceScheduleRunResponse
-from app.schemas.agent.insight.feishu import InsightFeishuSyncRequest
 from app.schemas.agent.insight.task import InsightSchedulerRunLogRead
 from app.schemas.page import Page
 from app.services.agent.insight.feishu_bitable_service import insight_feishu_bitable_service
@@ -276,22 +275,14 @@ class InsightSchedulerService:
                     feishu_result: dict[str, Any] | None = None
                     feishu_error: str | None = None
                     if settings.INSIGHT_FEISHU_SYNC_ENABLED and insight_feishu_bitable_service.get_options().configured:
-                        sync_end = self._now().replace(hour=23, minute=59, second=59, microsecond=999999)
-                        sync_start = (sync_end - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
                         try:
-                            sync_response = await insight_feishu_bitable_service.sync_intelligences(
+                            sync_response = await insight_feishu_bitable_service.sync_incremental(
                                 db,
-                                InsightFeishuSyncRequest(
-                                    scope="date_range",
-                                    date_from=sync_start,
-                                    date_to=sync_end,
-                                    update_existing=True,
-                                    ensure_metadata=True,
-                                ),
                                 user_id=settings.INSIGHT_SCHEDULER_USER_ID,
-                                is_admin=True,
                             )
                             feishu_result = sync_response.model_dump(mode="json")
+                            if sync_response.failed_count:
+                                feishu_error = f"{sync_response.failed_count} 条飞书记录同步失败"
                         except Exception as exc:
                             feishu_error = str(exc)[:1000]
                     total_failed_count = (

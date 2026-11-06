@@ -7,10 +7,12 @@ from typing import Any
 from uuid import uuid4
 
 import httpx
+from sqlalchemy import text
 from sqlmodel import select
 from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.config import settings
+from app.db.session import engine
 from app.models.agent.insight import (
     InsightIntelligence,
     InsightIntelligenceAsset,
@@ -86,18 +88,53 @@ class InsightFeishuBitableService:
         *,
         user_id: int,
         is_admin: bool,
+        _incremental: bool = False,
+    ) -> InsightFeishuSyncResponse:
+        if _incremental and not is_admin:
+            raise ValueError("全量对账仅允许管理员后台任务执行")
+        # 独立连接持锁，防止手动同步与定时同步同时查缺后重复新增；业务提交不释放锁。
+        async with engine.connect() as lock_connection:
+            acquired = (await lock_connection.execute(text("SELECT pg_try_advisory_lock(746321908)"))).scalar()
+            if not acquired:
+                raise ValueError("已有飞书多维表格同步正在执行，请稍后重试")
+            try:
+                return await self._sync_intelligences(
+                    db, payload, user_id=user_id, is_admin=is_admin, incremental=_incremental,
+                )
+            finally:
+                await lock_connection.execute(text("SELECT pg_advisory_unlock(746321908)"))
+
+    async def sync_incremental(self, db: AsyncSession, *, user_id: int) -> InsightFeishuSyncResponse:
+        now = datetime.now()
+        return await self.sync_intelligences(
+            db, InsightFeishuSyncRequest(date_from=now, date_to=now),
+            user_id=user_id, is_admin=True, _incremental=True,
+        )
+
+    async def _sync_intelligences(
+        self,
+        db: AsyncSession,
+        payload: InsightFeishuSyncRequest,
+        *,
+        user_id: int,
+        is_admin: bool,
+        incremental: bool = False,
     ) -> InsightFeishuSyncResponse:
         options = self.get_options()
         if not options.enabled:
             raise ValueError("飞书多维表格同步尚未启用或配置不完整")
 
+        sync_started_at = datetime.now()
+        audit_payload = payload.model_dump(mode="json") | {"user_id": user_id}
+        if incremental:
+            audit_payload.update(scope="incremental_reconcile", date_from=None, date_to=None)
         task = InsightTask(
             task_uid=f"insight_feishu_sync_{uuid4().hex}",
             task_type="feishu_bitable_sync",
             status=InsightTaskStatus.RUNNING,
             progress=10,
             started_at=datetime.now(),
-            input_payload=payload.model_dump(mode="json") | {"user_id": user_id},
+            input_payload=audit_payload,
             create_by=str(user_id),
             update_by=str(user_id),
         )
@@ -108,12 +145,21 @@ class InsightFeishuBitableService:
 
         try:
             selected_codes = self._selected_field_codes(payload.field_codes)
-            rows = await self._load_intelligences(db, payload, user_id=user_id, is_admin=is_admin)
+            existing_records = await self._list_records()
+            rows = await self._load_intelligences(
+                db, payload, user_id=user_id, is_admin=is_admin, all_active=incremental,
+            )
+            scanned_count = len(rows)
+            if incremental:
+                rows = self._select_incremental_rows(rows, existing_records)
             record_payloads = await self._build_record_payloads(db, rows, selected_codes)
+            if incremental:
+                for record in record_payloads:
+                    # 使用读取前的时点，运行过程中才提交的修改会在下次重新同步。
+                    record["values"]["sync_time"] = sync_started_at
             fields = await self._list_fields()
             metadata_result = await self._ensure_fields(fields, record_payloads, selected_codes, payload.ensure_metadata)
             fields = metadata_result["fields"]
-            existing_records = await self._list_records()
             result = await self._write_records(
                 record_payloads,
                 fields,
@@ -136,7 +182,10 @@ class InsightFeishuBitableService:
             task.status = InsightTaskStatus.SUCCESS if response.failed_count == 0 else InsightTaskStatus.FAILED
             task.progress = 100
             task.finished_at = datetime.now()
-            task.output_payload = response.model_dump(mode="json")
+            task.output_payload = response.model_dump(mode="json") | {
+                "scanned_count": scanned_count,
+                "sync_mode": "incremental_reconcile" if incremental else payload.scope,
+            }
             task.error_message = None if response.failed_count == 0 else f"{response.failed_count} 条记录同步失败"
             task.update_time = datetime.now()
             db.add(task)
@@ -166,6 +215,27 @@ class InsightFeishuBitableService:
             selected.insert(0, "intelligence_id")
         return list(dict.fromkeys(selected))
 
+    def _select_incremental_rows(
+        self, rows: list[InsightIntelligence], existing_records: list[dict[str, Any]],
+    ) -> list[InsightIntelligence]:
+        synced_at = {}
+        for record in existing_records:
+            fields = record.get("fields") or {}
+            key = self._normalize_text_value(fields.get("情报ID"))
+            try:
+                value = float(fields.get("同步时间") or 0)
+            except (TypeError, ValueError):
+                value = 0
+            # 已有重复行时取最早水位，宁可重试更新，不能误认为全部同步完成。
+            synced_at[key] = min(synced_at.get(key, value), value)
+        result = []
+        for row in rows:
+            modified = max(value for value in (row.create_time, row.update_time) if value is not None)
+            watermark = synced_at.get(str(row.id), 0)
+            if not watermark or modified.timestamp() * 1000 >= watermark - 300_000:
+                result.append(row)
+        return result
+
     async def _load_intelligences(
         self,
         db: AsyncSession,
@@ -173,6 +243,7 @@ class InsightFeishuBitableService:
         *,
         user_id: int,
         is_admin: bool,
+        all_active: bool = False,
     ) -> list[InsightIntelligence]:
         filters = [
             InsightIntelligence.is_deleted == 0,
@@ -180,7 +251,7 @@ class InsightFeishuBitableService:
         ]
         if payload.scope == "selected":
             filters.append(InsightIntelligence.id.in_(payload.intelligence_ids))
-        else:
+        elif not all_active:
             filters.extend(
                 [
                     InsightIntelligence.publish_time >= payload.date_from,
@@ -194,16 +265,17 @@ class InsightFeishuBitableService:
             if not visible_ids:
                 return []
             filters.append(InsightIntelligence.id.in_(visible_ids))
-        return list(
-            (
-                await db.exec(
-                    select(InsightIntelligence)
-                    .where(*filters)
-                    .order_by(InsightIntelligence.publish_time.desc().nullslast(), InsightIntelligence.id.desc())
-                    .limit(2000)
-                )
-            ).all()
-        )
+        rows: list[InsightIntelligence] = []
+        last_id = 0
+        while True:
+            page = list((await db.exec(
+                select(InsightIntelligence).where(*filters, InsightIntelligence.id > last_id)
+                .order_by(InsightIntelligence.id.asc()).limit(500)
+            )).all())
+            if not page:
+                return rows
+            rows.extend(page)
+            last_id = page[-1].id
 
     async def _build_record_payloads(
         self,

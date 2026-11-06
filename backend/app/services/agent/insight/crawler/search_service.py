@@ -1010,14 +1010,24 @@ class InsightSearchDiscoveryService:
     async def retry_recent_fulltext(self, db: AsyncSession, *, user_id: int | None, limit: int = 20) -> dict[str, int]:
         """从原采集记录续抓正文，保留原任务日期边界和权限归属。"""
         now = datetime.now()
-        rows = list((await db.exec(select(InsightCrawlResult, InsightTask)
+        result_ids = list((await db.exec(select(InsightCrawlResult.id)
             .join(InsightTask, InsightTask.id == InsightCrawlResult.task_id)
             .where(InsightCrawlResult.is_deleted == 0,
                    InsightCrawlResult.create_time >= now - timedelta(days=7),
                    func.length(func.coalesce(InsightCrawlResult.markdown_content, "")) < 200)
             .order_by(InsightCrawlResult.create_time.desc()).limit(500))).all())
         counts = {"attempted": 0, "success": 0, "failed": 0, "candidates": 0}
-        for result, task in rows:
+        # 回滚会过期整个会话的 ORM 对象；只保留 ID，每条显式重读，避免下一条隐式 I/O。
+        for result_id in result_ids:
+            pair = (await db.exec(
+                select(InsightCrawlResult, InsightTask)
+                .join(InsightTask, InsightTask.id == InsightCrawlResult.task_id)
+                .where(InsightCrawlResult.id == result_id, InsightCrawlResult.is_deleted == 0)
+                .execution_options(populate_existing=True)
+            )).first()
+            if not pair:
+                continue
+            result, task = pair
             metadata = dict(result.crawl_metadata or {})
             fetch = metadata.get("fulltext_fetch") or {}
             retry = metadata.get("fulltext_retry") or {}
@@ -1045,6 +1055,8 @@ class InsightSearchDiscoveryService:
                     if cutoff:
                         request.published_start = cutoff - (now - task.create_time)
                 await insight_crawl_service.enrich_discovered_result(db, result)
+                if not self._has_fulltext(result):
+                    raise ValueError("正文补抓后仍未通过有效正文校验")
                 request.enrich_fulltext_before_review = False
                 candidates = await self._create_candidates_from_hits(db, [result], request, user_id)
                 counts["success"] += 1
@@ -1053,7 +1065,16 @@ class InsightSearchDiscoveryService:
                 counts["failed"] += 1
                 await db.rollback()
                 await db.refresh(result)
-                await insight_crawl_service.mark_fulltext_failure(db, result, exc)
+                if self._has_fulltext(result):
+                    metadata = dict(result.crawl_metadata or {})
+                    metadata["fulltext_retry"] = dict(metadata.get("fulltext_retry") or {}) | {
+                        "review_error": f"{type(exc).__name__}: {exc}"[:500],
+                    }
+                    result.crawl_metadata = metadata
+                    db.add(result)
+                    await db.commit()
+                else:
+                    await insight_crawl_service.mark_fulltext_failure(db, result, exc)
         return counts
 
     async def _create_candidates_from_hits(
