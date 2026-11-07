@@ -38,6 +38,22 @@ def test_link_dense_and_title_mismatch_flagged():
     assert len(quality["issues"]) >= 2
 
 
+@pytest.mark.parametrize("footer", ["| Disclaimer |  |", "| 免責聲明 |  |", "| 網站地圖 |  |",
+                                    "[股價](<javascript:gotobmp('01364')>)"])
+def test_site_footer_is_retained_but_flagged(footer):
+    body = "企业公布生产线投资3000万元，新增年产能2万吨。" * 15 + "\n" + footer
+    cleaned, quality = assess_body(body, "企业生产线投资")
+    assert cleaned == body
+    assert quality["status"] == "needs_review"
+
+
+def test_disclaimer_in_business_sentence_is_not_removed():
+    body = "企业公告的免责声明指出，计划投资金额以最终审批为准。" * 15
+    cleaned, quality = assess_body(body, "企业公告")
+    assert cleaned == body
+    assert quality["status"] == "passed_rules"
+
+
 @pytest.mark.asyncio
 async def test_html_main_text_keeps_facts_not_navigation(monkeypatch):
     client = FirecrawlClient()
