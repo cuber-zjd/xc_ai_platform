@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from uuid import uuid4
 from urllib.parse import urlparse
 
-from sqlalchemy import or_, text
+from sqlalchemy import and_, or_, text
 from sqlmodel import func, select
 
 from app.core.config import settings
@@ -40,9 +40,22 @@ class FulltextRetryService:
             InsightCrawlResult.create_time >= now - timedelta(days=days),
             InsightCrawlResult.create_time <= now,
             or_(func.length(func.coalesce(InsightCrawlResult.markdown_content, "")) < 200,
-                InsightCrawlResult.crawl_metadata["fulltext_retry"]["status"].astext == "review_pending"),
+                InsightCrawlResult.crawl_metadata["fulltext_retry"]["status"].astext.in_(["review_pending", "running"]),
+                and_(repair, InsightCrawlResult.source_url.like("%toutiao.com/%"),
+                     InsightCrawlResult.crawl_metadata["fulltext_fetch"]["metadata"]["body_selector"].astext.is_(None))),
         ).order_by(InsightCrawlResult.create_time.asc(), InsightCrawlResult.id.asc()))).all())
         ids, excluded = [], []
+        blocked_hosts = set()
+        # 从已落盘的限制原因恢复本轮冷却，维护重启不能立即重试刚被拒绝的站点。
+        for row in rows:
+            fetch = (row.crawl_metadata or {}).get("fulltext_fetch") or {}
+            try:
+                recently_blocked = ("FulltextAccessBlocked" in str(fetch.get("error") or "")
+                                    and datetime.fromisoformat(fetch.get("attempted_at") or "") > now - timedelta(hours=1))
+            except (TypeError, ValueError):
+                recently_blocked = False
+            if recently_blocked:
+                blocked_hosts.add(urlparse(row.source_url).hostname or "")
         for row in rows:
             metadata = row.crawl_metadata or {}
             retry = metadata.get("fulltext_retry") or {}
@@ -54,7 +67,7 @@ class FulltextRetryService:
                     recent = previous and datetime.fromisoformat(previous) > now - timedelta(hours=6)
                 except (TypeError, ValueError):
                     recent = False
-                if int(retry.get("attempts") or 0) >= 2:
+                if int(retry.get("attempts") or 0) >= 2 and retry.get("status") != "running":
                     reason = "已达自动重试上限"
                 elif recent:
                     reason = "重试冷却中"
@@ -113,13 +126,14 @@ class FulltextRetryService:
                 outcome = {"id": number, "attempted": 0, "status": "deferred"}
                 if budget and time.monotonic() - started >= budget:
                     outcome["error"] = "批次预算已用完，未发起请求，留待下一轮"
-                elif firecrawl_client.host_is_blocked(host):
+                elif host in blocked_hosts or firecrawl_client.host_is_blocked(host):
                     outcome["error"] = "同站已触发访问限制，本轮不再请求"
                 else:
                     async with async_session() as item_db:
                         try:
                             counts = await search._retry_fulltext_records(
                                 item_db, user_id=user_id, limit=1, result_ids=[number], repair=repair,
+                                force_fetch=repair and host == "www.toutiao.com",
                             )
                             row = await item_db.get(InsightCrawlResult, number, populate_existing=True)
                             metadata = row.crawl_metadata or {}

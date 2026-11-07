@@ -751,11 +751,14 @@ class InsightFeishuBitableService:
         return [str(item).strip() for item in value if str(item).strip()]
 
     def _normalize_text_value(self, value: Any) -> str:
-        if isinstance(value, list) and value:
-            return "".join(self._normalize_text_value(item) for item in value).strip()
-        if isinstance(value, dict):
-            return str(value.get("text") or value.get("value") or "").strip()
-        return str(value or "").strip()
+        def plain(item):
+            if isinstance(item, list):
+                return "".join(plain(part) for part in item)
+            if isinstance(item, dict):
+                return str(item.get("text") or item.get("value") or "")
+            return str(item or "")
+        # 富文本可能按链接切片，片段首尾的空格和换行属于正文，不能逐片裁掉。
+        return plain(value).strip()
 
     def _chunks(self, values: list[dict[str, Any]], size: int) -> list[list[dict[str, Any]]]:
         return [values[index : index + size] for index in range(0, len(values), size)]

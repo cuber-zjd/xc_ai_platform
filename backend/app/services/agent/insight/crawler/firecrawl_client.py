@@ -69,7 +69,11 @@ class FirecrawlClient:
             "url": url,
             "formats": ["markdown", "html"],
             "onlyMainContent": True,
+            # API 默认只等30秒，必须与客户端预算一致，并留出响应传输余量。
+            "timeout": min(300000, max(1000, int((self.timeout_seconds - 5) * 1000))),
         }
+        if (urlparse(url).hostname or "").endswith("toutiao.com"):
+            payload["formats"].append("rawHtml")
         endpoint = f"{self.base_url}/v1/scrape"
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
             response = await client.post(endpoint, json=payload, headers=headers)
@@ -117,9 +121,20 @@ class FirecrawlClient:
             metadata = firecrawl_data.get("metadata") or {}
             if metadata.get("statusCode") in {403, 429}:
                 raise FulltextAccessBlocked(f"站点限制访问 HTTP {metadata['statusCode']}")
-            if firecrawl_data.get("html"):
-                page_metadata = self._extract_page_metadata(BeautifulSoup(firecrawl_data["html"], "lxml"), url)
+            if firecrawl_data.get("rawHtml") or firecrawl_data.get("html"):
+                # rawHtml 保留 JSON-LD；清洗后的 html 会丢失发布时间，只剩相对时间。
+                soup = BeautifulSoup(firecrawl_data.get("rawHtml") or firecrawl_data["html"], "lxml")
+                page_metadata = self._extract_page_metadata(soup, url)
                 firecrawl_data["metadata"] = dict(firecrawl_data.get("metadata") or {}) | page_metadata
+                if (urlparse(url).hostname or "").endswith("toutiao.com"):
+                    root = soup.find("article") or soup.select_one(".article-content")
+                    if root is None:
+                        raise ValueError("头条页面未找到文章容器，不使用推荐流或脚本外壳")
+                    firecrawl_data["markdown"] = root.get_text("\n", strip=True)
+                    firecrawl_data["metadata"]["body_selector"] = "article/.article-content"
+                    title = soup.select_one("h1.article__title") or soup.find("h1")
+                    if title:
+                        firecrawl_data["metadata"]["title"] = title.get_text(" ", strip=True)
             content = str(firecrawl_data.get("markdown") or firecrawl_data.get("content") or "")
             self._check_verification_page(content)
             if not insight_content_cleaner.fulltext_error(content):

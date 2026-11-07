@@ -1016,6 +1016,7 @@ class InsightSearchDiscoveryService:
     async def _retry_fulltext_records(
         self, db: AsyncSession, *, user_id: int | None, limit: int = 20,
         result_ids: list[int] | None = None, repair: bool = False,
+        force_fetch: bool = False,
     ) -> dict[str, int]:
         """从原采集记录续抓正文，保留原任务日期边界和权限归属。"""
         now = datetime.now()
@@ -1043,9 +1044,9 @@ class InsightSearchDiscoveryService:
             retry = metadata.get("fulltext_retry") or {}
             if self._unsupported_fulltext_reason(result.source_url):
                 continue
-            if self._has_fulltext(result) and retry.get("status") != "review_pending":
+            if self._has_fulltext(result) and not force_fetch and retry.get("status") not in {"review_pending", "running"}:
                 continue
-            if not repair and int(retry.get("attempts") or 0) >= 2:
+            if not repair and int(retry.get("attempts") or 0) >= 2 and retry.get("status") != "running":
                 continue
             previous = retry.get("attempted_at") or fetch.get("attempted_at")
             if not repair and previous and datetime.fromisoformat(previous) > now - timedelta(hours=6):
@@ -1067,7 +1068,12 @@ class InsightSearchDiscoveryService:
                     cutoff = self._freshness_cutoff(request.freshness)
                     if cutoff:
                         request.published_start = cutoff - (now - task.create_time)
-                if not self._has_fulltext(result):
+                if force_fetch:
+                    await asyncio.wait_for(
+                        insight_crawl_service.enrich_discovered_result(db, result, reuse_existing=False),
+                        timeout=max(1, settings.INSIGHT_FULLTEXT_RETRY_FETCH_TIMEOUT_SECONDS),
+                    )
+                elif not self._has_fulltext(result):
                     await asyncio.wait_for(
                         insight_crawl_service.enrich_discovered_result(db, result),
                         timeout=max(1, settings.INSIGHT_FULLTEXT_RETRY_FETCH_TIMEOUT_SECONDS),
@@ -1077,6 +1083,10 @@ class InsightSearchDiscoveryService:
                 request.enrich_fulltext_before_review = False
                 candidates = await asyncio.wait_for(
                     self._create_candidates_from_hits(db, [result], request, user_id),
+                    timeout=max(1, settings.INSIGHT_FULLTEXT_RETRY_REVIEW_TIMEOUT_SECONDS),
+                )
+                await asyncio.wait_for(
+                    insight_crawl_service.backfill_promoted_fulltext(db, result),
                     timeout=max(1, settings.INSIGHT_FULLTEXT_RETRY_REVIEW_TIMEOUT_SECONDS),
                 )
                 result.crawl_metadata = dict(result.crawl_metadata or {}) | {

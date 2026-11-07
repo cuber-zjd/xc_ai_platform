@@ -156,6 +156,7 @@ async def test_fulltext_failure_does_not_stop_next_record(monkeypatch):
         row.markdown_content = "项目投产，新增糖浆产线，披露产能和工艺。" * 30
     monkeypatch.setattr(search_module.insight_crawl_service, "enrich_discovered_result", enrich)
     monkeypatch.setattr(search_module.insight_crawl_service, "mark_fulltext_failure", AsyncMock())
+    monkeypatch.setattr(search_module.insight_crawl_service, "backfill_promoted_fulltext", AsyncMock(return_value=[]))
     create = AsyncMock(return_value=[])
     monkeypatch.setattr(insight_search_discovery_service, "_create_candidates_from_hits", create)
     counts = await insight_search_discovery_service._retry_fulltext_records(db, user_id=1, limit=2)

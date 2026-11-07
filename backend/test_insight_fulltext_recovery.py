@@ -62,6 +62,7 @@ def test_sync_body_repairs_old_row_and_joins_richtext():
     assert service._select_incremental_rows([row], remote) == []
     assert "content" in service._selected_field_codes([])
     assert "content" not in service._selected_field_codes(["title"])
+    assert service._normalize_text_value([{"text": "第一段\n"}, {"text": "第二段 "}, {"text": "链接"}]) == "第一段\n第二段 链接"
 
 
 @pytest.mark.asyncio
@@ -81,6 +82,7 @@ async def test_item_timeout_keeps_other_records_running(monkeypatch):
     failure = AsyncMock()
     monkeypatch.setattr(search_module.insight_crawl_service, "mark_fulltext_failure", failure)
     monkeypatch.setattr(service, "_create_candidates_from_hits", AsyncMock(return_value=[]))
+    monkeypatch.setattr(search_module.insight_crawl_service, "backfill_promoted_fulltext", AsyncMock(return_value=[]))
     result = await service._retry_fulltext_records(db, user_id=1, result_ids=[1, 2], repair=True)
     assert result["attempted"] == 2
     assert result["success"] == 1
@@ -106,3 +108,91 @@ async def test_review_failure_keeps_body_for_later_review(monkeypatch):
     assert row.crawl_metadata["fulltext_retry"]["status"] == "review_pending"
     assert len(row.markdown_content) > 200
     failure.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("budget", [0, 0.000000001])
+async def test_batch_checkpoints_and_soft_budget(monkeypatch, budget):
+    from app.services.agent.insight.crawler import fulltext_retry_service as module
+    from itertools import count
+    ticks = count()
+    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: next(ticks)))
+    rows = [InsightCrawlResult(id=i, source_url=f"https://{host}.example.org/{i}",
+                              create_time=datetime.now()) for i, host in [(1, "a"), (2, "a"), (3, "b")]]
+    objects = {row.id: row for row in rows}
+    audit = None
+    db = AsyncMock()
+    db.add = Mock()
+    db.exec.return_value = SimpleNamespace(all=lambda: rows)
+    async def refresh(task):
+        nonlocal audit
+        task.id = 999
+        audit = task
+    db.refresh.side_effect = refresh
+    context_db = AsyncMock()
+    context_db.add = Mock()
+    async def get(kind, number, **kwargs):
+        return audit if kind is InsightTask else objects[number]
+    context_db.get.side_effect = get
+    context = AsyncMock()
+    context.__aenter__.return_value = context_db
+    monkeypatch.setattr(module, "async_session", lambda: context)
+    running = set()
+    async def retry(session, *, result_ids, **kwargs):
+        # refresh 开启的事务必须已释放，避免上线时 DDL 被长批次阻塞。
+        assert db.commit.await_count == 2
+        row = objects[result_ids[0]]
+        host = row.source_url.split("/")[2]
+        assert host not in running
+        running.add(host)
+        await asyncio.sleep(0.01)
+        running.remove(host)
+        row.markdown_content = "糖浆生产项目扩建完成。" * 40
+        row.crawl_metadata = {"fulltext_retry": {"status": "success"}, "fulltext_fetch": {"provider": "firecrawl"}}
+        return {"attempted": 1, "candidates": 0}
+    call = AsyncMock(side_effect=retry)
+    monkeypatch.setattr(search_module.insight_search_discovery_service, "_retry_fulltext_records", call)
+    result = await module.fulltext_retry_service._run(db, user_id=1, limit=0, days=7, repair=True, budget_seconds=budget)
+    assert result["selected"] == 3
+    assert result["remaining"] == 0
+    assert len(audit.output_payload["items"]) == 3
+    assert result["success"] == (3 if budget == 0 else 0)
+    assert result["deferred"] == (0 if budget == 0 else 3)
+    assert call.await_count == (3 if budget == 0 else 0)
+
+
+@pytest.mark.asyncio
+async def test_toutiao_body_excludes_app_and_recommendation(monkeypatch):
+    client = FirecrawlClient()
+    body = "项目已正式投产，披露新增生产线与原料采购计划。" * 20
+    html = f"<html><h1>项目投产</h1><div>打开APP</div><article>{body}</article><aside>推荐新闻</aside></html>"
+    raw = html.replace("<html>", '<html><script type="application/ld+json">'
+                       '{"@type":"NewsArticle","datePublished":"2026-11-06T17:50:09+08:00",'
+                       '"dateModified":"2026-11-07T09:00:43+08:00"}</script>')
+    monkeypatch.setattr(client, "scrape_url", AsyncMock(return_value={"rawHtml": raw, "html": html, "markdown": "导航" + body}))
+    result = await client._scrape_with_fallback("https://www.toutiao.com/article/123/")
+    assert result["markdown"] == body
+    assert result["metadata"]["title"] == "项目投产"
+    assert result["metadata"]["publishedTime"] == "2026-11-06T17:50:09+08:00"
+
+
+@pytest.mark.asyncio
+async def test_formal_body_backfill_preserves_business_fields(monkeypatch):
+    from app.models.agent.insight import InsightIntelligence
+    from app.services.agent.insight.asset_service import insight_asset_service
+    from app.services.agent.insight.crawler.crawl_service import insight_crawl_service
+    row = InsightIntelligence(id=20, title="原有情报", content=None, company_id=9,
+                              publish_time=datetime(2026, 11, 1), raw_payload={"crawl_result_id": 10})
+    crawl = InsightCrawlResult(id=10, source_url="https://example.org/news/10",
+                               markdown_content="糖浆生产项目扩建完成，新增采购计划。" * 30)
+    db = AsyncMock()
+    db.add = Mock()
+    db.exec.return_value = SimpleNamespace(all=lambda: [row])
+    index = AsyncMock()
+    monkeypatch.setattr(insight_asset_service, "upsert_intelligence_asset", index)
+    assert await insight_crawl_service.backfill_promoted_fulltext(db, crawl) == [20]
+    sql = str(db.exec.await_args.args[0])
+    assert "content IS NULL" in sql and "FOR UPDATE" in sql and "raw_payload" in sql
+    assert row.content == crawl.markdown_content
+    assert row.title == "原有情报" and row.company_id == 9 and row.publish_time == datetime(2026, 11, 1)
+    index.assert_awaited_once()

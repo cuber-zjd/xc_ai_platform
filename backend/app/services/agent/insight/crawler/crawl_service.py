@@ -22,6 +22,7 @@ from app.models.agent.insight import (
     InsightCrawlStatus,
     InsightDataSource,
     InsightIntelligenceCandidate,
+    InsightIntelligence,
     InsightMonitorConfig,
     InsightSubjectType,
     InsightTask,
@@ -43,10 +44,12 @@ class InsightCrawlService:
         self,
         db: AsyncSession,
         crawl_result: InsightCrawlResult,
+        *,
+        reuse_existing: bool = True,
     ) -> InsightCrawlResult:
         """在原搜索记录上补全正文，不重复创建采集任务和候选。"""
 
-        reused = await self._reuse_existing_fulltext(db, crawl_result)
+        reused = await self._reuse_existing_fulltext(db, crawl_result) if reuse_existing else None
         if reused:
             return reused
         async with self._fulltext_semaphore:
@@ -198,6 +201,31 @@ class InsightCrawlService:
         crawl_result.update_time = datetime.now()
         db.add(crawl_result)
         await db.commit()
+
+    async def backfill_promoted_fulltext(self, db: AsyncSession, crawl_result: InsightCrawlResult) -> list[int]:
+        """仅补原始采集证据直接对应的空正文，不能覆盖人工内容或合并来源。"""
+        if insight_content_cleaner.fulltext_error(crawl_result.markdown_content):
+            return []
+        rows = list((await db.exec(select(InsightIntelligence).where(
+            InsightIntelligence.is_deleted == 0,
+            InsightIntelligence.status == "active",
+            InsightIntelligence.raw_payload["crawl_result_id"].astext == str(crawl_result.id),
+            (InsightIntelligence.content.is_(None)) | (InsightIntelligence.content == ""),
+        ).with_for_update())).all())
+        from app.services.agent.insight.asset_service import insight_asset_service
+        ids = []
+        for row in rows:
+            row.content = crawl_result.markdown_content
+            row.update_time = datetime.now()
+            row.raw_payload = dict(row.raw_payload or {}) | {"fulltext_recovery": {
+                "crawl_result_id": crawl_result.id, "source_url": crawl_result.source_url,
+                "recovered_at": row.update_time.isoformat(),
+            }}
+            db.add(row)
+            await insight_asset_service.upsert_intelligence_asset(db, row)
+            ids.append(row.id)
+        await db.commit()
+        return ids
 
     async def summarize_fulltext_candidate(
         self,
