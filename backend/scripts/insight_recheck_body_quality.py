@@ -15,9 +15,10 @@ from sqlmodel import select  # noqa: E402
 from app.db.session import async_session  # noqa: E402
 from app.models.agent.insight import InsightTask, InsightTaskStatus, InsightCrawlResult, InsightIntelligence  # noqa: E402
 from app.services.agent.insight.crawler.body_quality import assess_body  # noqa: E402
+from app.services.agent.insight.crawler.firecrawl_client import firecrawl_client  # noqa: E402
 
 
-async def run(task_id: int, apply: bool) -> dict:
+async def run(task_id: int, apply: bool, refresh_flagged: bool = False) -> dict:
     async with async_session() as db:
         source = await db.get(InsightTask, task_id)
         if not source or source.task_type != "fulltext_retry":
@@ -32,9 +33,28 @@ async def run(task_id: int, apply: bool) -> dict:
                 continue
             original = row.markdown_content
             cleaned, quality = assess_body(original, row.source_title or "")
+            refresh_error = None
+            if refresh_flagged and quality["status"] == "needs_review" and quality["kind"] == "article":
+                # 不在网络等待期间持有行锁；写入前再次锁定并比较原文，避免覆盖并发修改。
+                url, title = row.source_url, row.source_title
+                await db.commit()
+                try:
+                    fetched = await asyncio.wait_for(firecrawl_client.scrape_url_with_fallback(url), 90)
+                    candidate, candidate_quality = assess_body(str(fetched.get("markdown") or ""), title or "")
+                    if candidate_quality["status"] == "passed_rules":
+                        cleaned, quality = candidate, candidate_quality
+                        quality["reextracted_from_url"] = url
+                except Exception as exc:
+                    refresh_error = f"{type(exc).__name__}: {exc}"[:300]
+                row = (await db.exec(select(InsightCrawlResult).where(InsightCrawlResult.id == number)
+                                     .with_for_update().execution_options(populate_existing=True))).first()
+                if row.markdown_content != original:
+                    items.append({"id": number, "status": "conflict_preserved"})
+                    continue
             item = {"id": number, "status": quality["status"], "kind": quality["kind"],
                     "issues": quality["issues"], "changed": cleaned != original,
                     "before": len(original), "after": len(cleaned), "formal_updated": []}
+            item["refresh_error"] = refresh_error
             if apply:
                 metadata = dict(row.crawl_metadata or {})
                 metadata.setdefault("body_quality_original", original)
@@ -78,5 +98,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-task", required=True, type=int)
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--refresh-flagged", action="store_true")
     args = parser.parse_args()
-    sys.stdout.write(json.dumps(asyncio.run(run(args.source_task, args.apply)), ensure_ascii=False) + "\n")
+    sys.stdout.write(json.dumps(asyncio.run(run(args.source_task, args.apply, args.refresh_flagged)), ensure_ascii=False) + "\n")

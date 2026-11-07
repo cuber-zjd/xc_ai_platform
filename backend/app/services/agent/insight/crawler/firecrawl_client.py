@@ -9,6 +9,7 @@ from urllib.parse import parse_qs, urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
+from trafilatura import extract
 
 from app.core.config import settings
 from app.services.agent.insight.crawler.content_cleaner import insight_content_cleaner
@@ -136,6 +137,12 @@ class FirecrawlClient:
                         if not insight_content_cleaner.fulltext_error(body):
                             firecrawl_data["markdown"] = body
                             firecrawl_data["metadata"]["body_selector"] = "article/content-container"
+                    else:
+                        extracted = await asyncio.to_thread(extract, str(soup), include_comments=False,
+                                                            include_tables=True, include_links=True, url=url)
+                        if extracted and not insight_content_cleaner.fulltext_error(extracted):
+                            firecrawl_data["markdown"] = extracted
+                            firecrawl_data["metadata"]["body_selector"] = "trafilatura"
                 if (urlparse(url).hostname or "").endswith("toutiao.com"):
                     root = soup.find("article") or soup.select_one(".article-content")
                     if root is None:
