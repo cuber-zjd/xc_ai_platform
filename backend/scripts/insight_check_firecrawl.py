@@ -72,4 +72,7 @@ async def probe() -> dict:
 
 
 if __name__ == "__main__":
-    sys.stdout.write(json.dumps(asyncio.run(run()), ensure_ascii=False) + "\n")
+    result = asyncio.run(run())
+    sys.stdout.write(json.dumps(result, ensure_ascii=False) + "\n")
+    if result.get("healthy") is False:
+        sys.exit(1)

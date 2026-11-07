@@ -1,4 +1,9 @@
 from app.services.agent.insight.crawler.body_quality import assess_body
+from unittest.mock import AsyncMock
+
+import pytest
+
+from app.services.agent.insight.crawler.firecrawl_client import FirecrawlClient
 
 
 def test_preserves_short_factual_news():
@@ -31,3 +36,17 @@ def test_link_dense_and_title_mismatch_flagged():
     assert cleaned == body
     assert quality["status"] == "needs_review"
     assert len(quality["issues"]) >= 2
+
+
+@pytest.mark.asyncio
+async def test_html_main_text_keeps_facts_not_navigation(monkeypatch):
+    client = FirecrawlClient()
+    paragraphs = [f"企业第{i}条生产线于本月投产，项目投资3000万元，计划新增年产能2万吨。" * 3 for i in range(5)]
+    html = '<html><head><title>企业生产线投产</title></head><body><nav>'
+    html += ''.join(f'<a href="/{i}">无关导航{i}</a>' for i in range(60))
+    html += '</nav><div class="story">' + ''.join(f'<p>{p}</p>' for p in paragraphs) + '</div></body></html>'
+    monkeypatch.setattr(client, "scrape_url", AsyncMock(return_value={"html": html, "markdown": "无关导航" * 200}))
+    result = await client._scrape_with_fallback("https://example.org/news/1")
+    assert "3000万元" in result["markdown"] and "2万吨" in result["markdown"]
+    assert "无关导航" not in result["markdown"]
+    assert result["metadata"]["body_selector"] == "trafilatura"
