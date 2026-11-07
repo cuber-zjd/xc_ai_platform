@@ -82,7 +82,7 @@ $installFrontend = if ($SkipDependencies -or $BackendOnly -or $BusinessInsightsO
 $buildFrontend = if ($BackendOnly -or $BusinessInsightsOnly) { "false" } else { "true" }
 $restartFrontend = if ($BackendOnly -or $BusinessInsightsOnly) { "false" } else { "true" }
 $businessOnly = if ($BusinessInsightsOnly) { "true" } else { "false" }
-$repairFirecrawl = if ($RepairFirecrawl) { "true" } else { "false" }
+$repairFirecrawlEnabled = if ($RepairFirecrawl) { "true" } else { "false" }
 $remoteScript = @"
 set -euo pipefail
 
@@ -137,7 +137,7 @@ if $installBackend; then
   '$RemoteUvPath' sync --frozen
 fi
 
-if $repairFirecrawl; then
+if $repairFirecrawlEnabled; then
   cd '$RemotePath/backend'
   .venv/bin/python scripts/insight_repair_firecrawl.py --apply
 fi
