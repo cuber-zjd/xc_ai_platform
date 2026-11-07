@@ -367,7 +367,7 @@ class InsightSchedulerService:
         size = min(max(size, 1), 100)
         filters = [
             InsightTask.is_deleted == 0,
-            InsightTask.task_type.in_(("scheduler_tick", "baidu_spread_tick")),
+            InsightTask.task_type.in_(("scheduler_tick", "baidu_spread_tick", "firecrawl_health", "body_quality_recheck")),
         ]
         if status:
             filters.append(InsightTask.status == status.upper())

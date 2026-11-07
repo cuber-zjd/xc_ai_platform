@@ -168,6 +168,8 @@ pnpm build
 
 ## 10. Insight 研发营销市场洞察平台约束
 
+- 正文质量通过 `crawler/body_quality.py` 保守清洗与分类；疑似导航、截断、视频简介和企业供需资料保留原证据并标记待核，不直接删除资讯。独立 `ai-platform-firecrawl-health.timer` 每15分钟执行真实Firecrawl抓取、不使用HTTP降级，告警写入任务与journal，不自动强杀仍存活的worker。
+
 - 正文补偿统一由 `crawler/fulltext_retry_service.py` 管理固定清单、跨进程锁、独立事务和逐条超时；批次预算只能停止派发，不能整体取消已完成结果。Firecrawl worker 必须有重启策略，修复使用统一发布脚本 `-RepairFirecrawl`，不得清空积压队列或重建其他应用。飞书自动同步默认包含正文，并对已同步记录进行正文内容对账。
 
 - 飞书多维表格自动同步使用 `sync_incremental`：分页对账所有有效情报 ID，补齐远端缺失记录，并按入库/更新时间及记录同步水位更新；不得再用文章发布日期限定自动同步。手动日期筛选仍按发布时间。正文补偿循环只跨迭代保存 ID，失败回滚后显式重读 ORM 对象，不得触发隐式异步加载。核查入口 `backend/scripts/insight_verify_collection_recovery.py` 默认只读，补录仍经过日期、正文、去重和 AI 评审，不触发报告生成或消息推送。

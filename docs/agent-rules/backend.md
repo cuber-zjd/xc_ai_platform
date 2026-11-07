@@ -6,6 +6,8 @@ Insight 正文补偿采用 `crawler/fulltext_retry_service.py` 的固定清单�
 
 ## 1. 技术栈
 
+正文质量通过 `crawler/body_quality.py` 分类检查，不仅检查字数；只有明确的界面行与完全重复长段落自动清理。疑似问题保留原文及候选清洗文本，AI自动转正式前复核质量，待核只降为候选，不当作噪声删除。维护脚本 `insight_recheck_body_quality.py --source-task <补抓任务ID> --apply` 遍历固定清单并记录每条结果，不触发报告、外部同步或消息发送，不覆盖正式情报的人工正文。
+
 - Web 框架：FastAPI。
 - ORM：SQLModel + SQLAlchemy AsyncSession。
 - Agent 编排：LangGraph。

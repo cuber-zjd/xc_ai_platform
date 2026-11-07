@@ -205,6 +205,8 @@ uv sync
 
 ## 11. Insight Linux 发布方式
 
+- `-RepairFirecrawl` 同时安装 `ai-platform-firecrawl-health.timer/service`，每15分钟真实探测两个独立站点，URL附随机查询避免同URL缓存掩盖故障；目标配置保存在backend/.firecrawl-health.env（不入Git），必须定期核对探针文章仍有效。未配置、正文缺失或请求失败均记录warning，连续三轮异常critical，恢复记录recovered；任务类型firecrawl_health可从管理员调度日志查询，另见 `journalctl --user -u ai-platform-firecrawl-health.service`。探针失败不能单独证明worker崩溃，不自动重启或清队列，不发送飞书消息。用户级timer依赖xinxi的linger，发布后须核验。
+
 - Firecrawl worker 修复：统一发布追加 `-RepairFirecrawl`，脚本只处理既有 `/home/xinxi/ai/app/firecrawl` 安装中的 worker 和 API 重启策略；保留原 Compose 文件，新增 `compose.ai-platform-recovery.json` 覆盖配置。以后手动重建该安装须同时带上两个 `-f` 文件。操作不清空 Redis，不升级未知镜像，不重启其他应用。worker 存活不等于抓取通过，必须验证真实正文。
 - 正文补偿新增 `INSIGHT_FULLTEXT_RETRY_FETCH_TIMEOUT_SECONDS=90`、`INSIGHT_FULLTEXT_RETRY_REVIEW_TIMEOUT_SECONDS=120`、`INSIGHT_FULLTEXT_RETRY_CONCURRENCY=3`、`INSIGHT_FULLTEXT_RETRY_BUDGET_SECONDS=300`。默认预算仅停止派发，已派发记录完成各自超时并提交；进度和原始清单写入 `fulltext_retry` 任务，抓取成功但评审失败保留 `review_pending`。
 - 修复时先归档超过1小时、`is_scrape=true` 且无 crawl ID 的同步单页任务，再通过 BullMQ 原生方法取消这些已过期请求；不强删仍持锁任务、不删除平台原采集记录、不清空整个队列。快照保存在 backend/logs 下的0600权限文件中，不纳入Git。

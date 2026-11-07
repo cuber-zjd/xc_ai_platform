@@ -140,6 +140,7 @@ fi
 if $repairFirecrawlEnabled; then
   cd '$RemotePath/backend'
   .venv/bin/python scripts/insight_repair_firecrawl.py --apply
+  .venv/bin/python scripts/insight_install_firecrawl_health.py
 fi
 
 if $installFrontend; then

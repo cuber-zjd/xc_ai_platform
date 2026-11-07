@@ -30,6 +30,7 @@ from app.models.agent.insight import (
 )
 from app.schemas.agent.insight.crawl import InsightManualUrlCrawlRequest, InsightManualUrlCrawlResponse
 from app.services.agent.insight.crawler.content_cleaner import insight_content_cleaner
+from app.services.agent.insight.crawler.body_quality import assess_body
 from app.services.agent.insight.crawler.firecrawl_client import firecrawl_client
 from app.services.agent.insight.permission_service import insight_permission_service
 
@@ -58,6 +59,8 @@ class InsightCrawlService:
         markdown = insight_content_cleaner.clean_text(
             firecrawl_data.get("markdown") or firecrawl_data.get("content")
         )
+        original_body = markdown or ""
+        markdown, body_quality = assess_body(original_body, crawl_result.source_title or "")
         readable = insight_content_cleaner.clean_readable_excerpt(markdown) or ""
         if error := insight_content_cleaner.fulltext_error(markdown):
             raise ValueError(error)
@@ -88,6 +91,9 @@ class InsightCrawlService:
         crawl_result.status = InsightCrawlStatus.PARSED
         crawl_result.error_message = None
         crawl_metadata = dict(crawl_result.crawl_metadata or {})
+        crawl_metadata["body_quality"] = body_quality
+        if original_body != markdown:
+            crawl_metadata["body_quality_original"] = original_body
         crawl_metadata["publication_time"] = {
             "value": crawl_result.published_at.isoformat() if crawl_result.published_at else None,
             "source": publish_time_source,

@@ -126,3 +126,5 @@ backend/storage/insight_exports/
 backend/storage/docx-render/
 backend/storage/pdfs/
 backend/standalone/business_insights/storage/
+# 服务器实际抓取探针目标配置
+.firecrawl-health.env

@@ -127,6 +127,15 @@ class FirecrawlClient:
                 self._check_verification_page(soup.get_text(" ", strip=True))
                 page_metadata = self._extract_page_metadata(soup, url)
                 firecrawl_data["metadata"] = dict(firecrawl_data.get("metadata") or {}) | page_metadata
+                if not (urlparse(url).hostname or "").endswith("toutiao.com"):
+                    root = soup.find("article") or soup.select_one(".article-content, #articleContent, .article-body")
+                    if root is not None:
+                        for noise in root.select("script, style, nav, aside, footer, form"):
+                            noise.decompose()
+                        body = root.get_text("\n", strip=True)
+                        if not insight_content_cleaner.fulltext_error(body):
+                            firecrawl_data["markdown"] = body
+                            firecrawl_data["metadata"]["body_selector"] = "article/content-container"
                 if (urlparse(url).hostname or "").endswith("toutiao.com"):
                     root = soup.find("article") or soup.select_one(".article-content")
                     if root is None:

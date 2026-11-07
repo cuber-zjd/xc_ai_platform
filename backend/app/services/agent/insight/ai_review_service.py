@@ -416,6 +416,12 @@ class InsightAiReviewService:
             value = "candidate"
             rule_note = "原文发布时间尚未确认，暂保留为候选线索，确认日期后再进入正式情报。"
             decision.reason = f"{decision.reason or ''} {rule_note}".strip()[:1000]
+        from app.services.agent.insight.crawler.body_quality import assess_body
+        if crawl_result.markdown_content:
+            _, quality = assess_body(crawl_result.markdown_content, crawl_result.source_title or "")
+            if value == "formal" and quality["status"] == "needs_review":
+                value = "candidate"
+                decision.reason = (f"{decision.reason or ''} 正文质量待复核：" + "；".join(quality["issues"]))[:1000]
         decision.decision = value
         return decision
 
