@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -27,6 +28,18 @@ def run(apply):
                                  "restart_policy": container["HostConfig"]["RestartPolicy"]}) + "\n")
     if not apply:
         return
+    script = Path(__file__).with_name("firecrawl_expired_jobs.cjs").read_text()
+    raw = command("docker", "exec", "firecrawl-api-1", "node", "-e", script)
+    snapshot = json.loads(raw.splitlines()[-1])
+    if snapshot["jobs"]:
+        archive = Path(__file__).resolve().parents[1] / "logs" / f"firecrawl-expired-{datetime.now():%Y%m%d%H%M%S}.json"
+        archive.parent.mkdir(exist_ok=True)
+        with os.fdopen(os.open(archive, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as stream:
+            json.dump(snapshot, stream, ensure_ascii=False)
+        completed = subprocess.run(["docker", "exec", "-i", "firecrawl-api-1", "node", "-e", script, "--", "--apply"],
+                                   input=json.dumps(snapshot), capture_output=True, text=True, check=True)
+        cleanup = json.loads(completed.stdout.splitlines()[-1])
+        sys.stdout.write(json.dumps({"archive": str(archive), "expired": len(snapshot["jobs"]), **cleanup}) + "\n")
     # JSON 是合法的 Compose YAML；不改原安装文件，不重新构建或拉取未知镜像。
     content = json.dumps({"services": {
         "api": {"restart": "unless-stopped"},
@@ -38,10 +51,11 @@ def run(apply):
     override.write_text(content)
     command("docker", "compose", "-f", str(base), "-f", str(override), "up", "-d", "--no-build", "--no-deps", "worker")
     command("docker", "update", "--restart=unless-stopped", "firecrawl-api-1")
+    restarts = json.loads(command("docker", "inspect", "firecrawl-worker-1"))[0]["RestartCount"]
     for _ in range(6):
         time.sleep(5)
         state = json.loads(command("docker", "inspect", "firecrawl-worker-1"))[0]
-        if not state["State"]["Running"] or state["RestartCount"]:
+        if not state["State"]["Running"] or state["RestartCount"] != restarts:
             raise RuntimeError("Firecrawl worker 启动不稳定，请检查容器日志，未清空任何队列")
     sys.stdout.write("Firecrawl worker 连续运行30秒；仍须通过真实正文批次验收。\n")
 
