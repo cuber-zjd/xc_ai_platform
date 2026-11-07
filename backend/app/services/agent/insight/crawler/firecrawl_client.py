@@ -124,6 +124,7 @@ class FirecrawlClient:
             if firecrawl_data.get("rawHtml") or firecrawl_data.get("html"):
                 # rawHtml 保留 JSON-LD；清洗后的 html 会丢失发布时间，只剩相对时间。
                 soup = BeautifulSoup(firecrawl_data.get("rawHtml") or firecrawl_data["html"], "lxml")
+                self._check_verification_page(soup.get_text(" ", strip=True))
                 page_metadata = self._extract_page_metadata(soup, url)
                 firecrawl_data["metadata"] = dict(firecrawl_data.get("metadata") or {}) | page_metadata
                 if (urlparse(url).hostname or "").endswith("toutiao.com"):
@@ -197,10 +198,10 @@ class FirecrawlClient:
                 metadata["metadata_fallback_error"] = str(exc)[:300]
         for element in soup.select("script, style, noscript, nav, header, footer, form, aside"):
             element.decompose()
-        root = soup.find("article") or soup.select_one(".article-content") or soup.find("main")
+        root = soup.find("article") or soup.select_one(".article-content")
         if (urlparse(url).hostname or "").endswith("toutiao.com") and root is None:
             raise ValueError("头条返回脚本外壳，未获得文章正文；不将搜索页或推荐内容当正文")
-        root = root or soup.body or soup
+        root = root or soup.find("main") or soup.body or soup
         lines = [line.strip() for line in root.get_text("\n").splitlines() if line.strip()]
         content = "\n".join(dict.fromkeys(lines))
         if error := insight_content_cleaner.fulltext_error(content):

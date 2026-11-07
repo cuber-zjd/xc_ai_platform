@@ -45,11 +45,24 @@ async def test_blocked_site_does_not_fallback_or_repeat(monkeypatch):
 async def test_toutiao_shell_is_not_article(monkeypatch):
     client = FirecrawlClient()
     monkeypatch.setattr(client, "_ensure_public_url", AsyncMock())
-    response = httpx.Response(200, text="<html><body>" + "推荐新闻列表。" * 90 + "</body></html>",
+    response = httpx.Response(200, text="<html><body><main>" + "推荐新闻列表。" * 90 + "</main></body></html>",
                               request=httpx.Request("GET", "https://www.toutiao.com/article/123/"))
     monkeypatch.setattr(client, "_get_public_page", AsyncMock(return_value=response))
     with pytest.raises(ValueError, match="脚本外壳"):
         await client._scrape_direct(str(response.url))
+
+
+@pytest.mark.asyncio
+async def test_toutiao_verification_html_does_not_fallback(monkeypatch):
+    client = FirecrawlClient()
+    monkeypatch.setattr(client, "scrape_url", AsyncMock(return_value={
+        "rawHtml": "<html><main>请完成安全验证</main></html>", "markdown": "",
+    }))
+    direct = AsyncMock()
+    monkeypatch.setattr(client, "_scrape_direct", direct)
+    with pytest.raises(FulltextAccessBlocked):
+        await client._scrape_with_fallback("https://www.toutiao.com/article/123/")
+    direct.assert_not_awaited()
 
 
 def test_sync_body_repairs_old_row_and_joins_richtext():
