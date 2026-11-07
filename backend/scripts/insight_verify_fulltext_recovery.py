@@ -45,7 +45,7 @@ async def verify_feishu():
     for record in records:
         fields = record.get("fields") or {}
         key = bitable._normalize_text_value(fields.get("情报ID"))
-        remote.setdefault(key, []).append(bitable._normalize_text_value(fields.get("正文")))
+        remote.setdefault(key, []).append(bitable._read_body_fields(fields))
     async with async_session() as db:
         rows = list((await db.exec(select(InsightIntelligence).where(
             InsightIntelligence.is_deleted == 0, InsightIntelligence.status == "active",
@@ -100,12 +100,18 @@ async def run(args):
         result["formal_backfill"] = {"restored_ids": restored, "errors": errors}
         emit({"formal_backfill": result["formal_backfill"]})
     if args.sync:
-        async with async_session() as db:
-            response = await bitable.sync_incremental(db, user_id=settings.INSIGHT_SCHEDULER_USER_ID)
-            result["sync"] = response.model_dump(mode="json")
+        try:
+            async with async_session() as db:
+                response = await bitable.sync_incremental(db, user_id=settings.INSIGHT_SCHEDULER_USER_ID)
+                result["sync"] = response.model_dump(mode="json")
+        except Exception as exc:
+            result["sync"] = {"failed_count": 1, "error": f"{type(exc).__name__}: {exc}"[:1000]}
         emit({"sync": result["sync"]})
     if args.verify_feishu or args.sync:
-        result["feishu_readback"] = await verify_feishu()
+        try:
+            result["feishu_readback"] = await verify_feishu()
+        except Exception as exc:
+            result["feishu_readback"] = {"error": f"{type(exc).__name__}: {exc}"[:1000]}
         emit({"feishu_readback": result["feishu_readback"]})
     if args.repair or args.sync or args.backfill_formal:
         async with async_session() as db:
@@ -115,7 +121,7 @@ async def run(args):
                                 input_payload=vars(args), output_payload=result)
             check = result.get("feishu_readback", {})
             retry = result.get("retry", {})
-            if (check.get("missing_ids") or check.get("different_body_ids") or retry.get("failed")
+            if (check.get("error") or check.get("missing_ids") or check.get("different_body_ids") or retry.get("failed")
                     or retry.get("remaining") or retry.get("review_pending") or retry.get("locked") or retry.get("deferred")
                     or result.get("sync", {}).get("failed_count") or result.get("formal_backfill", {}).get("errors")):
                 audit.status = InsightTaskStatus.FAILED

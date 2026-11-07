@@ -209,6 +209,7 @@ uv sync
 - 正文补偿新增 `INSIGHT_FULLTEXT_RETRY_FETCH_TIMEOUT_SECONDS=90`、`INSIGHT_FULLTEXT_RETRY_REVIEW_TIMEOUT_SECONDS=120`、`INSIGHT_FULLTEXT_RETRY_CONCURRENCY=3`、`INSIGHT_FULLTEXT_RETRY_BUDGET_SECONDS=300`。默认预算仅停止派发，已派发记录完成各自超时并提交；进度和原始清单写入 `fulltext_retry` 任务，抓取成功但评审失败保留 `review_pending`。
 - 修复时先归档超过1小时、`is_scrape=true` 且无 crawl ID 的同步单页任务，再通过 BullMQ 原生方法取消这些已过期请求；不强删仍持锁任务、不删除平台原采集记录、不清空整个队列。快照保存在 backend/logs 下的0600权限文件中，不纳入Git。
 - 当前 Firecrawl 旧镜像忽略 `NUM_WORKERS_PER_QUEUE`，worker 会无限派发；修复脚本核验实际文件结构后，在真实 `getNextJob` 前增加运行任务数上限3，以只读挂载覆盖 worker 入口，原文件按哈希归档到原安装目录 `.ai-platform-runtime`。浏览器容器一并启用重启策略并释放旧页面。升级镜像必须重新核验此补丁，不匹配则拒绝部署，不能假设环境变量已经生效。
+- Firecrawl 专属 Redis、RabbitMQ、nuq-postgres 同步设置 `unless-stopped`，不重启这些依赖容器；避免宿主机重启后只有 API/worker 恢复而依赖未启动。更新前逐个验证 Compose 项目归属，不修改其他业务容器。
 - 完整验收：部署后在 backend 执行 `uv run python scripts/insight_verify_fulltext_recovery.py --days 7 --repair --sync`。明确覆盖近七天所有缺正文/待评审记录，修复模式仅本次放开历史重试次数和总派发预算，单条限制仍生效；同步后回读全表正文对账，未获取的历史正文如实计为空，不伪造成功。该入口不触发报告或消息推送。
 
 - 采集恢复验证入口：在 `backend` 执行 `uv run python scripts/insight_verify_collection_recovery.py --days 7`，默认只回放已保存搜索检查点，无额外联网搜索。经核实的企业别名可用 `--company-alias '企业全称=简称'` 模拟，`--apply-aliases` 才保存并审计；`--replay-limit 10` 通过原过滤/正文/评审链路补录未采集匹配项；`--retry-fulltext-limit 5` 有限重试正文；`--sync` 调用与每日定时任务相同的飞书增量对账。该入口不运行报告订阅或简报推送。生产发布仍必须先经下述统一发布脚本。

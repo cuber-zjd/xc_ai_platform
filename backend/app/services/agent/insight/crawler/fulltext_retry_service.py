@@ -55,7 +55,11 @@ class FulltextRetryService:
             except (TypeError, ValueError):
                 recently_blocked = False
             if recently_blocked:
-                blocked_hosts.add(urlparse(row.source_url).hostname or "")
+                try:
+                    blocked_url = firecrawl_client.canonical_article_url(row.source_url)
+                except ValueError:
+                    blocked_url = row.source_url
+                blocked_hosts.add(urlparse(blocked_url).hostname or "")
         for row in rows:
             metadata = row.crawl_metadata or {}
             retry = metadata.get("fulltext_retry") or {}

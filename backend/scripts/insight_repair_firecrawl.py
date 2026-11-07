@@ -67,13 +67,20 @@ def run(apply):
                    "environment": {"MAX_CONCURRENT_JOBS": "3"},
                    "volumes": [f"{worker_file}:/app/dist/src/services/queue-worker.js:ro"]},
         "playwright-service": {"restart": "unless-stopped"},
+        "redis": {"restart": "unless-stopped"},
+        "rabbitmq": {"restart": "unless-stopped"},
+        "nuq-postgres": {"restart": "unless-stopped"},
     }}, indent=2) + "\n"
     if override.exists() and override.read_text() != content:
         backup = override.with_suffix(f".backup-{datetime.now():%Y%m%d%H%M%S}.json")
         backup.write_bytes(override.read_bytes())
     override.write_text(content)
     command("docker", "compose", "-f", str(base), "-f", str(override), "up", "-d", "--no-build", "--no-deps", "playwright-service", "worker")
-    command("docker", "update", "--restart=unless-stopped", "firecrawl-api-1")
+    for name in ("firecrawl-api-1", "firecrawl-redis-1", "firecrawl-rabbitmq-1", "firecrawl-nuq-postgres-1"):
+        owned = json.loads(command("docker", "inspect", name))[0]
+        if owned["Config"]["Labels"].get("com.docker.compose.project") != "firecrawl":
+            raise RuntimeError(f"容器 {name} 不属于 Firecrawl，停止操作")
+        command("docker", "update", "--restart=unless-stopped", name)
     restarts = json.loads(command("docker", "inspect", "firecrawl-worker-1"))[0]["RestartCount"]
     for _ in range(6):
         time.sleep(5)

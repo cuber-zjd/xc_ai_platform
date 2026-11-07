@@ -269,7 +269,7 @@ class InsightCrawlService:
         await db.refresh(task)
 
         try:
-            firecrawl_data = await firecrawl_client.scrape_url(request.url)
+            firecrawl_data = await firecrawl_client.scrape_url_with_fallback(request.url)
             crawl_result = self._to_crawl_result(task.id or 0, request, firecrawl_data)
             crawl_result.create_by = str(user_id) if user_id else None
             crawl_result.update_by = str(user_id) if user_id else None

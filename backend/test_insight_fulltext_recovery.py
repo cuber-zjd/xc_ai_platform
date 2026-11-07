@@ -112,13 +112,20 @@ async def test_review_failure_keeps_body_for_later_review(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("budget", [0, 0.000000001])
-async def test_batch_checkpoints_and_soft_budget(monkeypatch, budget):
+@pytest.mark.parametrize("blocked", [False, True])
+async def test_batch_checkpoints_and_soft_budget(monkeypatch, budget, blocked):
     from app.services.agent.insight.crawler import fulltext_retry_service as module
     from itertools import count
     ticks = count()
     monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: next(ticks)))
     rows = [InsightCrawlResult(id=i, source_url=f"https://{host}.example.org/{i}",
                               create_time=datetime.now()) for i, host in [(1, "a"), (2, "a"), (3, "b")]]
+    if blocked:
+        for row in rows:
+            row.source_url = f"https://sou.toutiao.com/search/jump?url=https://www.toutiao.com/a{row.id}/"
+        rows[0].crawl_metadata = {"fulltext_fetch": {
+            "error": "FulltextAccessBlocked", "attempted_at": datetime.now().isoformat(),
+        }}
     objects = {row.id: row for row in rows}
     audit = None
     db = AsyncMock()
@@ -156,9 +163,10 @@ async def test_batch_checkpoints_and_soft_budget(monkeypatch, budget):
     assert result["selected"] == 3
     assert result["remaining"] == 0
     assert len(audit.output_payload["items"]) == 3
-    assert result["success"] == (3 if budget == 0 else 0)
-    assert result["deferred"] == (0 if budget == 0 else 3)
-    assert call.await_count == (3 if budget == 0 else 0)
+    should_run = budget == 0 and not blocked
+    assert result["success"] == (3 if should_run else 0)
+    assert result["deferred"] == (0 if should_run else 3)
+    assert call.await_count == (3 if should_run else 0)
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 from collections import defaultdict
 from datetime import datetime
 from typing import Any
@@ -53,6 +55,10 @@ FIELD_SPECS = [
     {"code": "platform_url", "label": "平台详情链接", "field_type": 15, "required": False, "default_selected": True},
     {"code": "sync_time", "label": "同步时间", "field_type": 5, "required": False, "default_selected": True},
 ]
+
+# 为飞书单元格的字节限制留出余量，不能按中文字数截断原文。
+BODY_CELL_BYTES = 80_000
+BATCH_PAYLOAD_BYTES = 4_000_000
 
 
 class InsightFeishuBitableService:
@@ -142,6 +148,7 @@ class InsightFeishuBitableService:
         await db.commit()
         await db.refresh(task)
         task_id = task.id
+        await db.commit()
 
         try:
             selected_codes = self._selected_field_codes(payload.field_codes)
@@ -153,6 +160,8 @@ class InsightFeishuBitableService:
             if incremental:
                 rows = self._select_incremental_rows(rows, existing_records)
             record_payloads = await self._build_record_payloads(db, rows, selected_codes)
+            # 外部全量写入可能持续数分钟，读取完快照后不占用数据库长事务。
+            await db.commit()
             if incremental:
                 for record in record_payloads:
                     # 使用读取前的时点，运行过程中才提交的修改会在下次重新同步。
@@ -223,7 +232,7 @@ class InsightFeishuBitableService:
         for record in existing_records:
             fields = record.get("fields") or {}
             key = self._normalize_text_value(fields.get("情报ID"))
-            bodies.setdefault(key, []).append(self._normalize_text_value(fields.get("正文")))
+            bodies.setdefault(key, []).append(self._read_body_fields(fields))
             try:
                 value = float(fields.get("同步时间") or 0)
             except (TypeError, ValueError):
@@ -235,7 +244,7 @@ class InsightFeishuBitableService:
             modified = max(value for value in (row.create_time, row.update_time) if value is not None)
             watermark = synced_at.get(str(row.id), 0)
             content = str(getattr(row, "content", None) or "").strip()
-            body_changed = content and any(value != content for value in bodies.get(str(row.id), [""]))
+            body_changed = any(value != content for value in bodies.get(str(row.id), [""]))
             if not watermark or body_changed or modified.timestamp() * 1000 >= watermark - 300_000:
                 result.append(row)
         return result
@@ -471,6 +480,19 @@ class InsightFeishuBitableService:
         warnings: list[str] = []
         specs = {item["code"]: item for item in FIELD_SPECS}
 
+        if "content" in selected_codes:
+            count = max((len(self._split_body(str(item["values"].get("content") or ""))) for item in records), default=1)
+            for index in range(1, count):
+                name = self._body_field_name(index)
+                if name not in by_name:
+                    if not enabled:
+                        raise ValueError(f"飞书多维表格缺少长正文续列：{name}")
+                    by_name[name] = await self._create_field({"label": name, "field_type": 1})
+                    created_fields.append(name)
+            for name, field in by_name.items():
+                if self._body_field_index(name) is not None and int(field.get("type") or 1) != 1:
+                    raise ValueError(f"正文分段字段必须为文本类型：{name}")
+
         for code in selected_codes:
             spec = specs[code]
             field = by_name.get(spec["label"])
@@ -554,12 +576,12 @@ class InsightFeishuBitableService:
         update_existing: bool,
     ) -> dict[str, Any]:
         fields_by_name = {str(item.get("field_name") or ""): item for item in fields}
-        existing_by_id: dict[str, str] = {}
+        existing_by_id: dict[str, list[str]] = defaultdict(list)
         for item in existing_records:
             value = (item.get("fields") or {}).get("情报ID")
             normalized = self._normalize_text_value(value)
             if normalized:
-                existing_by_id[normalized] = str(item.get("record_id") or "")
+                existing_by_id[normalized].append(str(item.get("record_id") or ""))
 
         creates: list[dict[str, Any]] = []
         updates: list[dict[str, Any]] = []
@@ -577,26 +599,92 @@ class InsightFeishuBitableService:
                     for code, value in item["values"].items()
                     if code in specs
                 }
-                record_id = existing_by_id.get(str(item["intelligence_id"]))
-                if record_id and update_existing:
-                    updates.append({"record_id": record_id, "fields": feishu_fields})
-                elif record_id:
+                if "content" in item["values"]:
+                    parts = self._split_body(str(item["values"].get("content") or ""))
+                    # 缩短的正文必须清空旧续列，否则回读会混入旧尾文。
+                    for name in fields_by_name:
+                        index = self._body_field_index(name)
+                        if index is not None:
+                            feishu_fields[name] = parts[index] if index < len(parts) else ""
+                    for index in range(len(parts)):
+                        if self._body_field_name(index) not in fields_by_name:
+                            raise ValueError(f"缺少正文分段字段：{self._body_field_name(index)}")
+                record_ids = existing_by_id.get(str(item["intelligence_id"]))
+                if record_ids and update_existing:
+                    updates.extend({"record_id": record_id, "fields": feishu_fields} for record_id in record_ids)
+                elif record_ids:
                     skipped_count += 1
                 else:
                     creates.append({"fields": feishu_fields})
             except Exception as exc:
                 errors.append({"intelligence_id": item["intelligence_id"], "title": item["title"], "error": str(exc)[:500]})
 
-        for chunk in self._chunks(creates, 500):
-            await self._request("POST", f"{self._records_path()}/batch_create", json={"records": chunk})
-        for chunk in self._chunks(updates, 500):
-            await self._request("POST", f"{self._records_path()}/batch_update", json={"records": chunk})
+        created_count = updated_count = 0
+        for chunk in self._record_batches(creates):
+            created_count += await self._write_batch(chunk, "batch_create", errors)
+        for chunk in self._record_batches(updates):
+            updated_count += await self._write_batch(chunk, "batch_update", errors)
         return {
-            "created_count": len(creates),
-            "updated_count": len(updates),
+            "created_count": created_count,
+            "updated_count": updated_count,
             "skipped_count": skipped_count,
             "errors": errors,
         }
+
+    async def _write_batch(self, records, operation, errors):
+        try:
+            await self._request("POST", f"{self._records_path()}/{operation}", json={"records": records})
+            return len(records)
+        except ValueError as exc:
+            # 只有服务端明确拒绝整个批次时才二分隔离；网络结果不明时禁止重放新增。
+            if "TooLargeCell" not in str(exc):
+                raise
+            if len(records) > 1:
+                middle = len(records) // 2
+                return (await self._write_batch(records[:middle], operation, errors)
+                        + await self._write_batch(records[middle:], operation, errors))
+            errors.append({"intelligence_id": records[0]["fields"].get("情报ID"), "error": str(exc)[:500]})
+            return 0
+
+    def _record_batches(self, records):
+        chunk, size = [], 0
+        for record in records:
+            record_size = len(json.dumps(record, ensure_ascii=False).encode("utf-8")) + 2
+            if chunk and (len(chunk) >= 500 or size + record_size > BATCH_PAYLOAD_BYTES):
+                yield chunk
+                chunk, size = [], 0
+            chunk.append(record)
+            size += record_size
+        if chunk:
+            yield chunk
+
+    @staticmethod
+    def _body_field_name(index: int) -> str:
+        return "正文" if index == 0 else f"正文（续{index}）"
+
+    @staticmethod
+    def _body_field_index(name: str) -> int | None:
+        if name == "正文":
+            return 0
+        match = re.fullmatch(r"正文（续([1-9][0-9]*)）", name)
+        return int(match[1]) if match else None
+
+    def _split_body(self, value: str) -> list[str]:
+        parts, start, size = [], 0, 0
+        for index, char in enumerate(value):
+            length = len(char.encode("utf-8"))
+            if size + length > BODY_CELL_BYTES:
+                parts.append(value[start:index])
+                start, size = index, 0
+            size += length
+        parts.append(value[start:])
+        return parts
+
+    def _read_body_fields(self, fields: dict[str, Any]) -> str:
+        segments = sorted((index, self._normalize_text_value(value, strip=False))
+                          for name, value in fields.items()
+                          if (index := self._body_field_index(name)) is not None)
+        return "".join(value for _, value in segments).strip()
 
     async def _list_fields(self) -> list[dict[str, Any]]:
         items: list[dict[str, Any]] = []
@@ -654,6 +742,8 @@ class InsightFeishuBitableService:
                 return data if isinstance(data, dict) else {}
             except (httpx.HTTPError, ValueError) as exc:
                 last_error = exc
+                if "TooLargeCell" in str(exc):
+                    break
                 if attempt + 1 < attempts:
                     await asyncio.sleep(min(2**attempt, 4))
         if last_error:
@@ -750,7 +840,7 @@ class InsightFeishuBitableService:
             return []
         return [str(item).strip() for item in value if str(item).strip()]
 
-    def _normalize_text_value(self, value: Any) -> str:
+    def _normalize_text_value(self, value: Any, *, strip: bool = True) -> str:
         def plain(item):
             if isinstance(item, list):
                 return "".join(plain(part) for part in item)
@@ -758,7 +848,8 @@ class InsightFeishuBitableService:
                 return str(item.get("text") or item.get("value") or "")
             return str(item or "")
         # 富文本可能按链接切片，片段首尾的空格和换行属于正文，不能逐片裁掉。
-        return plain(value).strip()
+        result = plain(value)
+        return result.strip() if strip else result
 
     def _chunks(self, values: list[dict[str, Any]], size: int) -> list[list[dict[str, Any]]]:
         return [values[index : index + size] for index in range(0, len(values), size)]
