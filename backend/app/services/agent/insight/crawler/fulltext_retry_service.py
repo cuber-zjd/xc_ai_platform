@@ -74,6 +74,8 @@ class FulltextRetryService:
         await db.commit()
         await db.refresh(task)
         task_id = task.id
+        # refresh 会重新开启只读事务，必须在长批次之前释放，避免挡住发布时的 DDL。
+        await db.commit()
         outcomes = []
         started = time.monotonic()
         budget = settings.INSIGHT_FULLTEXT_RETRY_BUDGET_SECONDS if budget_seconds is None else budget_seconds

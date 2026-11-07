@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import time
+from hashlib import sha256
 from datetime import datetime
 from pathlib import Path
 
@@ -28,6 +29,25 @@ def run(apply):
                                  "restart_policy": container["HostConfig"]["RestartPolicy"]}) + "\n")
     if not apply:
         return
+    source = command("docker", "exec", "firecrawl-api-1", "cat", "/app/dist/src/services/queue-worker.js")
+    needle = "        const job = await worker.getNextJob(token);"
+    if source.count(needle) != 1 or "runningJobs.delete(job.id)" not in source:
+        raise RuntimeError("Firecrawl worker 版本与已核查结构不一致，停止修复")
+    # 该旧镜像忽略 NUM_WORKERS_PER_QUEUE，循环会无限派发，需在真实取任务处限制。
+    patched = source.replace(needle, """        if (runningJobs.size >= Number(process.env.MAX_CONCURRENT_JOBS || 3)) {
+            await sleep(250);
+            continue;
+        }
+""" + needle)
+    subprocess.run(["docker", "exec", "-i", "firecrawl-api-1", "node", "--check"],
+                   input=patched, text=True, capture_output=True, check=True)
+    runtime = directory / ".ai-platform-runtime"
+    runtime.mkdir(exist_ok=True, mode=0o700)
+    original = runtime / f"queue-worker-original-{sha256(source.encode()).hexdigest()[:16]}.js"
+    if not original.exists():
+        original.write_text(source)
+    worker_file = runtime / f"queue-worker-{sha256(patched.encode()).hexdigest()[:16]}.js"
+    worker_file.write_text(patched)
     script = Path(__file__).with_name("firecrawl_expired_jobs.cjs").read_text()
     raw = command("docker", "exec", "firecrawl-api-1", "node", "-e", script)
     snapshot = json.loads(raw.splitlines()[-1])
@@ -43,13 +63,16 @@ def run(apply):
     # JSON 是合法的 Compose YAML；不改原安装文件，不重新构建或拉取未知镜像。
     content = json.dumps({"services": {
         "api": {"restart": "unless-stopped"},
-        "worker": {"image": container["Config"]["Image"], "restart": "unless-stopped"},
+        "worker": {"image": container["Config"]["Image"], "restart": "unless-stopped",
+                   "environment": {"MAX_CONCURRENT_JOBS": "3"},
+                   "volumes": [f"{worker_file}:/app/dist/src/services/queue-worker.js:ro"]},
+        "playwright-service": {"restart": "unless-stopped"},
     }}, indent=2) + "\n"
     if override.exists() and override.read_text() != content:
         backup = override.with_suffix(f".backup-{datetime.now():%Y%m%d%H%M%S}.json")
         backup.write_bytes(override.read_bytes())
     override.write_text(content)
-    command("docker", "compose", "-f", str(base), "-f", str(override), "up", "-d", "--no-build", "--no-deps", "worker")
+    command("docker", "compose", "-f", str(base), "-f", str(override), "up", "-d", "--no-build", "--no-deps", "playwright-service", "worker")
     command("docker", "update", "--restart=unless-stopped", "firecrawl-api-1")
     restarts = json.loads(command("docker", "inspect", "firecrawl-worker-1"))[0]["RestartCount"]
     for _ in range(6):
