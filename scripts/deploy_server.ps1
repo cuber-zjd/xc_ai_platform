@@ -9,6 +9,7 @@
     [string]$RemoteUvPath = "/home/xinxi/.local/bin/uv",
     [string]$RemoteNodeBin = "/home/xinxi/.nvm/nvm-0.40.2/versions/node/v22.18.0/bin",
     [switch]$BackendOnly,
+    [switch]$RepairFirecrawl,
     [switch]$SkipDependencies,
     [switch]$BusinessInsightsOnly,
     [string]$BusinessInsightsDataDirectory = "",
@@ -81,6 +82,7 @@ $installFrontend = if ($SkipDependencies -or $BackendOnly -or $BusinessInsightsO
 $buildFrontend = if ($BackendOnly -or $BusinessInsightsOnly) { "false" } else { "true" }
 $restartFrontend = if ($BackendOnly -or $BusinessInsightsOnly) { "false" } else { "true" }
 $businessOnly = if ($BusinessInsightsOnly) { "true" } else { "false" }
+$repairFirecrawl = if ($RepairFirecrawl) { "true" } else { "false" }
 $remoteScript = @"
 set -euo pipefail
 
@@ -133,6 +135,11 @@ fi
 if $installBackend; then
   cd '$RemotePath/backend'
   '$RemoteUvPath' sync --frozen
+fi
+
+if $repairFirecrawl; then
+  cd '$RemotePath/backend'
+  .venv/bin/python scripts/insight_repair_firecrawl.py --apply
 fi
 
 if $installFrontend; then

@@ -37,7 +37,7 @@ FIELD_SPECS = [
     {"code": "intelligence_id", "label": "情报ID", "field_type": 1, "required": True, "default_selected": True},
     {"code": "title", "label": "标题", "field_type": 1, "required": False, "default_selected": True},
     {"code": "summary", "label": "摘要", "field_type": 1, "required": False, "default_selected": True},
-    {"code": "content", "label": "正文", "field_type": 1, "required": False, "default_selected": False},
+    {"code": "content", "label": "正文", "field_type": 1, "required": False, "default_selected": True},
     {"code": "publish_time", "label": "发布时间", "field_type": 5, "required": False, "default_selected": True},
     {"code": "capture_time", "label": "入库时间", "field_type": 5, "required": False, "default_selected": True},
     {"code": "subject_name", "label": "企业/监测对象", "field_type": 1, "required": False, "default_selected": True},
@@ -219,9 +219,11 @@ class InsightFeishuBitableService:
         self, rows: list[InsightIntelligence], existing_records: list[dict[str, Any]],
     ) -> list[InsightIntelligence]:
         synced_at = {}
+        bodies: dict[str, list[str]] = {}
         for record in existing_records:
             fields = record.get("fields") or {}
             key = self._normalize_text_value(fields.get("情报ID"))
+            bodies.setdefault(key, []).append(self._normalize_text_value(fields.get("正文")))
             try:
                 value = float(fields.get("同步时间") or 0)
             except (TypeError, ValueError):
@@ -232,7 +234,9 @@ class InsightFeishuBitableService:
         for row in rows:
             modified = max(value for value in (row.create_time, row.update_time) if value is not None)
             watermark = synced_at.get(str(row.id), 0)
-            if not watermark or modified.timestamp() * 1000 >= watermark - 300_000:
+            content = str(getattr(row, "content", None) or "").strip()
+            body_changed = content and any(value != content for value in bodies.get(str(row.id), [""]))
+            if not watermark or body_changed or modified.timestamp() * 1000 >= watermark - 300_000:
                 result.append(row)
         return result
 
@@ -748,7 +752,7 @@ class InsightFeishuBitableService:
 
     def _normalize_text_value(self, value: Any) -> str:
         if isinstance(value, list) and value:
-            return self._normalize_text_value(value[0])
+            return "".join(self._normalize_text_value(item) for item in value).strip()
         if isinstance(value, dict):
             return str(value.get("text") or value.get("value") or "").strip()
         return str(value or "").strip()

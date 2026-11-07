@@ -3,14 +3,19 @@ import ipaddress
 import json
 import re
 import socket
+import time
 from typing import Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qs, urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
 
 from app.core.config import settings
 from app.services.agent.insight.crawler.content_cleaner import insight_content_cleaner
+
+
+class FulltextAccessBlocked(ValueError):
+    """站点限制访问，本轮不切换引擎继续请求。"""
 
 
 class FirecrawlClient:
@@ -20,12 +25,39 @@ class FirecrawlClient:
         self.base_url = settings.INSIGHT_FIRECRAWL_BASE_URL.rstrip("/")
         self.api_key = settings.INSIGHT_FIRECRAWL_API_KEY
         self.timeout_seconds = settings.INSIGHT_FIRECRAWL_TIMEOUT_SECONDS
+        self._host_locks: dict[str, asyncio.Lock] = {}
+        self._host_next_request: dict[str, float] = {}
+        self._blocked_until: dict[str, float] = {}
+
+    def host_is_blocked(self, host: str) -> bool:
+        return self._blocked_until.get(host, 0) > time.monotonic()
+
+    @staticmethod
+    def canonical_article_url(url: str) -> str:
+        """只展开头条已知文章跳转，不接受跳转参数里的任意目标。"""
+        parsed = urlparse(url)
+        if parsed.hostname == "sou.toutiao.com" and parsed.path == "/search/jump":
+            target = (parse_qs(parsed.query).get("url") or [""])[0]
+            candidate = urlparse(target)
+            if (candidate.hostname not in {"www.toutiao.com", "toutiao.com", "m.toutiao.com"}
+                    or candidate.scheme not in {"http", "https"} or candidate.username or candidate.port):
+                raise ValueError("头条跳转地址不是受支持的文章地址")
+            parsed = candidate
+            if not re.fullmatch(r"/(?:article/|a|i)(\d+)/?", parsed.path):
+                raise ValueError("头条跳转目标不是文章路径")
+        if parsed.hostname in {"www.toutiao.com", "toutiao.com", "m.toutiao.com"}:
+            match = re.fullmatch(r"/(?:article/|a|i)(\d+)/?", parsed.path)
+            if match:
+                return f"https://www.toutiao.com/article/{match.group(1)}/"
+        return url
 
     @property
     def is_configured(self) -> bool:
         return bool(self.base_url)
 
     async def scrape_url(self, url: str) -> dict[str, Any]:
+        url = self.canonical_article_url(url)
+        await self._ensure_public_url(url)
         if not self.is_configured:
             raise ValueError("未配置 INSIGHT_FIRECRAWL_BASE_URL，无法调用本地 Firecrawl")
 
@@ -49,6 +81,26 @@ class FirecrawlClient:
         return data.get("data") or data
 
     async def scrape_url_with_fallback(self, url: str) -> dict[str, Any]:
+        original_url = url
+        url = self.canonical_article_url(url)
+        host = urlparse(url).hostname or ""
+        async with self._host_locks.setdefault(host, asyncio.Lock()):
+            if self.host_is_blocked(host):
+                raise FulltextAccessBlocked(f"{host} 已触发访问限制，冷却中")
+            await asyncio.sleep(max(0, self._host_next_request.get(host, 0) - time.monotonic()))
+            try:
+                data = await self._scrape_with_fallback(url)
+                data["metadata"] = dict(data.get("metadata") or {}) | {
+                    "original_source_url": original_url, "resolved_article_url": url,
+                }
+                return data
+            except FulltextAccessBlocked:
+                self._blocked_until[host] = time.monotonic() + 3600
+                raise
+            finally:
+                self._host_next_request[host] = time.monotonic() + 2
+
+    async def _scrape_with_fallback(self, url: str) -> dict[str, Any]:
         if self._prefer_direct_http(url):
             try:
                 direct = await self._scrape_direct(url)
@@ -56,19 +108,35 @@ class FirecrawlClient:
                 metadata["extractor"] = "direct_http"
                 direct["metadata"] = metadata
                 return direct
+            except FulltextAccessBlocked:
+                raise
             except Exception:
                 pass
         try:
             firecrawl_data = await self.scrape_url(url)
+            metadata = firecrawl_data.get("metadata") or {}
+            if metadata.get("statusCode") in {403, 429}:
+                raise FulltextAccessBlocked(f"站点限制访问 HTTP {metadata['statusCode']}")
             if firecrawl_data.get("html"):
                 page_metadata = self._extract_page_metadata(BeautifulSoup(firecrawl_data["html"], "lxml"), url)
                 firecrawl_data["metadata"] = dict(firecrawl_data.get("metadata") or {}) | page_metadata
             content = str(firecrawl_data.get("markdown") or firecrawl_data.get("content") or "")
+            self._check_verification_page(content)
             if not insight_content_cleaner.fulltext_error(content):
                 return firecrawl_data
             raise ValueError("Firecrawl 未返回足够正文")
+        except FulltextAccessBlocked:
+            raise
         except Exception as firecrawl_error:
-            direct = await self._scrape_direct(url)
+            try:
+                direct = await self._scrape_direct(url)
+            except FulltextAccessBlocked:
+                raise
+            except Exception as direct_error:
+                raise ValueError(
+                    f"Firecrawl: {type(firecrawl_error).__name__}: {str(firecrawl_error)[:180]}; "
+                    f"HTTP: {type(direct_error).__name__}: {str(direct_error)[:240]}"
+                ) from direct_error
             metadata = dict(direct.get("metadata") or {})
             metadata["extractor"] = "direct_http_fallback"
             metadata["firecrawl_error"] = str(firecrawl_error)[:500]
@@ -93,6 +161,7 @@ class FirecrawlClient:
             response = await self._get_public_page(client, url)
         response_text = self._decode_response_text(response)
         soup = BeautifulSoup(response_text, "lxml")
+        self._check_verification_page(soup.get_text(" ", strip=True))
         metadata = self._extract_page_metadata(soup, str(response.url))
         metadata_url = self._metadata_fallback_url(str(response.url))
         if not metadata.get("publishedTime") and not metadata.get("publication_conflict") and metadata_url:
@@ -113,7 +182,10 @@ class FirecrawlClient:
                 metadata["metadata_fallback_error"] = str(exc)[:300]
         for element in soup.select("script, style, noscript, nav, header, footer, form, aside"):
             element.decompose()
-        root = soup.find("article") or soup.find("main") or soup.body or soup
+        root = soup.find("article") or soup.select_one(".article-content") or soup.find("main")
+        if (urlparse(url).hostname or "").endswith("toutiao.com") and root is None:
+            raise ValueError("头条返回脚本外壳，未获得文章正文；不将搜索页或推荐内容当正文")
+        root = root or soup.body or soup
         lines = [line.strip() for line in root.get_text("\n").splitlines() if line.strip()]
         content = "\n".join(dict.fromkeys(lines))
         if error := insight_content_cleaner.fulltext_error(content):
@@ -121,6 +193,13 @@ class FirecrawlClient:
         title = soup.title.get_text(" ", strip=True) if soup.title else None
         metadata["title"] = metadata.get("title") or title
         return {"markdown": content, "html": response_text, "metadata": metadata}
+
+    @staticmethod
+    def _check_verification_page(text: str) -> None:
+        if len(text) < 2000 and any(value in text.lower() for value in (
+            "安全验证", "访问过于频繁", "完成验证后继续", "captcha", "verify you are human",
+        )):
+            raise FulltextAccessBlocked("站点返回安全验证或访问限制页面，停止本轮请求")
 
     async def _get_public_page(self, client: httpx.AsyncClient, url: str) -> httpx.Response:
         """正文和元数据补抓共用逐跳地址校验及流式大小限制。"""
@@ -134,7 +213,11 @@ class FirecrawlClient:
                     if not location:
                         raise ValueError("网页重定向缺少目标地址")
                     current_url = urljoin(current_url, location)
+                    if "captcha" in (urlparse(current_url).hostname or ""):
+                        raise FulltextAccessBlocked("站点跳转到验证码页面")
                     continue
+                if response.status_code in {403, 429}:
+                    raise FulltextAccessBlocked(f"站点限制访问 HTTP {response.status_code}")
                 response.raise_for_status()
                 content_type = response.headers.get("content-type", "").lower()
                 if content_type and not any(value in content_type for value in ("text/html", "text/plain", "application/xhtml+xml")):

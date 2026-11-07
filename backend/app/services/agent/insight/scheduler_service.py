@@ -259,10 +259,8 @@ class InsightSchedulerService:
 
                     try:
                         async with async_session() as retry_db:
-                            fulltext_retry = await asyncio.wait_for(
-                                insight_search_discovery_service.retry_recent_fulltext(
-                                    retry_db, user_id=settings.INSIGHT_SCHEDULER_USER_ID,
-                                ), timeout=300,
+                            fulltext_retry = await insight_search_discovery_service.retry_recent_fulltext(
+                                retry_db, user_id=settings.INSIGHT_SCHEDULER_USER_ID,
                             )
                     except Exception as exc:
                         fulltext_retry = {"failed": 1, "error": f"{type(exc).__name__}: {exc}"}

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import re
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 from app.core.llm_factory import LLMFactory
 from app.core.logger import logger
+from app.core.config import settings
 from app.models.agent.insight import (
     InsightCandidateReviewStatus,
     InsightAssetVector,
@@ -1008,14 +1010,22 @@ class InsightSearchDiscoveryService:
         return {"total": len(results), **statuses}
 
     async def retry_recent_fulltext(self, db: AsyncSession, *, user_id: int | None, limit: int = 20) -> dict[str, int]:
+        from app.services.agent.insight.crawler.fulltext_retry_service import fulltext_retry_service
+        return await fulltext_retry_service.run(db, user_id=user_id, limit=limit)
+
+    async def _retry_fulltext_records(
+        self, db: AsyncSession, *, user_id: int | None, limit: int = 20,
+        result_ids: list[int] | None = None, repair: bool = False,
+    ) -> dict[str, int]:
         """从原采集记录续抓正文，保留原任务日期边界和权限归属。"""
         now = datetime.now()
-        result_ids = list((await db.exec(select(InsightCrawlResult.id)
+        if result_ids is None:
+            result_ids = list((await db.exec(select(InsightCrawlResult.id)
             .join(InsightTask, InsightTask.id == InsightCrawlResult.task_id)
             .where(InsightCrawlResult.is_deleted == 0,
                    InsightCrawlResult.create_time >= now - timedelta(days=7),
                    func.length(func.coalesce(InsightCrawlResult.markdown_content, "")) < 200)
-            .order_by(InsightCrawlResult.create_time.desc()).limit(500))).all())
+                .order_by(InsightCrawlResult.create_time.asc()).limit(500))).all())
         counts = {"attempted": 0, "success": 0, "failed": 0, "candidates": 0}
         # 回滚会过期整个会话的 ORM 对象；只保留 ID，每条显式重读，避免下一条隐式 I/O。
         for result_id in result_ids:
@@ -1031,16 +1041,19 @@ class InsightSearchDiscoveryService:
             metadata = dict(result.crawl_metadata or {})
             fetch = metadata.get("fulltext_fetch") or {}
             retry = metadata.get("fulltext_retry") or {}
-            if fetch.get("status") not in {"failed", "skipped"} or self._unsupported_fulltext_reason(result.source_url):
+            if self._unsupported_fulltext_reason(result.source_url):
                 continue
-            if int(retry.get("attempts") or 0) >= 2:
+            if self._has_fulltext(result) and retry.get("status") != "review_pending":
+                continue
+            if not repair and int(retry.get("attempts") or 0) >= 2:
                 continue
             previous = retry.get("attempted_at") or fetch.get("attempted_at")
-            if previous and datetime.fromisoformat(previous) > now - timedelta(hours=6):
+            if not repair and previous and datetime.fromisoformat(previous) > now - timedelta(hours=6):
                 continue
             if counts["attempted"] >= limit:
                 break
-            metadata["fulltext_retry"] = {"attempts": int(retry.get("attempts") or 0) + 1, "attempted_at": now.isoformat()}
+            metadata["fulltext_retry"] = {"attempts": int(retry.get("attempts") or 0) + 1,
+                                          "attempted_at": datetime.now().isoformat(), "status": "running"}
             result.crawl_metadata = metadata
             db.add(result)
             await db.commit()
@@ -1054,11 +1067,25 @@ class InsightSearchDiscoveryService:
                     cutoff = self._freshness_cutoff(request.freshness)
                     if cutoff:
                         request.published_start = cutoff - (now - task.create_time)
-                await insight_crawl_service.enrich_discovered_result(db, result)
+                if not self._has_fulltext(result):
+                    await asyncio.wait_for(
+                        insight_crawl_service.enrich_discovered_result(db, result),
+                        timeout=max(1, settings.INSIGHT_FULLTEXT_RETRY_FETCH_TIMEOUT_SECONDS),
+                    )
                 if not self._has_fulltext(result):
                     raise ValueError("正文补抓后仍未通过有效正文校验")
                 request.enrich_fulltext_before_review = False
-                candidates = await self._create_candidates_from_hits(db, [result], request, user_id)
+                candidates = await asyncio.wait_for(
+                    self._create_candidates_from_hits(db, [result], request, user_id),
+                    timeout=max(1, settings.INSIGHT_FULLTEXT_RETRY_REVIEW_TIMEOUT_SECONDS),
+                )
+                result.crawl_metadata = dict(result.crawl_metadata or {}) | {
+                    "fulltext_retry": dict((result.crawl_metadata or {}).get("fulltext_retry") or {}) | {
+                        "status": "success", "finished_at": datetime.now().isoformat(),
+                    },
+                }
+                db.add(result)
+                await db.commit()
                 counts["success"] += 1
                 counts["candidates"] += len(candidates)
             except Exception as exc:
@@ -1068,13 +1095,19 @@ class InsightSearchDiscoveryService:
                 if self._has_fulltext(result):
                     metadata = dict(result.crawl_metadata or {})
                     metadata["fulltext_retry"] = dict(metadata.get("fulltext_retry") or {}) | {
-                        "review_error": f"{type(exc).__name__}: {exc}"[:500],
+                        "status": "review_pending", "review_error": f"{type(exc).__name__}: {exc}"[:500],
+                        "finished_at": datetime.now().isoformat(),
                     }
                     result.crawl_metadata = metadata
                     db.add(result)
                     await db.commit()
                 else:
-                    await insight_crawl_service.mark_fulltext_failure(db, result, exc)
+                    result.crawl_metadata = dict(result.crawl_metadata or {}) | {
+                        "fulltext_retry": dict((result.crawl_metadata or {}).get("fulltext_retry") or {}) | {
+                            "status": "failed", "finished_at": datetime.now().isoformat(),
+                        },
+                    }
+                    await insight_crawl_service.mark_fulltext_failure(db, result, f"{type(exc).__name__}: {exc}")
         return counts
 
     async def _create_candidates_from_hits(

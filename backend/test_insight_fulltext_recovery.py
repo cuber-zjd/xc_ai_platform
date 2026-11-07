@@ -1,0 +1,108 @@
+import asyncio
+from datetime import datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
+
+import httpx
+import pytest
+
+from app.models.agent.insight import InsightCrawlResult, InsightTask
+from app.services.agent.insight.crawler.firecrawl_client import FirecrawlClient, FulltextAccessBlocked
+from app.services.agent.insight.crawler import search_service as search_module
+from app.services.agent.insight.feishu_bitable_service import InsightFeishuBitableService
+
+
+@pytest.mark.parametrize("url", [
+    "https://sou.toutiao.com/search/jump?url=http://www.toutiao.com/a7704993510214894080/?channel=&source=search_tab",
+    "https://sou.toutiao.com/search/jump?url=https%3A%2F%2Fwww.toutiao.com%2Fa7704993510214894080%2F",
+    "http://www.toutiao.com/a7704993510214894080/",
+])
+def test_toutiao_canonical(url):
+    assert FirecrawlClient.canonical_article_url(url) == "https://www.toutiao.com/article/7704993510214894080/"
+
+
+@pytest.mark.parametrize("target", ["http://127.0.0.1/a123/", "http://www.toutiao.com.evil.test/a123/"])
+def test_toutiao_jump_rejects_other_hosts(target):
+    with pytest.raises(ValueError):
+        FirecrawlClient.canonical_article_url("https://sou.toutiao.com/search/jump?url=" + target)
+
+
+@pytest.mark.asyncio
+async def test_blocked_site_does_not_fallback_or_repeat(monkeypatch):
+    client = FirecrawlClient()
+    scrape = AsyncMock(return_value={"markdown": "请完成安全验证"})
+    direct = AsyncMock()
+    monkeypatch.setattr(client, "scrape_url", scrape)
+    monkeypatch.setattr(client, "_scrape_direct", direct)
+    for _ in range(2):
+        with pytest.raises(FulltextAccessBlocked):
+            await client.scrape_url_with_fallback("https://www.toutiao.com/a123/")
+    assert scrape.await_count == 1
+    direct.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_toutiao_shell_is_not_article(monkeypatch):
+    client = FirecrawlClient()
+    monkeypatch.setattr(client, "_ensure_public_url", AsyncMock())
+    response = httpx.Response(200, text="<html><body>" + "推荐新闻列表。" * 90 + "</body></html>",
+                              request=httpx.Request("GET", "https://www.toutiao.com/article/123/"))
+    monkeypatch.setattr(client, "_get_public_page", AsyncMock(return_value=response))
+    with pytest.raises(ValueError, match="脚本外壳"):
+        await client._scrape_direct(str(response.url))
+
+
+def test_sync_body_repairs_old_row_and_joins_richtext():
+    service = InsightFeishuBitableService()
+    now = datetime.now()
+    row = SimpleNamespace(id=1, create_time=now-timedelta(days=20), update_time=None, content="第一段第二段")
+    remote = [{"fields": {"情报ID": "1", "同步时间": now.timestamp()*1000}}]
+    assert service._select_incremental_rows([row], remote) == [row]
+    remote[0]["fields"]["正文"] = [{"text": "第一段"}, {"text": "第二段"}]
+    assert service._select_incremental_rows([row], remote) == []
+    assert "content" in service._selected_field_codes([])
+    assert "content" not in service._selected_field_codes(["title"])
+
+
+@pytest.mark.asyncio
+async def test_item_timeout_keeps_other_records_running(monkeypatch):
+    service = search_module.insight_search_discovery_service
+    db = AsyncMock()
+    db.add = Mock()
+    rows = [InsightCrawlResult(id=i, task_id=i, source_url=f"https://example.org/{i}") for i in (1, 2)]
+    task = InsightTask(create_time=datetime.now(), input_payload={"query": "糖浆", "freshness": "3d"})
+    db.exec.side_effect = [SimpleNamespace(first=lambda row=row: (row, task)) for row in rows]
+    async def enrich(session, row):
+        if row.id == 1:
+            await asyncio.sleep(5)
+        row.markdown_content = "糖浆工艺研发项目已建成投产。" * 50
+    monkeypatch.setattr(search_module.settings, "INSIGHT_FULLTEXT_RETRY_FETCH_TIMEOUT_SECONDS", 1)
+    monkeypatch.setattr(search_module.insight_crawl_service, "enrich_discovered_result", enrich)
+    failure = AsyncMock()
+    monkeypatch.setattr(search_module.insight_crawl_service, "mark_fulltext_failure", failure)
+    monkeypatch.setattr(service, "_create_candidates_from_hits", AsyncMock(return_value=[]))
+    result = await service._retry_fulltext_records(db, user_id=1, result_ids=[1, 2], repair=True)
+    assert result["attempted"] == 2
+    assert result["success"] == 1
+    assert result["failed"] == 1
+    assert "TimeoutError" in failure.await_args.args[2]
+
+
+@pytest.mark.asyncio
+async def test_review_failure_keeps_body_for_later_review(monkeypatch):
+    service = search_module.insight_search_discovery_service
+    row = InsightCrawlResult(id=1, task_id=1, source_url="https://example.org/1")
+    task = InsightTask(create_time=datetime.now(), input_payload={"query": "糖浆"})
+    db = AsyncMock()
+    db.add = Mock()
+    db.exec.return_value = SimpleNamespace(first=lambda: (row, task))
+    async def enrich(*args):
+        row.markdown_content = "糖浆工艺研发项目已建成投产。" * 50
+    monkeypatch.setattr(search_module.insight_crawl_service, "enrich_discovered_result", enrich)
+    monkeypatch.setattr(service, "_create_candidates_from_hits", AsyncMock(side_effect=TimeoutError()))
+    failure = AsyncMock()
+    monkeypatch.setattr(search_module.insight_crawl_service, "mark_fulltext_failure", failure)
+    await service._retry_fulltext_records(db, user_id=1, result_ids=[1], repair=True)
+    assert row.crawl_metadata["fulltext_retry"]["status"] == "review_pending"
+    assert len(row.markdown_content) > 200
+    failure.assert_not_awaited()

@@ -158,7 +158,7 @@ async def test_fulltext_failure_does_not_stop_next_record(monkeypatch):
     monkeypatch.setattr(search_module.insight_crawl_service, "mark_fulltext_failure", AsyncMock())
     create = AsyncMock(return_value=[])
     monkeypatch.setattr(insight_search_discovery_service, "_create_candidates_from_hits", create)
-    counts = await insight_search_discovery_service.retry_recent_fulltext(db, user_id=1, limit=2)
+    counts = await insight_search_discovery_service._retry_fulltext_records(db, user_id=1, limit=2)
     assert counts == {"attempted": 2, "success": 1, "failed": 1, "candidates": 0}
     assert str(db.exec.await_args_list[0].args[0]).startswith("SELECT insight_crawl_result.id ")
     assert db.exec.await_args_list[2].args[0].get_execution_options()["populate_existing"]
