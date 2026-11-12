@@ -74,6 +74,7 @@ class ReportQuery(WorkspaceInput):
 
 
 class PushInput(WorkspaceInput):
+    id: str | None = Field(default=None, max_length=36)
     reportId: str = Field(min_length=1, max_length=64)
     recipientIds: list[str] = Field(min_length=1, max_length=30)
     frequency: Literal["once", "weekly"] = "once"
@@ -97,3 +98,8 @@ class PushAction(WorkspaceInput):
     confirmed: bool = False
     active: bool = False
     requestId: str | None = Field(default=None, min_length=16, max_length=64)
+
+
+class ArchiveInput(WorkspaceInput):
+    id: str = Field(max_length=36)
+    kind: Literal["report", "collection", "push"]

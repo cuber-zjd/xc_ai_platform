@@ -66,10 +66,17 @@ async def list_pushes(db: AsyncSession, principal: WorkspacePrincipal) -> list[d
 
 
 async def save_push(db: AsyncSession, principal: WorkspacePrincipal, body: PushInput) -> dict:
-    draft = body.model_dump()
+    draft = body.model_dump(exclude={"id"})
     card = await preview(db, principal, draft)
-    row = InsightWorkspaceItem(scope=principal.scope, owner=principal.owner, legacy_user_id=principal.user_id,
-        kind="push", payload={**draft, "title": card["title"]}, last_status="draft")
+    row = await owned_item(db, principal, body.id, "push", lock=True) if body.id else InsightWorkspaceItem(
+        scope=principal.scope, owner=principal.owner, legacy_user_id=principal.user_id, kind="push")
+    if row.last_status in {"queued", "sending", "uncertain"}:
+        raise HTTPException(409, "上次发送正在处理或结果待核对，暂不能修改计划。")
+    row.payload = {**draft, "title": card["title"]}
+    row.enabled = False
+    row.next_run = None
+    row.last_status = "draft"
+    row.last_message = "已保存配置，尚未启用"
     db.add(row)
     await db.commit()
     return push_record(row)

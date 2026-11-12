@@ -25,6 +25,8 @@ from app.schemas.agent.insight.workspace import ReportInput, CollectionInput, Pu
 from app.services.agent.insight import workspace_auth as auth, workspace_catalog as catalog, workspace_pushes as pushes
 from app.services.agent.insight import workspace_collections as collections
 from app.schemas.agent.insight.workspace import CollectionStatus
+from app.schemas.agent.insight.workspace import ArchiveInput
+from app.services.agent.insight.workspace_archive import archive
 
 P = auth.WorkspacePrincipal("tenant:app", "owner", 720)
 
@@ -90,6 +92,29 @@ def sender(monkeypatch):
 async def test_push_save_is_draft_and_no_send(db, sender):
     result = await pushes.save_push(db, P, PushInput(reportId="r", recipientIds=["user_id:x"]))
     assert result["lastStatus"] == "draft" and not result["enabled"]
+    sender.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_edit_pauses_push_and_archive_preserves_audit(db, sender):
+    saved = await pushes.save_push(db, P, PushInput(reportId="r", recipientIds=["user_id:x"], frequency="weekly"))
+    await pushes.perform_action(db, P, PushAction(id=saved["id"], action="status", active=True, confirmed=True))
+    edited = await pushes.save_push(db, P, PushInput(id=saved["id"], reportId="r", recipientIds=["user_id:x"], time="10:00"))
+    assert not edited["enabled"] and edited["nextRun"] is None
+    assert edited["lastStatus"] == "draft"
+    await archive(db, P, ArchiveInput(id=saved["id"], kind="push"))
+    assert not await catalog.owned_items(db, P, "push")
+    assert len(await catalog.owned_items(db, P, "archived_push")) == 1
+    sender.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cannot_archive_queued_push(db, sender):
+    saved = await pushes.save_push(db, P, PushInput(reportId="r", recipientIds=["user_id:x"]))
+    await pushes.perform_action(db, P, PushAction(id=saved["id"], action="send", confirmed=True, requestId="c" * 32))
+    with pytest.raises(HTTPException) as error:
+        await archive(db, P, ArchiveInput(id=saved["id"], kind="push"))
+    assert error.value.status_code == 409
     sender.assert_not_called()
 
 @pytest.mark.asyncio

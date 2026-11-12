@@ -2,11 +2,17 @@
 from fastapi import APIRouter, Depends, Request
 from sqlmodel.ext.asyncio.session import AsyncSession
 from app.db.session import get_db
-from app.schemas.agent.insight.workspace import CollectionInput, CollectionNeed, CollectionStatus, ReportInput, ReportQuery, PushInput, PushAction
+from app.schemas.agent.insight.workspace import CollectionInput, CollectionNeed, CollectionStatus, ReportInput, ReportQuery, PushInput, PushAction, ArchiveInput
 from app.services.agent.insight import workspace_catalog as catalog, workspace_collections as collections, workspace_pushes as pushes
 from app.services.agent.insight.workspace_auth import authenticate, WorkspacePrincipal
 
 router = APIRouter()
+
+@router.post("/archive")
+async def archive(body: ArchiveInput, request: Request, db: AsyncSession = Depends(get_db)) -> dict:
+    from app.services.agent.insight.workspace_archive import archive as archive_item
+    who = await authenticate(request, db)
+    return await archive_item(db, who, body)
 
 async def principal(request: Request, db: AsyncSession = Depends(get_db)) -> WorkspacePrincipal:
     return await authenticate(request, db)
