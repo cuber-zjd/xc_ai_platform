@@ -2115,6 +2115,12 @@ class InsightMonitorExecutionService:
         modules = "、".join(row.enabled_modules or [])
         relation = row.relation_type or "未指定"
         custom_prompt = (row.ai_review_prompt or "").strip()
+        if (row.config_json or {}).get("workspace_scope"):
+            return (
+                f"当前监测需求：{row.config_name}；当前渠道：{channel.channel_name}。"
+                "按用户需求判断相关性，不预设行业与公司；过滤验证码、广告、招聘、旧闻和无具体事实的泛信息。"
+                f"用户需求资料：{custom_prompt}"
+            )[:4000]
         base = (
             f"当前监测对象：{row.object_name or row.config_name}；关系类型：{relation}；监测模块：{modules or '综合'}。"
             f"当前渠道源：{channel.channel_name}。"

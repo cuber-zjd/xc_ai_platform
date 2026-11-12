@@ -5,6 +5,7 @@ from app.api.v1.endpoints.agent import agents
 from app.api.v1.endpoints.agent.external import data_extract, image_extract
 from app.api.v1.endpoints.agent import fr_report, sap_assistant, weaver_ai_assistant
 from app.api.v1.endpoints.agent.insight import router as insight_router
+from app.api.v1.endpoints.agent.insight.workspace import router as insight_workspace_router
 from app.api.v1.endpoints import knowledge_bases
 
 api_router = APIRouter()
@@ -22,4 +23,5 @@ api_router.include_router(fr_report.router, prefix="/fr/ai-reports", tags=["fr_a
 api_router.include_router(knowledge_bases.router, prefix="/knowledge-bases", tags=["knowledge_bases"])
 api_router.include_router(sap_assistant.router, prefix="/sap", tags=["sap_assistant"])
 api_router.include_router(insight_router, prefix="/insight", tags=["insight"])
+api_router.include_router(insight_workspace_router, prefix="/insight-workspace", tags=["insight_workspace"])
 api_router.include_router(weaver_ai_assistant.router, prefix="/weaver/ai-assistant", tags=["weaver_ai_assistant"])

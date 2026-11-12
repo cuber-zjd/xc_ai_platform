@@ -181,6 +181,10 @@ class Settings(BaseSettings):
     INSIGHT_FEISHU_DEFAULT_CHAT_ID: str = ""
     INSIGHT_FEISHU_DEFAULT_RECEIVE_ID_TYPE: str = "chat_id"
     INSIGHT_FEISHU_BRIEF_ENABLED: bool = False
+    # 妙搭接入使用独立签名密钥与显式账号绑定，不能复用外部通用接口密钥。
+    INSIGHT_WORKSPACE_KEY: str = ""
+    INSIGHT_WORKSPACE_BINDINGS_JSON: str = "{}"
+    INSIGHT_WORKSPACE_BOT_READERS_JSON: str = "[]"
     INSIGHT_FEISHU_BRIEF_APP_ID: str = ""
     INSIGHT_FEISHU_BRIEF_APP_SECRET: str = ""
     INSIGHT_FEISHU_BRIEF_FOLDER_TOKEN: str = ""

@@ -120,6 +120,12 @@ class InsightFeishuBriefSchedulerService:
             if not locked:
                 return
             try:
+                from app.services.agent.insight.workspace_pushes import run_due
+                try:
+                    async with async_session() as workspace_db:
+                        await asyncio.wait_for(run_due(workspace_db), timeout=45)
+                except Exception as error:
+                    logger.warning("妙搭文档推送处理未完成：{}；不阻断原简报调度", type(error).__name__)
                 plan_result = await insight_feishu_brief_service.run_due_plans(
                     db,
                     limit=20,

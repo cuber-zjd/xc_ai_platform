@@ -2,6 +2,8 @@
 
 本文件适用于修改 SQLModel 模型、数据库字段、初始化数据、查询性能和迁移策略。
 
+妙搭基础功能新增 `insight_workspace_item`，使用既有 SQLModel 初始化创建，按 scope/owner 隔离。存储用途与验证见 [情报工作空间接入](insight-workspace.md)，不覆盖原报告或监测配置。
+
 ## 1. 技术栈
 
 - 业务数据库：PostgreSQL。
